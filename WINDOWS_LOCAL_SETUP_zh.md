@@ -35,7 +35,9 @@ uv run python -c "from indextts.utils.examples_downloader import ensure_examples
 .\scripts\start_indextts25_windows.ps1
 ```
 
-默认地址为 `http://127.0.0.1:7860`。脚本的 `--fp16` 参数在 IndexTTS 2.5 WebUI 中会选择 BF16。
+默认地址为 `http://127.0.0.1:7860`。启动脚本运行面向实际创作的 `production_webui.py`，后端在支持时自动选择 BF16。官方完整演示入口 `webui.py` 仍保留用于功能对照。
+
+生产站点提供参考音频、演示音色、目标文本、五种语言、模型级时长系数、情感参考、情感向量、生成预览与 WAV 下载。视觉采用 OneHR 式浅灰工作区、白色卡片、橙色主操作和清晰状态信息，产品身份为 Index Voice Studio。
 
 ## 语速控制
 

@@ -31,10 +31,8 @@ foreach ($file in $requiredModelFiles) {
 
 $env:PYTHONUTF8 = "1"
 Set-Location -LiteralPath $projectRoot
-& $python "webui.py" `
-    "--version" "2.5" `
-    "--model_dir" $modelDir `
+& $python "production_webui.py" `
+    "--model-dir" $modelDir `
     "--host" $HostAddress `
-    "--port" $Port `
-    "--fp16"
+    "--port" $Port
 exit $LASTEXITCODE

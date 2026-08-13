@@ -8,10 +8,9 @@ LAUNCHER = ROOT / "scripts" / "start_indextts25_windows.ps1"
 def test_windows_launcher_uses_local_v25_bf16_runtime():
     content = LAUNCHER.read_text(encoding="utf-8")
 
-    assert '"--version" "2.5"' in content
-    assert '"--model_dir" $modelDir' in content
+    assert '"production_webui.py"' in content
+    assert '"--model-dir" $modelDir' in content
     assert '"--host" $HostAddress' in content
-    assert '"--fp16"' in content
     assert "--cuda_kernel" not in content
     assert "--torch_compile" not in content
     assert "--deepspeed" not in content
