@@ -14,8 +14,23 @@ from indextts.infer_v2_5 import IndexTTS2
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs" / "production"
-DEMO_VOICE = ROOT / "examples" / "voice_01.wav"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+DEMO_VOICES = {
+    "voice_01.wav": "音色 01｜英语短句｜2.4 秒",
+    "voice_02.wav": "音色 02｜英语情绪对白｜2.9 秒",
+    "voice_03.wav": "音色 03｜中文宣传语｜2.1 秒",
+    "voice_04.wav": "音色 04｜中文叙述｜2.4 秒",
+    "voice_05.wav": "音色 05｜中文长叙述｜8.4 秒",
+    "voice_06.wav": "音色 06｜中文诗句｜6.2 秒",
+    "voice_07.wav": "音色 07｜阿拉伯语与中文｜2.0 秒",
+    "voice_08.wav": "音色 08｜西班牙语与中文｜1.5 秒",
+    "voice_09.wav": "音色 09｜中文活泼对白｜10.2 秒",
+    "voice_11.wav": "音色 11｜中文低落对白｜7.9 秒",
+    "voice_12.wav": "音色 12｜日语与中文｜2.7 秒",
+}
+DEMO_VOICE_CHOICES = [(label, filename) for filename, label in DEMO_VOICES.items()]
+DEFAULT_DEMO_VOICE = next(iter(DEMO_VOICES))
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +51,7 @@ MODEL = IndexTTS2(
     use_deepspeed=False,
     use_accel=False,
     use_torch_compile=False,
-    use_qwen_emo=False,
+    use_qwen_emo=True,
 )
 MODEL_LOCK = threading.Lock()
 
@@ -47,20 +62,26 @@ LANGUAGES = {
     "Español": "ES",
     "العربية": "AR",
 }
-EMOTIONS = ["自然延续参考音频", "使用情感参考音频", "使用情感向量"]
+EMOTIONS = ["沿用音色参考情绪", "使用情绪参考音频", "使用八维情绪向量", "使用情绪描述文本"]
 
 
 def toggle_emotion_controls(mode: str):
     return (
         gr.update(visible=mode == EMOTIONS[1]),
         gr.update(visible=mode == EMOTIONS[2]),
+        gr.update(visible=mode == EMOTIONS[3]),
+        gr.update(visible=mode in EMOTIONS[1:]),
+        gr.update(visible=mode in EMOTIONS[2:]),
     )
 
 
-def load_demo_voice():
-    if not DEMO_VOICE.exists():
+def load_demo_voice(filename: str):
+    if filename not in DEMO_VOICES:
+        raise gr.Error("请选择有效的演示音色。")
+    demo_voice = ROOT / "examples" / filename
+    if not demo_voice.exists():
         raise gr.Error("演示音色尚未下载，请先执行示例音频下载命令。")
-    return str(DEMO_VOICE)
+    return str(demo_voice)
 
 
 def generate_speech(
@@ -71,6 +92,8 @@ def generate_speech(
     emotion_mode: str,
     emotion_audio: str | None,
     emotion_weight: float,
+    emotion_text: str,
+    emotion_random: bool,
     happy: float,
     angry: float,
     sad: float,
@@ -90,6 +113,7 @@ def generate_speech(
 
     emotion_reference = None
     emotion_vector = None
+    use_emotion_text = emotion_mode == EMOTIONS[3]
     if emotion_mode == EMOTIONS[1]:
         if not emotion_audio:
             raise gr.Error("当前情感模式需要上传情感参考音频。")
@@ -111,8 +135,9 @@ def generate_speech(
             emo_audio_prompt=emotion_reference,
             emo_alpha=float(emotion_weight),
             emo_vector=emotion_vector,
-            use_emo_text=False,
-            use_random=False,
+            use_emo_text=use_emotion_text,
+            emo_text=(emotion_text or "").strip() or None,
+            use_random=bool(emotion_random),
             duration_factor=float(duration_factor),
             max_text_tokens_per_segment=120,
             verbose=False,
@@ -123,7 +148,7 @@ def generate_speech(
     status = (
         f"<div class='result-meta'><span>生成完成</span>"
         f"<strong>{elapsed:.1f} 秒</strong><span>{language_label}</span>"
-        f"<span>时长系数 {duration_factor:.2f}</span></div>"
+        f"<span>{emotion_mode}</span><span>时长系数 {duration_factor:.2f}</span></div>"
     )
     return str(output_path), status
 
@@ -201,18 +226,33 @@ def build_ui() -> gr.Blocks:
         """)
         with gr.Row(elem_classes="workspace-row"):
             with gr.Column(scale=6, elem_classes="studio-card"):
-                gr.HTML("<h3><span class='studio-step'>1</span>创作设置</h3><div class='section-note'>参考音频决定音色。建议使用 3 至 15 秒、无背景音乐的单人干声。</div>")
-                prompt_audio = gr.Audio(label="音色参考音频", sources=["upload", "microphone"], type="filepath")
-                demo_voice = gr.Button("加载演示音色", size="sm")
+                gr.HTML("<h3><span class='studio-step'>1</span>创作设置</h3><div class='section-note'>参考音频决定音色。建议使用无背景音乐的单人干声，模型最多读取前 15 秒。</div>")
+                demo_voice = gr.Dropdown(
+                    choices=DEMO_VOICE_CHOICES,
+                    value=DEFAULT_DEMO_VOICE,
+                    label="演示音色",
+                    info="选择后会自动载入下方播放器，可先试听再生成。",
+                )
+                prompt_audio = gr.Audio(
+                    value=str(ROOT / "examples" / DEFAULT_DEMO_VOICE),
+                    label="音色参考音频",
+                    sources=["upload", "microphone"],
+                    type="filepath",
+                )
                 text = gr.TextArea(label="目标文本", placeholder="输入需要合成的内容", lines=6, max_lines=12)
                 with gr.Row():
                     language = gr.Dropdown(list(LANGUAGES), value="中文", label="语言")
                     duration = gr.Slider(0.5, 2.0, value=1.0, step=0.01, label="时长系数", info="数值越小越快，数值越大越慢")
-                with gr.Accordion("情感与表达", open=False):
-                    emotion_mode = gr.Radio(EMOTIONS, value=EMOTIONS[0], label="情感控制方式")
-                    emotion_audio = gr.Audio(label="情感参考音频", type="filepath", visible=False)
-                    emotion_weight = gr.Slider(0.0, 1.0, value=0.8, step=0.05, label="情感权重", visible=False)
+                with gr.Accordion("情绪与表达", open=True):
+                    emotion_mode = gr.Radio(EMOTIONS, value=EMOTIONS[0], label="情绪控制方式")
+                    with gr.Group(visible=False) as emotion_audio_group:
+                        gr.Markdown("只提取表达情绪，音色仍由上方音色参考音频决定。")
+                        emotion_audio = gr.Audio(
+                            label="情绪参考音频",
+                            type="filepath",
+                        )
                     with gr.Group(visible=False) as vector_group:
+                        gr.Markdown("八项数值会先按模型规则归一化，再由情绪作用强度整体缩放。")
                         with gr.Row():
                             happy = gr.Slider(0, 1, 0, .05, label="喜悦")
                             angry = gr.Slider(0, 1, 0, .05, label="愤怒")
@@ -223,6 +263,25 @@ def build_ui() -> gr.Blocks:
                             melancholic = gr.Slider(0, 1, 0, .05, label="低落")
                             surprised = gr.Slider(0, 1, 0, .05, label="惊喜")
                             calm = gr.Slider(0, 1, 0, .05, label="平静")
+                    with gr.Group(visible=False) as emotion_text_group:
+                        gr.Markdown("情绪描述文本由本地 QwenEmotion 模型解析。留空时使用目标文本判断情绪。")
+                        emotion_text = gr.Textbox(
+                            label="情绪描述文本",
+                            placeholder="例如：克制的喜悦、强烈的委屈、危险正在逼近",
+                            lines=2,
+                        )
+                    with gr.Group(visible=False) as emotion_strength_group:
+                        emotion_weight = gr.Slider(
+                            0.0, 1.0, value=0.65, step=0.01,
+                            label="情绪作用强度",
+                            info="0 表示不施加额外情绪，1 表示完整使用所选情绪条件。",
+                        )
+                    with gr.Group(visible=False) as emotion_random_group:
+                        emotion_random = gr.Checkbox(
+                            label="情绪随机采样",
+                            value=False,
+                            info="在相同情绪方向内随机选择表达特征，每次结果可能不同。",
+                        )
                 generate = gr.Button("生成语音", variant="primary", elem_classes="studio-primary")
             with gr.Column(scale=4, elem_classes="studio-card result-panel"):
                 gr.HTML("<h3><span class='studio-step'>2</span>生成结果</h3><div class='section-note'>生成完成后可直接试听或下载 WAV 文件。</div>")
@@ -243,17 +302,17 @@ def build_ui() -> gr.Blocks:
         </section></main>
         """)
 
-        emotion_mode.change(toggle_emotion_controls, emotion_mode, [emotion_audio, vector_group])
-        demo_voice.click(load_demo_voice, outputs=prompt_audio)
+        demo_voice.change(load_demo_voice, demo_voice, prompt_audio)
         emotion_mode.change(
-            lambda mode: gr.update(visible=mode == EMOTIONS[1]),
+            toggle_emotion_controls,
             emotion_mode,
-            emotion_weight,
+            [emotion_audio_group, vector_group, emotion_text_group, emotion_strength_group, emotion_random_group],
         )
         generate.click(
             generate_speech,
             inputs=[
                 prompt_audio, text, language, duration, emotion_mode, emotion_audio, emotion_weight,
+                emotion_text, emotion_random,
                 happy, angry, sad, afraid, disgusted, melancholic, surprised, calm,
             ],
             outputs=[output_audio, result_status],

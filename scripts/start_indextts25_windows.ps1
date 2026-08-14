@@ -20,7 +20,9 @@ $requiredModelFiles = @(
     "gpt.pth",
     "s2mel.pth",
     "codec.pth",
-    "multilingual_zh_ja_yue_char_del.tiktoken"
+    "multilingual_zh_ja_yue_char_del.tiktoken",
+    "qwen0.6bemo4-merge\config.json",
+    "qwen0.6bemo4-merge\model.safetensors"
 )
 foreach ($file in $requiredModelFiles) {
     $path = Join-Path $modelDir $file

@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 
@@ -11,7 +12,39 @@ def test_production_ui_uses_real_v25_inference_contract():
     assert "lang=LANGUAGES[language_label]" in SOURCE
     assert "use_cuda_kernel=False" in SOURCE
     assert "MODEL_LOCK" in SOURCE
-    assert "demo_voice.click(load_demo_voice, outputs=prompt_audio)" in SOURCE
+    assert "demo_voice.change(load_demo_voice, demo_voice, prompt_audio)" in SOURCE
+
+
+def test_production_ui_exposes_all_local_demo_voices():
+    tree = ast.parse(SOURCE)
+    demo_voices = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "DEMO_VOICES"
+            for target in node.targets
+        ):
+            demo_voices = ast.literal_eval(node.value)
+            break
+
+    assert demo_voices is not None
+    audio_files = {path.name for path in (ROOT / "examples").glob("voice_*.wav")}
+    assert set(demo_voices) == audio_files
+    assert len(demo_voices) == 11
+    assert "DEMO_VOICE_CHOICES" in SOURCE
+    assert "选择后会自动载入下方播放器" in SOURCE
+
+
+def test_production_ui_exposes_complete_v25_emotion_contract():
+    assert "use_qwen_emo=True" in SOURCE
+    for mode in ("沿用音色参考情绪", "使用情绪参考音频", "使用八维情绪向量", "使用情绪描述文本"):
+        assert mode in SOURCE
+    for emotion in ("喜悦", "愤怒", "悲伤", "恐惧", "厌恶", "低落", "惊喜", "平静"):
+        assert f'label="{emotion}"' in SOURCE
+    assert "use_emo_text=use_emotion_text" in SOURCE
+    assert 'emo_text=(emotion_text or "").strip() or None' in SOURCE
+    assert "use_random=bool(emotion_random)" in SOURCE
+    assert 'label="情绪作用强度"' in SOURCE
+    assert 'label="情绪随机采样"' in SOURCE
 
 
 def test_production_ui_has_onehr_visual_language_and_own_identity():

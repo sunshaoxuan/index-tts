@@ -25,6 +25,8 @@ def test_windows_launcher_checks_all_required_v25_files():
         "s2mel.pth",
         "codec.pth",
         "multilingual_zh_ja_yue_char_del.tiktoken",
+        "qwen0.6bemo4-merge\\config.json",
+        "qwen0.6bemo4-merge\\model.safetensors",
     ):
         assert f'"{filename}"' in content
 
