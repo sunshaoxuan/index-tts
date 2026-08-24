@@ -421,13 +421,18 @@ def analyze_director_document(
         return
     metrics = document["metrics"]
     detected_label = CONTENT_TYPE_LABELS.get(document["content_type"], document["content_type"])
+    fallback_note = (
+        f"　　**安全分段块**　{metrics.get('fallback_chunks', 0)}"
+        if metrics.get("fallback_chunks")
+        else ""
+    )
     summary = (
         f"### AI 导演完成\n\n**标题**　{html.escape(document['title'])}\n\n"
         f"**体裁**　{detected_label}　　**角色轨道**　{len(role_rows)}　　"
         f"**合成分句**　{len(segment_rows)}　　**原文覆盖**　100%\n\n"
         f"**AI**　Ollama {ARGS.ai_model}　　**文本块**　{metrics['chunks']}　　"
         f"**Token**　{metrics['prompt_tokens']} → {metrics['output_tokens']}　　"
-        f"**耗时**　{metrics['duration_seconds']:.1f} 秒"
+        f"**耗时**　{metrics['duration_seconds']:.1f} 秒{fallback_note}"
     )
     yield (
         document, role_rows, segment_rows, document["cleaned_text"], summary,

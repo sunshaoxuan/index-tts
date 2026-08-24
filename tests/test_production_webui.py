@@ -114,6 +114,7 @@ def test_production_ui_exposes_voice_design_strategy_and_preview():
     assert "generated_files=generated_voices" in SOURCE
     assert "_release_indextts_model()" in SOURCE
     assert "长文本分轨已经完成，正在恢复 IndexTTS 音频模型" in SOURCE
+    assert "安全分段块" in SOURCE
     assert "_restore_indextts_model()" in SOURCE
     assert 'default=os.getenv("INDEXTTS_AI_MODEL", "qwen3:8b")' in SOURCE
     assert 'default=int(os.getenv("INDEXTTS_AI_TIMEOUT", "300"))' in SOURCE

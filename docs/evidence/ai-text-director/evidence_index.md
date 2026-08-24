@@ -9,11 +9,12 @@
 | 长任务有阶段反馈和真实取消 | `06-safe-render-cancel.png`，浏览器即时状态与后台进程检查 | 高 | 完整音频在当前分句结束后停止 |
 | 2797 字长文本可完成分轨 | `07-long-text-success.png`，2 个文本块、108 条分句、100% 原文覆盖 | 高 | 总处理时间受模型冷启动和文本长度影响 |
 | 文本模型获得完整 GPU | Ollama `ps` 显示 `qwen3:8b` 为 100% GPU，日志显示 37/37 层卸载到 GPU | 高 | 只在文本分析阶段释放 IndexTTS |
+| 覆盖失败不会终止整篇任务 | `08-coverage-recovery.png`，真实压力文本从 1 块细分至 4 块，3 块安全分段 | 高 | 安全分段局部语义标注需要人工复核 |
 | 系统可生成合适角色音色 | `04-ai-role-voices.png`，Qwen3-TTS VoiceDesign 生成 4 条角色参考音频 | 高 | 冷启动和模型恢复耗时较长 |
 | IndexTTS 生成完整音频和角色轨道 | `05-complete-audio-delivery.png`，`outputs/director/20260824-195528-雨夜的旧书店` | 高 | 当前为短篇真实样本 |
 | ZIP 内容完整 | Python `ZipFile.testzip()` 返回空值，ZIP 包含 14 个交付条目 | 高 | 无 |
 | 浏览器控制台正常 | 最终 `tab.dev.logs` 返回空列表 | 高 | 仅覆盖最终验收操作路径 |
-| 自动测试通过 | `188 passed, 22 deselected, 30 subtests passed` | 高 | 跳过项为项目 GPU 标记测试 |
+| 自动测试通过 | `192 passed, 22 deselected, 30 subtests passed` | 高 | 跳过项为项目 GPU 标记测试 |
 
 ## 截图
 
@@ -24,3 +25,4 @@
 5. `05-complete-audio-delivery.png` 显示 16.2 秒完整音频、ZIP、JSON 和成功状态。
 6. `06-safe-render-cancel.png` 显示一致的取消状态，交付区没有残留的生成中文案。
 7. `07-long-text-success.png` 显示 2797 字长文本、2 个文本块、4 条角色轨道、108 条分句和 100% 原文覆盖。
+8. `08-coverage-recovery.png` 显示覆盖失败自动细分、安全分段块计数和最终 100% 原文覆盖。

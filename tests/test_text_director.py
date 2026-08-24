@@ -12,6 +12,7 @@ from text_director import (
     DirectorCancelled,
     DirectorError,
     DirectorTimeout,
+    DirectorValidationError,
     OllamaTextDirector,
     ROLE_HEADERS,
     SEGMENT_HEADERS,
@@ -23,6 +24,7 @@ from text_director import (
     render_directed_audio,
     is_speech_attribution,
     split_document,
+    split_exact_sentences,
     tables_to_script,
 )
 
@@ -165,13 +167,16 @@ def test_ai_analysis_restores_curly_quotes_and_splits_embedded_dialogue():
     assert result["segments"][2]["text"] == "你来了。"
 
 
-def test_ai_analysis_rejects_two_incomplete_results():
+def test_ai_analysis_falls_back_after_two_incomplete_results():
     invalid = _valid_response()
     invalid["segments"] = [invalid["segments"][1]]
     director = FakeDirector([invalid, invalid])
 
-    with pytest.raises(DirectorError, match="连续两次"):
-        director.analyze_document("雨夜。李明说：“你终于来了。”")
+    source = "雨夜。李明说：“你终于来了。”"
+    result = director.analyze_document(source)
+
+    assert result["metrics"]["fallback_chunks"] == 1
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
 
 
 def test_timeout_is_not_repeated_for_the_same_large_chunk():
@@ -228,6 +233,95 @@ def test_long_document_adaptively_splits_timed_out_chunks():
     assert result["metrics"]["chunks"] >= 4
     assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
     assert any("超时" in message and "拆" in message for message in progress_messages)
+
+
+def test_long_document_adaptively_splits_coverage_failures():
+    class CoverageDirector(OllamaTextDirector):
+        attempted_lengths = []
+
+        def _analyze_chunk(self, *, chunk, **kwargs):
+            self.attempted_lengths.append(len(chunk))
+            if len(chunk) > 320:
+                raise DirectorValidationError("source_text 未完整覆盖本次原文")
+            return (
+                {
+                    "content_type": "novel",
+                    "title": "覆盖测试",
+                    "characters": [_character()],
+                    "segments": [_segment(1, chunk, chunk)],
+                },
+                {"prompt_tokens": 5, "output_tokens": 10, "duration_seconds": 0.05},
+            )
+
+    source = "林舟沿着长街继续前行，仔细记下沿途的每一个细节。" * 100
+    director = CoverageDirector(DirectorConfig(model="fake", max_chunk_chars=1400))
+    progress_messages = []
+    result = director.analyze_document(
+        source,
+        content_type="novel",
+        progress=lambda fraction, desc="": progress_messages.append(desc),
+    )
+
+    assert max(director.attempted_lengths) > 320
+    assert result["metrics"]["chunks"] > 4
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+    assert any("覆盖校验失败" in message and "拆" in message for message in progress_messages)
+
+
+def test_real_validation_retry_chain_subdivides_until_coverage_passes():
+    class ValidationChainDirector(OllamaTextDirector):
+        attempted_lengths = []
+
+        def _chat(self, prompt):
+            chunk = prompt.split("<<<SOURCE\n", 1)[1].split("\nSOURCE", 1)[0]
+            self.attempted_lengths.append(len(chunk))
+            returned = chunk if len(chunk) <= 320 else chunk[:-1]
+            return (
+                {
+                    "content_type": "story",
+                    "title": "自动细分",
+                    "characters": [_character()],
+                    "segments": [_segment(1, returned, returned)],
+                },
+                {"prompt_tokens": 5, "output_tokens": 10, "duration_seconds": 0.05},
+            )
+
+    source = "港口的灯光沿着海面缓慢移动，林舟认真核对航海日志。" * 40
+    director = ValidationChainDirector(DirectorConfig(model="fake", max_chunk_chars=1400))
+    result = director.analyze_document(source, content_type="story")
+
+    large_lengths = [length for length in director.attempted_lengths if length > 320]
+    assert large_lengths
+    assert all(director.attempted_lengths.count(length) >= 2 for length in set(large_lengths))
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+
+
+def test_exact_sentence_slices_preserve_quotes_whitespace_and_newlines():
+    source = "第一句。\n\n林舟问：“现在走吗？”  最后一行没有句号"
+    slices = split_exact_sentences(source)
+
+    assert "".join(slices) == source
+    assert len(slices) == 3
+
+
+def test_minimum_failed_chunk_uses_lossless_fallback_and_continues():
+    class AlwaysInvalidDirector(OllamaTextDirector):
+        def _analyze_chunk(self, **kwargs):
+            raise DirectorValidationError("source_text 未完整覆盖本次原文")
+
+    source = "雨停了。林舟说：“我们继续走。”\n下一段仍然完整保留。"
+    messages = []
+    director = AlwaysInvalidDirector(DirectorConfig(model="fake", max_chunk_chars=1400))
+    result = director.analyze_document(
+        source,
+        content_type="story",
+        progress=lambda fraction, desc="": messages.append(desc),
+    )
+
+    assert result["metrics"]["fallback_chunks"] == 1
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+    assert any("无损安全分段" in message for message in messages)
+    assert any(character["name"] == "林舟" for character in result["characters"])
 
 
 def test_tables_round_trip_role_voice_and_segment_annotations():

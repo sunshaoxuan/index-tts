@@ -133,6 +133,17 @@ class DirectorTimeout(DirectorError):
     pass
 
 
+class DirectorValidationError(DirectorError):
+    pass
+
+
+class DirectorServiceError(DirectorError):
+    pass
+
+
+MIN_ADAPTIVE_CHUNK_CHARS = 320
+
+
 @dataclass(frozen=True)
 class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
@@ -219,6 +230,37 @@ def split_document(text: str, max_chars: int = 1400) -> list[str]:
     return chunks
 
 
+def split_exact_sentences(text: str) -> list[str]:
+    source = str(text or "")
+    if not source:
+        return []
+    slices: list[str] = []
+    start = 0
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if character in "。！？!?；;\n":
+            end = index + 1
+            while end < len(source) and source[end] in "”’」』】）)]\"'":
+                end += 1
+            while end < len(source) and source[end].isspace():
+                end += 1
+            piece = source[start:end]
+            if piece.strip():
+                slices.append(piece)
+            start = end
+            index = end
+            continue
+        index += 1
+    if start < len(source):
+        tail = source[start:]
+        if tail.strip():
+            slices.append(tail)
+        elif slices:
+            slices[-1] += tail
+    return slices or [source]
+
+
 class OllamaTextDirector:
     def __init__(self, config: DirectorConfig):
         self.config = config
@@ -260,7 +302,13 @@ class OllamaTextDirector:
         global_segments: list[dict[str, Any]] = []
         detected_type: str | None = None
         title = "未命名内容"
-        metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0, "chunks": 0}
+        metrics = {
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "duration_seconds": 0.0,
+            "chunks": 0,
+            "fallback_chunks": 0,
+        }
         previous_context = ""
         index = 0
         while index < len(chunks):
@@ -276,23 +324,52 @@ class OllamaTextDirector:
                     previous_context=previous_context,
                     guidance=guidance,
                 )
-            except DirectorTimeout as exc:
-                if len(chunk) <= 700:
-                    raise DirectorError(f"最小文本块仍处理超时，共 {len(chunk)} 字符：{exc}") from exc
-                smaller_chunks = split_document(chunk, max(700, len(chunk) // 2))
-                if len(smaller_chunks) < 2:
-                    raise DirectorError(f"文本块处理超时且无法继续安全拆分：{exc}") from exc
-                chunks[index : index + 1] = smaller_chunks
-                _notify(
-                    progress,
-                    index / len(chunks),
-                    f"第 {index + 1} 个文本块超时，已按自然边界拆为 {len(smaller_chunks)} 个更小文本块",
-                )
-                continue
+            except (DirectorTimeout, DirectorValidationError) as exc:
+                failure_kind = "超时" if isinstance(exc, DirectorTimeout) else "覆盖校验失败"
+                if len(chunk) <= MIN_ADAPTIVE_CHUNK_CHARS:
+                    result = self._fallback_chunk(chunk, content_type)
+                    result_metrics = {
+                        "prompt_tokens": 0,
+                        "output_tokens": 0,
+                        "duration_seconds": 0.0,
+                        "fallback_chunks": 1,
+                    }
+                    _notify(
+                        progress,
+                        index / len(chunks),
+                        f"第 {index + 1} 个最小文本块仍{failure_kind}，已使用无损安全分段继续处理",
+                    )
+                else:
+                    smaller_chunks = split_document(
+                        chunk,
+                        max(MIN_ADAPTIVE_CHUNK_CHARS, len(chunk) // 2),
+                    )
+                    if len(smaller_chunks) < 2:
+                        result = self._fallback_chunk(chunk, content_type)
+                        result_metrics = {
+                            "prompt_tokens": 0,
+                            "output_tokens": 0,
+                            "duration_seconds": 0.0,
+                            "fallback_chunks": 1,
+                        }
+                        _notify(
+                            progress,
+                            index / len(chunks),
+                            f"第 {index + 1} 个文本块无法继续自然拆分，已使用无损安全分段",
+                        )
+                    else:
+                        chunks[index : index + 1] = smaller_chunks
+                        _notify(
+                            progress,
+                            index / len(chunks),
+                            f"第 {index + 1} 个文本块{failure_kind}，已按自然边界拆为 {len(smaller_chunks)} 个更小文本块",
+                        )
+                        continue
             metrics["prompt_tokens"] += result_metrics["prompt_tokens"]
             metrics["output_tokens"] += result_metrics["output_tokens"]
             metrics["duration_seconds"] += result_metrics["duration_seconds"]
             metrics["chunks"] += 1
+            metrics["fallback_chunks"] += int(result_metrics.get("fallback_chunks", 0))
             if detected_type is None:
                 detected_type = result["content_type"]
                 title = result["title"].strip() or title
@@ -351,9 +428,50 @@ class OllamaTextDirector:
                 return self._validate_chunk(result, chunk), metrics
             except DirectorTimeout:
                 raise
+            except DirectorServiceError as exc:
+                last_error = exc
+                if attempt:
+                    raise
             except (DirectorError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = exc
-        raise DirectorError(f"AI 连续两次未生成可验证的完整分轨：{last_error}")
+        raise DirectorValidationError(f"AI 连续两次未生成可验证的完整分轨：{last_error}")
+
+    def _fallback_chunk(self, chunk: str, requested_type: str) -> dict[str, Any]:
+        segments = [
+            {
+                "order": index,
+                "section": "安全分段",
+                "speaker_id": "narrator",
+                "speaker_name": "旁白",
+                "speaker_kind": "narrator",
+                "language": "ZH",
+                "source_text": source_text,
+                "text": source_text.strip().strip("“”‘’\"'"),
+                "attitude": "中性安全分段",
+                "emotion": "calm",
+                "intensity": 0.4,
+                "pace": "medium",
+                "pause_after_ms": 300,
+            }
+            for index, source_text in enumerate(split_exact_sentences(chunk), start=1)
+        ]
+        return self._validate_chunk(
+            {
+                "content_type": requested_type if requested_type != "auto" else "story",
+                "title": "安全分段",
+                "characters": [
+                    {
+                        "id": "narrator",
+                        "name": "旁白",
+                        "kind": "narrator",
+                        "profile": "无损安全分段旁白",
+                        "voice_hint": "稳定自然",
+                    }
+                ],
+                "segments": segments,
+            },
+            chunk,
+        )
 
     def _build_prompt(
         self,
@@ -428,11 +546,11 @@ JSON Schema：{schema_text}
         except requests.Timeout as exc:
             raise DirectorTimeout(f"本地 AI 在 {self.config.timeout_seconds} 秒内未完成当前文本块") from exc
         except requests.RequestException as exc:
-            raise DirectorError(f"本地 AI 调用失败：{exc}") from exc
+            raise DirectorServiceError(f"本地 AI 调用失败：{exc}") from exc
         payload = response.json()
         content = payload.get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
-            raise DirectorError("本地 AI 返回了空结果。")
+            raise DirectorServiceError("本地 AI 返回了空结果。")
         result = json.loads(content)
         metrics = {
             "prompt_tokens": int(payload.get("prompt_eval_count") or 0),
