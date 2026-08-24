@@ -52,6 +52,10 @@ def main() -> int:
     generated: list[dict[str, str]] = []
     started = time.perf_counter()
     for index, job in enumerate(jobs, start=1):
+        job_seed = int(job.get("seed", payload.get("seed", 42)))
+        torch.manual_seed(job_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(job_seed)
         _write_json(
             status_path,
             {

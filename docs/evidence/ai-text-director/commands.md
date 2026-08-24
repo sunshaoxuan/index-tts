@@ -4,7 +4,7 @@
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile production_webui.py text_director.py text_director_worker.py voice_design_worker.py
-.\.venv\Scripts\python.exe -m pytest tests\test_text_director.py tests\test_production_webui.py tests\test_windows_launcher.py tests\test_voice_design_worker.py tests\test_text_director_worker.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director.py tests\test_production_webui.py tests\test_windows_launcher.py tests\test_voice_design_worker.py tests\test_text_director_worker.py -q
 .\.venv\Scripts\python.exe -m pytest -m "not gpu" -q
 git diff --check
 ```
@@ -13,7 +13,7 @@ git diff --check
 
 ```powershell
 .\scripts\start_indextts25_windows.ps1 `
-  -Port 7862 `
+  -Port 7863 `
   -AiBaseUrl http://127.0.0.1:11434 `
   -AiModel qwen3:8b `
   -AiTimeout 300 `
@@ -22,11 +22,12 @@ git diff --check
 
 ## 运行验收
 
-1. 打开 `http://127.0.0.1:7862/`。
-2. 选择 AI 长篇导演和小说体。
-3. 提交真实小说样本，确认 100% 原文覆盖、4 条角色轨道和 7 条分句。
-4. 验证分析、音色设计和完整音频三个取消路径。
-5. 使用 AI VoiceDesign 生成并试听 4 条角色音色。
-6. 使用生成音色制作完整音频和分轨交付包。
-7. 使用 Python 检查 WAV 参数、CSV 行数、JSON 音色映射、ZIP 内容和 ZIP CRC。
-8. 检查浏览器控制台并保存关键全页截图。
+1. 打开 `http://127.0.0.1:7863/`。
+2. 创建并重新打开 2 章节小说工程。
+3. 提交真实小说样本，确认唯一旁白轨道、4 条最终角色和 7 条分句。
+4. 新增内心独白角色，通过已知角色选择器校正心理活动和姓名误判。
+5. 刷新永久音色库，试听并为两个相关轨道分配同一稳定音色 ID。
+6. 添加全篇纠音规则并保存工程。
+7. 真实生成完整音频、章节 WAV、角色轨道和分句 WAV，随后再次生成验证 7/7 缓存复用。
+8. 使用 Python 检查 WAV 参数、JSON 原文与实际朗读文本、章节数量、ZIP 内容和 ZIP CRC。
+9. 检查浏览器控制台并保存 `09-novel-project.png` 和 `10-novel-project-delivery.png`。

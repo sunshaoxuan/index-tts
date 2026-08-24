@@ -87,8 +87,8 @@ def test_production_ui_connects_ai_analysis_and_tts_render_handlers():
 
 
 def test_production_ui_exposes_readable_tables_and_real_task_feedback():
-    assert SOURCE.count("wrap=False") >= 2
-    assert "column_widths=[130, 110, 110, 360, 180]" in SOURCE
+    assert SOURCE.count("wrap=False") >= 3
+    assert "column_widths=[130, 110, 110, 260, 360, 190, 130, 110]" in SOURCE
     assert "pinned_columns=2" in SOURCE
     assert "pinned_columns=5" in SOURCE
     assert 'show_progress="hidden"' in SOURCE
@@ -98,11 +98,10 @@ def test_production_ui_exposes_readable_tables_and_real_task_feedback():
     assert "cancel_active_task" in SOURCE
     assert 'gr.update(value=button_label, interactive=True, visible=True)' in SOURCE
     assert 'task_payload["restore_indextts"] = True' in SOURCE
-    assert '"partial_output_dir": voice_dir' in SOURCE
     assert "worker.join()" in SOURCE
     assert "cancel_analysis_task" in SOURCE
     assert "cancel_render_task" in SOURCE
-    assert "未完成输出已经清理" in SOURCE
+    assert "工程分句缓存已经保留" in SOURCE
 
 
 def test_production_ui_exposes_voice_design_strategy_and_preview():
@@ -121,3 +120,25 @@ def test_production_ui_exposes_voice_design_strategy_and_preview():
     assert 'default=int(os.getenv("INDEXTTS_AI_CHUNK_CHARS", "1400"))' in SOURCE
     assert '"kind": "analysis"' in SOURCE
     assert "_release_indextts_model()" in SOURCE
+
+
+def test_production_ui_exposes_persistent_novel_projects_voice_library_and_pronunciation():
+    for text in (
+        "小说工程",
+        "创建新工程",
+        "打开工程",
+        "保存当前工程",
+        "音色设计条件",
+        "角色表达节奏",
+        "重新生成",
+        "永久音色库",
+        "全篇固定纠音表",
+        "添加纠音规则",
+        "批量修改角色归属",
+        "长篇导演不会用整句倍数冒充自然语速",
+    ):
+        assert text in SOURCE
+    assert "NovelProjectStore" in SOURCE
+    assert "PROJECT_STORE.register_voice" in SOURCE
+    assert "project_process_dir=project_dir / \"process\"" in SOURCE
+    assert "pronunciation_table=pronunciation_table" in SOURCE

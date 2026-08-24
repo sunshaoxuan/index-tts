@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import shutil
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import requests
+
+from novel_project import apply_pronunciations, normalize_pronunciations
 
 
 CONTENT_TYPES = {
@@ -35,14 +38,14 @@ EMOTION_LABELS = {
     "calm": "平静",
 }
 PACES = {"slow", "medium", "fast"}
-PACE_FACTORS = {"slow": 1.15, "medium": 1.0, "fast": 0.86}
+PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
 )
 QUOTE_TRANSLATION = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'", "„": '"', "‟": '"'})
 
-ROLE_HEADERS = ["轨道ID", "角色", "类型", "角色说明", "音色ID"]
+ROLE_HEADERS = ["轨道ID", "角色", "类型", "角色说明", "音色设计条件", "音色ID", "角色表达节奏", "重新生成"]
 SEGMENT_HEADERS = [
     "序号",
     "章节",
@@ -54,7 +57,7 @@ SEGMENT_HEADERS = [
     "态度语气",
     "情绪",
     "情绪强度",
-    "语速",
+    "句内节奏提示",
     "句后停顿ms",
 ]
 
@@ -733,7 +736,7 @@ JSON Schema：{schema_text}
             raise DirectorError("角色缺少有效 id、name 或 kind。")
         if kind == "narrator":
             role_id = "narrator"
-            name = name or "旁白"
+            name = "旁白"
         return {
             "id": role_id,
             "name": name,
@@ -757,7 +760,7 @@ JSON Schema：{schema_text}
             raise DirectorError(f"第 {default_order} 条分句的角色无效。")
         if speaker_kind == "narrator":
             speaker_id = "narrator"
-            speaker_name = speaker_name or "旁白"
+            speaker_name = "旁白"
         if not source_text or not text or not attitude:
             raise DirectorError(f"第 {default_order} 条分句缺少原文、合成文本或态度。")
         if len(text) > 1200:
@@ -788,10 +791,16 @@ JSON Schema：{schema_text}
         global_characters: list[dict[str, Any]],
         global_segments: list[dict[str, Any]],
     ) -> None:
-        role_by_key = {(item["kind"], item["name"].strip().casefold()): item for item in global_characters}
+        role_by_key = {
+            (item["kind"], "旁白" if item["kind"] == "narrator" else item["name"].strip().casefold()): item
+            for item in global_characters
+        }
         local_to_global: dict[str, str] = {}
         for character in result["characters"]:
-            key = (character["kind"], character["name"].strip().casefold())
+            key = (
+                character["kind"],
+                "旁白" if character["kind"] == "narrator" else character["name"].strip().casefold(),
+            )
             existing = role_by_key.get(key)
             if existing is None:
                 created = deepcopy(character)
@@ -806,7 +815,10 @@ JSON Schema：{schema_text}
 
         for segment in result["segments"]:
             merged = deepcopy(segment)
-            role_key = (merged["speaker_kind"], merged["speaker_name"].strip().casefold())
+            role_key = (
+                merged["speaker_kind"],
+                "旁白" if merged["speaker_kind"] == "narrator" else merged["speaker_name"].strip().casefold(),
+            )
             role = role_by_key.get(role_key)
             if role is None:
                 role = {
@@ -851,13 +863,24 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
         candidates = _preferred_voice_ids(character, voice_ids)
         preferred = next((voice_id for voice_id in candidates if voice_id not in used_voices), candidates[0])
         used_voices.add(preferred)
+        description = " ".join(
+            str(character.get(key, "")).strip() for key in ("profile", "voice_hint") if str(character.get(key, "")).strip()
+        )
+        role_rhythm = "沉稳舒缓，重音清晰，短语间自然停连" if character.get("kind") == "narrator" else "自然交流，按语义停连"
+        if any(keyword in description for keyword in ("孩子", "儿童", "少年", "少女", "活泼", "轻快")):
+            role_rhythm = "轻快灵动，声母清楚，短句间自然换气"
+        elif any(keyword in description for keyword in ("老人", "年长", "低沉", "沧桑", "沉稳")):
+            role_rhythm = "沉稳从容，韵母自然舒展，停连清晰"
         roles.append(
             [
                 character["id"],
                 character["name"],
                 character["kind"],
                 character.get("profile") or character.get("voice_hint", ""),
+                character.get("voice_hint", "") or character.get("profile", "") or "自然可信，符合人物身份",
                 preferred,
+                role_rhythm,
+                "否",
             ]
         )
 
@@ -873,7 +896,11 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
             segment["attitude"],
             segment["emotion"],
             segment["intensity"],
-            segment["pace"],
+            {
+                "slow": "舒缓表达，韵母自然舒展，短语间停连清晰",
+                "medium": "自然表达，按语义停连",
+                "fast": "紧凑表达，声母清晰，保持自然换气",
+            }[segment["pace"]],
             segment["pause_after_ms"],
         ]
         for segment in document.get("segments", [])
@@ -891,7 +918,7 @@ VOICE_DESIGN_TEXT = {
 QWEN_LANGUAGE_NAMES = {"ZH": "Chinese", "EN": "English", "JA": "Japanese", "ES": "Spanish", "AR": "Auto"}
 
 
-def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[dict[str, str]]:
+def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[dict[str, Any]]:
     rows = _table_rows(role_table)
     characters = {str(item.get("id")): item for item in document.get("characters", [])}
     role_languages: dict[str, str] = {}
@@ -905,10 +932,12 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
         name = str(row[1]).strip()
         kind = str(row[2]).strip()
         profile = str(row[3]).strip()
+        voice_condition = str(row[4]).strip()
+        rhythm_prompt = str(row[6]).strip()
         if not role_id or not name or kind not in ROLE_KINDS:
             raise DirectorError(f"角色表第 {row_number} 行角色信息无效。")
         character = characters.get(role_id, {})
-        voice_hint = str(character.get("voice_hint", "")).strip()
+        voice_hint = voice_condition or str(character.get("voice_hint", "")).strip()
         language = role_languages.get(role_id, "ZH")
         kind_text = {
             "narrator": "旁白",
@@ -919,7 +948,9 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
         }[kind]
         instruct = (
             f"为{kind_text}{name}设计可长期复用的独特声音。角色说明：{profile or '自然可信'}。"
-            f"音色提示：{voice_hint or '与人物身份和内容体裁相符'}。吐字清晰，干声，无背景音乐，无环境噪声。"
+            f"音色提示：{voice_hint or '与人物身份和内容体裁相符'}。"
+            f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
+            "吐字清晰，干声，无背景音乐，无环境噪声。"
         )
         jobs.append(
             {
@@ -929,6 +960,7 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
                 "text": VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
                 "instruct": instruct,
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
+                "seed": 42,
             }
         )
     return jobs
@@ -936,12 +968,16 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
 
 def apply_generated_voices(role_table: Any, generated: Iterable[dict[str, str]]) -> list[list[Any]]:
     rows = _table_rows(role_table)
-    paths_by_role = {str(item["role_id"]): Path(str(item["path"])).name for item in generated}
+    paths_by_role = {
+        str(item["role_id"]): str(item.get("voice_id") or Path(str(item["path"])).name)
+        for item in generated
+    }
     updated: list[list[Any]] = []
     for row in rows:
         copied = list(row)
         if copied and str(copied[0]) in paths_by_role:
-            copied[4] = paths_by_role[str(copied[0])]
+            copied[5] = paths_by_role[str(copied[0])]
+            copied[7] = "否"
         updated.append(copied)
     return updated
 
@@ -968,12 +1004,23 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         role_id = str(row[0]).strip()
         name = str(row[1]).strip()
         kind = str(row[2]).strip()
-        voice_id = str(row[4]).strip()
+        voice_id = str(row[5]).strip()
+        rhythm_prompt = str(row[6]).strip()
         if not role_id or not name or kind not in ROLE_KINDS or not voice_id:
             raise DirectorError(f"角色表第 {row_number} 行包含无效角色或音色。")
+        if not rhythm_prompt:
+            raise DirectorError(f"角色表第 {row_number} 行必须填写角色表达节奏。")
         if role_id in roles:
             raise DirectorError(f"角色表存在重复轨道ID：{role_id}")
-        roles[role_id] = {"id": role_id, "name": name, "kind": kind, "profile": str(row[3]).strip(), "voice_id": voice_id}
+        roles[role_id] = {
+            "id": role_id,
+            "name": name,
+            "kind": kind,
+            "profile": str(row[3]).strip(),
+            "voice_condition": str(row[4]).strip(),
+            "voice_id": voice_id,
+            "rhythm_prompt": rhythm_prompt,
+        }
 
     segments: list[dict[str, Any]] = []
     orders: set[int] = set()
@@ -987,6 +1034,16 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         if role_id not in roles:
             raise DirectorError(f"分句表第 {row_number} 行引用了未知轨道：{role_id}")
         orders.add(order)
+        raw_pace = str(row[10]).strip()
+        pace_prompts = {
+            "slow": "舒缓表达，韵母自然舒展，短语间停连清晰",
+            "medium": "自然表达，按语义停连",
+            "fast": "紧凑表达，声母清晰，保持自然换气",
+        }
+        pace = raw_pace if raw_pace in PACES else "medium"
+        pace_prompt = pace_prompts.get(raw_pace, raw_pace)
+        if not pace_prompt:
+            raise DirectorError(f"分句表第 {row_number} 行必须填写句内节奏提示。")
         raw = {
             "order": order,
             "section": str(row[1]).strip() or "正文",
@@ -999,10 +1056,12 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
             "attitude": str(row[7]).strip(),
             "emotion": str(row[8]).strip(),
             "intensity": row[9],
-            "pace": str(row[10]).strip(),
+            "pace": pace,
             "pause_after_ms": row[11],
         }
-        segments.append(OllamaTextDirector._normalize_segment(raw, row_number))
+        normalized = OllamaTextDirector._normalize_segment(raw, row_number)
+        normalized["pace_prompt"] = pace_prompt
+        segments.append(normalized)
     if not roles or not segments:
         raise DirectorError("角色表和分句表不能为空。")
     segments.sort(key=lambda item: item["order"])
@@ -1035,6 +1094,8 @@ def _build_voice_catalog(
         if path.name in catalog:
             raise DirectorError(f"自定义音色文件名与已有音色冲突：{path.name}")
         catalog[path.name] = path
+        if path.stem.startswith(("voice-", "legacy-")):
+            catalog[path.stem] = path
     return catalog
 
 
@@ -1046,6 +1107,14 @@ def _safe_name(value: str, fallback: str) -> str:
 def _wav_format(path: Path) -> tuple[int, int, int]:
     with wave.open(str(path), "rb") as wav_file:
         return wav_file.getframerate(), wav_file.getnchannels(), wav_file.getsampwidth()
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def concatenate_wav_segments(segments: list[dict[str, Any]], output_path: Path) -> None:
@@ -1081,23 +1150,36 @@ def render_directed_audio(
     output_root: Path,
     demo_dir: Path,
     demo_voices: dict[str, str],
+    pronunciation_table: Any | None = None,
+    project_process_dir: Path | None = None,
     progress: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
 ) -> tuple[str, str, str, str]:
     roles, segments = tables_to_script(role_table, segment_table)
+    pronunciation_rules = normalize_pronunciations(pronunciation_table)
     catalog = _build_voice_catalog(demo_dir, demo_voices, uploaded_files, generated_files)
     for role in roles.values():
         if role["voice_id"] not in catalog:
             available = "、".join(catalog)
             raise DirectorError(f"角色 {role['name']} 的音色ID不存在：{role['voice_id']}。可用：{available}")
 
-    run_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{_safe_name(str(document.get('title', 'directed-audio')), 'directed-audio')}"
+    run_name = (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}-"
+        f"{_safe_name(str(document.get('title', 'directed-audio')), 'directed-audio')}"
+    )
     run_dir = output_root / run_name
     segment_dir = run_dir / "segments"
     track_dir = run_dir / "tracks"
+    chapter_dir = run_dir / "chapters"
     segment_dir.mkdir(parents=True, exist_ok=False)
     track_dir.mkdir(parents=True, exist_ok=False)
+    chapter_dir.mkdir(parents=True, exist_ok=False)
+    cache_dir = Path(project_process_dir) / "segment-cache" if project_process_dir else None
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[dict[str, Any]] = []
+    reused_segments = 0
+    voice_digests = {voice_id: _file_digest(path) for voice_id, path in catalog.items() if voice_id in {role["voice_id"] for role in roles.values()}}
     try:
         with model_lock:
             for index, segment in enumerate(segments, start=1):
@@ -1107,43 +1189,95 @@ def render_directed_audio(
                 _notify(progress, (index - 1) / len(segments), f"IndexTTS 正在生成 {index}/{len(segments)}｜{role['name']}")
                 filename = f"{index:04d}-{_safe_name(role['id'], 'track')}.wav"
                 output_path = segment_dir / filename
-                emotion_prompt = f"{segment['attitude']}。{EMOTION_LABELS[segment['emotion']]}。"
-                result = model.infer(
-                    spk_audio_prompt=str(catalog[role["voice_id"]]),
-                    text=segment["text"],
-                    lang=segment["language"],
-                    output_path=str(output_path),
-                    emo_audio_prompt=None,
-                    emo_alpha=float(segment["intensity"]),
-                    emo_vector=None,
-                    use_emo_text=True,
-                    emo_text=emotion_prompt,
-                    use_random=False,
-                    duration_factor=PACE_FACTORS[segment["pace"]],
-                    max_text_tokens_per_segment=120,
-                    verbose=False,
+                emotion_prompt = (
+                    f"{role['rhythm_prompt']}。{segment['pace_prompt']}。"
+                    f"{segment['attitude']}。{EMOTION_LABELS[segment['emotion']]}。"
                 )
+                effective_text, applied_rules = apply_pronunciations(segment["text"], pronunciation_rules)
+                duration_factor = 1.0
+                cache_payload = {
+                    "text": effective_text,
+                    "language": segment["language"],
+                    "voice": voice_digests[role["voice_id"]],
+                    "emotion": emotion_prompt,
+                    "intensity": float(segment["intensity"]),
+                    "duration_factor": duration_factor,
+                }
+                cache_key = hashlib.sha256(
+                    json.dumps(cache_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                cache_path = cache_dir / f"{cache_key}.wav" if cache_dir else None
+                if cache_path and cache_path.is_file():
+                    shutil.copy2(cache_path, output_path)
+                    result = str(output_path)
+                    reused_segments += 1
+                else:
+                    result = model.infer(
+                        spk_audio_prompt=str(catalog[role["voice_id"]]),
+                        text=effective_text,
+                        lang=segment["language"],
+                        output_path=str(output_path),
+                        emo_audio_prompt=None,
+                        emo_alpha=float(segment["intensity"]),
+                        emo_vector=None,
+                        use_emo_text=True,
+                        emo_text=emotion_prompt,
+                        use_random=False,
+                        duration_factor=duration_factor,
+                        max_text_tokens_per_segment=120,
+                        verbose=False,
+                    )
                 if not result or not output_path.is_file():
                     raise DirectorError(f"第 {index} 条语音没有生成有效 WAV。")
-                rendered.append({**segment, "role": role, "audio_path": output_path})
+                if cache_path and not cache_path.is_file():
+                    shutil.copy2(output_path, cache_path)
+                rendered.append(
+                    {
+                        **segment,
+                        "role": role,
+                        "audio_path": output_path,
+                        "effective_text": effective_text,
+                        "applied_pronunciations": applied_rules,
+                        "duration_factor": duration_factor,
+                        "cache_key": cache_key,
+                    }
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     raise DirectorCancelled("音频生成已取消。")
 
         master_path = run_dir / "full-audio.wav"
         concatenate_wav_segments(rendered, master_path)
+        generated_track_count = 0
         for role_id, role in roles.items():
             role_segments = [item for item in rendered if item["speaker_id"] == role_id]
             if role_segments:
                 track_path = track_dir / f"{_safe_name(role_id, 'track')}-{_safe_name(role['name'], 'role')}.wav"
                 concatenate_wav_segments(role_segments, track_path)
+                generated_track_count += 1
+
+        chapter_outputs: list[dict[str, str]] = []
+        chapter_names: list[str] = []
+        for item in rendered:
+            section = str(item.get("section") or "正文")
+            if section not in chapter_names:
+                chapter_names.append(section)
+        for chapter_index, section in enumerate(chapter_names, start=1):
+            chapter_segments = [item for item in rendered if str(item.get("section") or "正文") == section]
+            chapter_path = chapter_dir / f"{chapter_index:04d}-{_safe_name(section, 'chapter')}.wav"
+            concatenate_wav_segments(chapter_segments, chapter_path)
+            chapter_outputs.append({"index": chapter_index, "title": section, "audio": str(Path("chapters") / chapter_path.name)})
 
         manifest = {
-            "version": 1,
+            "version": 2,
             "title": document.get("title", "未命名内容"),
             "content_type": document.get("content_type", "story"),
             "provider": document.get("provider", "ollama"),
             "model": document.get("model", ""),
             "roles": list(roles.values()),
+            "generated_role_tracks": generated_track_count,
+            "pronunciations": pronunciation_rules,
+            "reused_segments": reused_segments,
+            "chapters": chapter_outputs,
             "segments": [
                 {
                     **{key: value for key, value in item.items() if key not in {"audio_path", "role"}},
@@ -1175,7 +1309,7 @@ def render_directed_audio(
                                 item["attitude"],
                                 item["emotion"],
                                 item["intensity"],
-                                item["pace"],
+                                item["pace_prompt"],
                                 item["pause_after_ms"],
                             ],
                         )
@@ -1189,8 +1323,9 @@ def render_directed_audio(
                     archive.write(path, path.relative_to(run_dir))
         _notify(progress, 1.0, "完整音频与角色分轨已生成")
         status = (
-            f"已生成 {len(rendered)} 条分句、{len(roles)} 个角色轨道。"
-            f"完整音频：{master_path.name}；交付包包含分句 WAV、角色轨道、CSV 和 JSON 清单。"
+            f"已生成 {len(rendered)} 条分句、{len(roles)} 个角色配置、{generated_track_count} 个有内容的角色轨道。"
+            f"章节音频 {len(chapter_outputs)} 个，复用工程缓存 {reused_segments} 条。"
+            f"完整音频：{master_path.name}；交付包包含章节、分句、角色轨道、CSV 和 JSON 清单。"
         )
         return str(master_path), str(package_path), str(manifest_path), status
     except Exception:

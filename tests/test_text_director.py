@@ -93,6 +93,10 @@ def _write_wav(path: Path, frame_count=2205):
         output.writeframes(b"\x01\x00" * frame_count)
 
 
+def _role_row(role_id="narrator", name="旁白", kind="narrator", voice_id="voice_05.wav", rhythm="沉稳舒缓，短语间自然停连"):
+    return [role_id, name, kind, "测试角色", "稳定自然", voice_id, rhythm, "否"]
+
+
 def test_schema_requires_lossless_source_and_directing_fields():
     required = set(DIRECTOR_SCHEMA["properties"]["segments"]["items"]["required"])
     assert {
@@ -127,6 +131,19 @@ def test_ai_analysis_preserves_attribution_and_builds_stable_tracks():
     assert [segment["speaker_id"] for segment in result["segments"]] == ["narrator", "narrator", "role_001"]
     assert coverage_key("".join(segment["source_text"] for segment in result["segments"])) == coverage_key(source)
     assert "说话归属文字" in director.prompts[0]
+
+
+def test_narrator_aliases_merge_into_one_stable_track():
+    response = _valid_response()
+    response["characters"][0]["name"] = "narrator"
+    response["segments"][0]["speaker_name"] = "Narrator"
+    director = FakeDirector([response])
+
+    result = director.analyze_document("雨夜。李明说：“你终于来了。”", content_type="novel")
+
+    narrators = [item for item in result["characters"] if item["kind"] == "narrator"]
+    assert narrators == [{"id": "narrator", "name": "旁白", "kind": "narrator", "profile": "测试角色", "voice_hint": "稳定自然"}]
+    assert all(item["speaker_name"] == "旁白" for item in result["segments"] if item["speaker_kind"] == "narrator")
 
 
 def test_ai_analysis_retries_once_after_coverage_failure():
@@ -338,6 +355,7 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert len(ROLE_HEADERS) == len(role_rows[0])
     assert len(SEGMENT_HEADERS) == len(segment_rows[0])
     assert roles["narrator"]["voice_id"] == "voice_05.wav"
+    assert "停连" in roles["narrator"]["rhythm_prompt"]
     assert segments[1]["speaker_id"] == "role_001"
     assert segments[1]["attitude"] == "平静叙述"
 
@@ -353,10 +371,11 @@ def test_role_voice_matching_prefers_semantic_chinese_voices():
     }
     rows, _ = document_to_tables(document, ["voice_01.wav", "voice_02.wav", "voice_05.wav", "voice_09.wav", "voice_11.wav"])
 
-    assert rows[0][4] == "voice_05.wav"
-    assert rows[1][4] == "voice_09.wav"
-    assert rows[2][4] == "voice_11.wav"
-    assert all(row[4] not in {"voice_01.wav", "voice_02.wav"} for row in rows)
+    assert rows[0][5] == "voice_05.wav"
+    assert rows[1][5] == "voice_09.wav"
+    assert rows[2][5] == "voice_11.wav"
+    assert all(row[5] not in {"voice_01.wav", "voice_02.wav"} for row in rows)
+    assert len({row[6] for row in rows}) > 1
 
 
 def test_voice_design_jobs_and_generated_voice_mapping(tmp_path):
@@ -365,8 +384,8 @@ def test_voice_design_jobs_and_generated_voice_mapping(tmp_path):
         "segments": [_segment(1, "你好。", "你好。", "role_001", "李 明", "character")],
     }
     roles = [
-        ["narrator", "旁白", "narrator", "成熟稳重", "voice_05.wav"],
-        ["role_001", "李 明", "character", "年轻明亮", "voice_09.wav"],
+        ["narrator", "旁白", "narrator", "成熟稳重", "厚实沉稳", "voice_05.wav", "沉稳舒缓", "是"],
+        ["role_001", "李 明", "character", "年轻明亮", "清澈明亮", "voice_09.wav", "轻快清晰", "是"],
     ]
     jobs = build_voice_design_jobs(document, roles)
     generated_path = tmp_path / jobs[1]["filename"]
@@ -377,7 +396,8 @@ def test_voice_design_jobs_and_generated_voice_mapping(tmp_path):
     assert "旁白" in jobs[0]["instruct"]
     assert jobs[1]["filename"].endswith(".wav")
     assert " " not in jobs[1]["filename"]
-    assert updated[1][4] == generated_path.name
+    assert updated[1][5] == generated_path.name
+    assert updated[1][7] == "否"
 
 
 def test_concat_writes_silence_between_wav_segments(tmp_path):
@@ -414,8 +434,8 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
             return kwargs["output_path"]
 
     role_rows = [
-        ["narrator", "旁白", "narrator", "稳定", "voice_05.wav"],
-        ["role_001", "李明", "character", "克制", "voice_01.wav"],
+        _role_row(),
+        _role_row("role_001", "李明", "character", "voice_01.wav", "克制紧张，短句清晰"),
     ]
     segment_rows = [
         [1, "开场", "narrator", "旁白", "ZH", "雨夜。", "雨夜。", "低沉叙述", "calm", 0.5, "slow", 200],
@@ -439,15 +459,20 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
     assert Path(manifest).is_file()
     assert len(list((Path(master).parent / "segments").glob("*.wav"))) == 2
     assert len(list((Path(master).parent / "tracks").glob("*.wav"))) == 2
+    assert len(list((Path(master).parent / "chapters").glob("*.wav"))) == 1
     assert (Path(master).parent / "director-script.csv").is_file()
     assert "2 条分句" in status
-    assert model.calls[0]["emo_text"] == "低沉叙述。平静。"
-    assert model.calls[0]["duration_factor"] == 1.15
+    assert "2 个角色配置、2 个有内容的角色轨道" in status
+    assert model.calls[0]["emo_text"].endswith("低沉叙述。平静。")
+    assert "韵母自然舒展" in model.calls[0]["emo_text"]
+    assert model.calls[0]["duration_factor"] == 1.0
+    assert "沉稳舒缓" in model.calls[0]["emo_text"]
     with zipfile.ZipFile(package) as archive:
         names = set(archive.namelist())
         assert "full-audio.wav" in names
         assert "director-manifest.json" in names
         assert "director-script.csv" in names
+        assert any(name.startswith("chapters/") for name in names)
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     assert payload["roles"][0]["voice_id"] == "voice_05.wav"
 
@@ -466,7 +491,7 @@ def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path)
     with pytest.raises(DirectorCancelled):
         render_directed_audio(
             document={"title": "取消测试", "content_type": "story"},
-            role_table=[["narrator", "旁白", "narrator", "稳定", "voice_05.wav"]],
+            role_table=[_role_row()],
             segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "平静", "calm", 0.5, "medium", 0]],
             uploaded_files=None,
             model=UnexpectedModel(),
@@ -480,8 +505,68 @@ def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path)
     assert not list(output_root.glob("*"))
 
 
+def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(tmp_path):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+    output_root = tmp_path / "outputs"
+    process_root = tmp_path / "process"
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def infer(self, **kwargs):
+            self.calls.append(kwargs)
+            _write_wav(Path(kwargs["output_path"]), 100)
+            return kwargs["output_path"]
+
+    role_rows = [_role_row(rhythm="沉稳舒缓，韵母自然舒展")]
+    segment_rows = [[1, "第一章", "narrator", "旁白", "ZH", "重庆银行。", "重庆银行。", "平静", "calm", 0.5, "短语间停连清晰", 100]]
+    pronunciations = [["重庆银行", "重 庆 银行", "固定专名读法", "是"]]
+    first_model = FakeModel()
+    first = render_directed_audio(
+        document={"title": "纠音缓存", "content_type": "novel"},
+        role_table=role_rows,
+        segment_table=segment_rows,
+        pronunciation_table=pronunciations,
+        uploaded_files=None,
+        model=first_model,
+        model_lock=threading.Lock(),
+        output_root=output_root,
+        project_process_dir=process_root,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+    )
+
+    assert first_model.calls[0]["text"] == "重 庆 银行。"
+    assert first_model.calls[0]["duration_factor"] == 1.0
+    assert "韵母自然舒展" in first_model.calls[0]["emo_text"]
+    assert "短语间停连清晰" in first_model.calls[0]["emo_text"]
+    first_manifest = json.loads(Path(first[2]).read_text(encoding="utf-8"))
+    assert first_manifest["segments"][0]["effective_text"] == "重 庆 银行。"
+    assert first_manifest["segments"][0]["text"] == "重庆银行。"
+
+    second_model = FakeModel()
+    second = render_directed_audio(
+        document={"title": "纠音缓存", "content_type": "novel"},
+        role_table=role_rows,
+        segment_table=segment_rows,
+        pronunciation_table=pronunciations,
+        uploaded_files=None,
+        model=second_model,
+        model_lock=threading.Lock(),
+        output_root=output_root,
+        project_process_dir=process_root,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+    )
+    second_manifest = json.loads(Path(second[2]).read_text(encoding="utf-8"))
+    assert second_model.calls == []
+    assert second_manifest["reused_segments"] == 1
+
+
 def test_tables_reject_unknown_role_reference():
-    role_rows = [["narrator", "旁白", "narrator", "", "voice_05.wav"]]
+    role_rows = [_role_row()]
     segment_rows = [[1, "正文", "missing", "人物", "ZH", "原文", "原文", "平静", "calm", 0.5, "medium", 300]]
 
     with pytest.raises(DirectorError, match="未知轨道"):
