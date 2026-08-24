@@ -70,8 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-dir", default=str(ROOT / "checkpoints"))
     parser.add_argument("--ai-base-url", default=os.getenv("INDEXTTS_AI_BASE_URL", "http://127.0.0.1:11434"))
     parser.add_argument("--ai-model", default=os.getenv("INDEXTTS_AI_MODEL", "qwen3:8b"))
-    parser.add_argument("--ai-timeout", type=int, default=int(os.getenv("INDEXTTS_AI_TIMEOUT", "120")))
-    parser.add_argument("--ai-chunk-chars", type=int, default=int(os.getenv("INDEXTTS_AI_CHUNK_CHARS", "3600")))
+    parser.add_argument("--ai-timeout", type=int, default=int(os.getenv("INDEXTTS_AI_TIMEOUT", "300")))
+    parser.add_argument("--ai-chunk-chars", type=int, default=int(os.getenv("INDEXTTS_AI_CHUNK_CHARS", "1400")))
     parser.add_argument(
         "--voice-design-python",
         default=os.getenv("INDEXTTS_VOICE_DESIGN_PYTHON", str(ROOT / ".venv-voice-design" / "Scripts" / "python.exe")),
@@ -323,6 +323,14 @@ def analyze_director_document(
     log_path = task_dir / "worker.log"
     process = None
     error_message = ""
+    indextts_released = False
+    task_payload = {
+        "process": None,
+        "kind": "analysis",
+        "task_dir": task_dir,
+        "restore_indextts": False,
+    }
+    _register_task(task_id, task_payload)
     yield (
         {}, [], [], "", "正在启动 AI 文本导演。",
         _activity("AI 文本导演", "正在启动独立分析任务", 0.01),
@@ -349,6 +357,14 @@ def analyze_director_document(
             ),
             encoding="utf-8",
         )
+        task_payload["restore_indextts"] = True
+        _release_indextts_model()
+        indextts_released = True
+        yield (
+            {}, [], [], "", "AI 正在处理全文。",
+            _activity("AI 文本导演", "已释放音频模型，正在为长文本准备完整 GPU 资源", 0.02),
+            gr.update(value="正在分析", interactive=False), gr.update(visible=True), task_id,
+        )
         with log_path.open("w", encoding="utf-8") as log_file:
             process = subprocess.Popen(
                 [
@@ -357,7 +373,7 @@ def analyze_director_document(
                 ],
                 cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
             )
-            _register_task(task_id, {"process": process, "kind": "analysis", "task_dir": task_dir})
+            task_payload["process"] = process
             last_status = None
             while process.poll() is None:
                 current = _read_json(status_path)
@@ -378,10 +394,22 @@ def analyze_director_document(
         if not document.get("segments"):
             raise DirectorError("AI 文本导演没有返回有效分句。")
         role_rows, segment_rows = document_to_tables(document, DEMO_VOICES)
+        yield (
+            document, role_rows, segment_rows, document["cleaned_text"],
+            f"### AI 已完成长文本分轨\n\n已生成 {len(role_rows)} 条角色轨道和 {len(segment_rows)} 条分句，正在恢复音频生成模型。",
+            _activity("AI 文本导演", "长文本分轨已经完成，正在恢复 IndexTTS 音频模型", 0.99),
+            gr.update(value="正在恢复音频模型", interactive=False), gr.update(visible=False), task_id,
+        )
     except DirectorError as exc:
         error_message = str(exc)
     finally:
         _stop_process(process)
+        if indextts_released:
+            try:
+                _restore_indextts_model()
+                task_payload["restore_indextts"] = False
+            except Exception as exc:
+                error_message = f"文本分析已经结束，IndexTTS 模型恢复失败：{exc}"
         _pop_task(task_id)
         shutil.rmtree(task_dir, ignore_errors=True)
     if error_message:
@@ -450,6 +478,14 @@ def generate_role_voices(document: dict | None, role_table, strategy: str):
     process = None
     error_message = ""
     indextts_released = False
+    task_payload = {
+        "process": None,
+        "kind": "voice-design",
+        "task_dir": task_dir,
+        "partial_output_dir": voice_dir,
+        "restore_indextts": False,
+    }
+    _register_task(task_id, task_payload)
     yield role_table, [], gr.update(choices=[], value=None), None, _activity("AI 角色音色", "正在释放文本模型显存", 0.01), gr.update(value="正在设计音色", interactive=False), gr.update(visible=True), task_id
     try:
         voice_python = Path(ARGS.voice_design_python)
@@ -457,21 +493,13 @@ def generate_role_voices(document: dict | None, role_table, strategy: str):
         if not voice_python.is_file() or not (model_dir / "config.json").is_file():
             raise DirectorError("AI 音色设计环境尚未就绪，请先运行 scripts/setup_voice_design_windows.ps1。")
         _unload_ollama_model()
+        task_payload["restore_indextts"] = True
         _release_indextts_model()
         indextts_released = True
         input_path.write_text(json.dumps({"jobs": jobs, "output_dir": str(voice_dir), "model_dir": str(model_dir), "seed": 42}, ensure_ascii=False), encoding="utf-8")
         with log_path.open("w", encoding="utf-8") as log_file:
             process = subprocess.Popen([str(voice_python), str(ROOT / "voice_design_worker.py"), "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)], cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT)
-            _register_task(
-                task_id,
-                {
-                    "process": process,
-                    "kind": "voice-design",
-                    "task_dir": task_dir,
-                    "partial_output_dir": voice_dir,
-                    "restore_indextts": True,
-                },
-            )
+            task_payload["process"] = process
             last_status = None
             while process.poll() is None:
                 current = _read_json(status_path)
@@ -500,6 +528,7 @@ def generate_role_voices(document: dict | None, role_table, strategy: str):
         if indextts_released:
             try:
                 _restore_indextts_model()
+                task_payload["restore_indextts"] = False
             except Exception as exc:
                 error_message = f"角色音色已经生成，IndexTTS 模型恢复失败：{exc}"
     if error_message:

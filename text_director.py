@@ -129,12 +129,16 @@ class DirectorCancelled(DirectorError):
     pass
 
 
+class DirectorTimeout(DirectorError):
+    pass
+
+
 @dataclass(frozen=True)
 class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen3:14b"
+    model: str = "qwen3:8b"
     timeout_seconds: int = 300
-    max_chunk_chars: int = 3600
+    max_chunk_chars: int = 1400
 
 
 def _notify(progress: Callable[..., Any] | None, fraction: float, description: str) -> None:
@@ -190,7 +194,7 @@ def is_speech_attribution(text: str) -> bool:
     return bool(ATTRIBUTION_PATTERN.search(source)) and not any(mark in source for mark in "。！？!?")
 
 
-def split_document(text: str, max_chars: int = 3600) -> list[str]:
+def split_document(text: str, max_chars: int = 1400) -> list[str]:
     source = normalize_source_text(text)
     if not source:
         return []
@@ -256,28 +260,45 @@ class OllamaTextDirector:
         global_segments: list[dict[str, Any]] = []
         detected_type: str | None = None
         title = "未命名内容"
-        metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0, "chunks": len(chunks)}
+        metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0, "chunks": 0}
         previous_context = ""
-
-        for index, chunk in enumerate(chunks, start=1):
-            _notify(progress, (index - 1) / len(chunks), f"AI 正在导演第 {index}/{len(chunks)} 个文本块")
-            result, result_metrics = self._analyze_chunk(
-                chunk=chunk,
-                chunk_index=index,
-                chunk_count=len(chunks),
-                requested_type=content_type,
-                existing_characters=global_characters,
-                previous_context=previous_context,
-                guidance=guidance,
-            )
+        index = 0
+        while index < len(chunks):
+            chunk = chunks[index]
+            _notify(progress, index / len(chunks), f"AI 正在导演第 {index + 1}/{len(chunks)} 个文本块")
+            try:
+                result, result_metrics = self._analyze_chunk(
+                    chunk=chunk,
+                    chunk_index=index + 1,
+                    chunk_count=len(chunks),
+                    requested_type=content_type,
+                    existing_characters=global_characters,
+                    previous_context=previous_context,
+                    guidance=guidance,
+                )
+            except DirectorTimeout as exc:
+                if len(chunk) <= 700:
+                    raise DirectorError(f"最小文本块仍处理超时，共 {len(chunk)} 字符：{exc}") from exc
+                smaller_chunks = split_document(chunk, max(700, len(chunk) // 2))
+                if len(smaller_chunks) < 2:
+                    raise DirectorError(f"文本块处理超时且无法继续安全拆分：{exc}") from exc
+                chunks[index : index + 1] = smaller_chunks
+                _notify(
+                    progress,
+                    index / len(chunks),
+                    f"第 {index + 1} 个文本块超时，已按自然边界拆为 {len(smaller_chunks)} 个更小文本块",
+                )
+                continue
             metrics["prompt_tokens"] += result_metrics["prompt_tokens"]
             metrics["output_tokens"] += result_metrics["output_tokens"]
             metrics["duration_seconds"] += result_metrics["duration_seconds"]
+            metrics["chunks"] += 1
             if detected_type is None:
                 detected_type = result["content_type"]
                 title = result["title"].strip() or title
             self._merge_chunk(result, global_characters, global_segments)
             previous_context = chunk[-400:]
+            index += 1
 
         for order, segment in enumerate(global_segments, start=1):
             segment["order"] = order
@@ -328,6 +349,8 @@ class OllamaTextDirector:
             try:
                 result, metrics = self._chat(current_prompt)
                 return self._validate_chunk(result, chunk), metrics
+            except DirectorTimeout:
+                raise
             except (DirectorError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = exc
         raise DirectorError(f"AI 连续两次未生成可验证的完整分轨：{last_error}")
@@ -402,6 +425,8 @@ JSON Schema：{schema_text}
                 timeout=self.config.timeout_seconds,
             )
             response.raise_for_status()
+        except requests.Timeout as exc:
+            raise DirectorTimeout(f"本地 AI 在 {self.config.timeout_seconds} 秒内未完成当前文本块") from exc
         except requests.RequestException as exc:
             raise DirectorError(f"本地 AI 调用失败：{exc}") from exc
         payload = response.json()

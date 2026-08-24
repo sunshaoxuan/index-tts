@@ -47,7 +47,8 @@ def test_windows_launcher_requires_local_ai_service_and_model():
 
     assert '[string]$AiBaseUrl = "http://127.0.0.1:11434"' in content
     assert '[string]$AiModel = "qwen3:8b"' in content
-    assert '[int]$AiTimeout = 120' in content
+    assert '[int]$AiTimeout = 300' in content
+    assert '[int]$AiChunkChars = 1400' in content
     assert 'Invoke-RestMethod -Uri "$normalizedAiBaseUrl/api/tags"' in content
     assert "$AiModel -notin $availableAiModels" in content
 

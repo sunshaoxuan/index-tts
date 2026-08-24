@@ -11,6 +11,7 @@ from text_director import (
     DirectorConfig,
     DirectorCancelled,
     DirectorError,
+    DirectorTimeout,
     OllamaTextDirector,
     ROLE_HEADERS,
     SEGMENT_HEADERS,
@@ -171,6 +172,62 @@ def test_ai_analysis_rejects_two_incomplete_results():
 
     with pytest.raises(DirectorError, match="连续两次"):
         director.analyze_document("雨夜。李明说：“你终于来了。”")
+
+
+def test_timeout_is_not_repeated_for_the_same_large_chunk():
+    class TimeoutDirector(OllamaTextDirector):
+        calls = 0
+
+        def _chat(self, prompt):
+            self.calls += 1
+            raise DirectorTimeout("测试超时")
+
+    director = TimeoutDirector(DirectorConfig(model="fake"))
+    with pytest.raises(DirectorTimeout, match="测试超时"):
+        director._analyze_chunk(
+            chunk="长文本。" * 100,
+            chunk_index=1,
+            chunk_count=1,
+            requested_type="story",
+            existing_characters=[],
+            previous_context="",
+            guidance="",
+        )
+
+    assert director.calls == 1
+
+
+def test_long_document_adaptively_splits_timed_out_chunks():
+    class AdaptiveDirector(OllamaTextDirector):
+        attempted_lengths = []
+
+        def _analyze_chunk(self, *, chunk, **kwargs):
+            self.attempted_lengths.append(len(chunk))
+            if len(chunk) > 700:
+                raise DirectorTimeout("块过大")
+            return (
+                {
+                    "content_type": "story",
+                    "title": "长篇测试",
+                    "characters": [_character()],
+                    "segments": [_segment(1, chunk, chunk)],
+                },
+                {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1},
+            )
+
+    source = "很久以前，故事仍在继续。" * 180
+    director = AdaptiveDirector(DirectorConfig(model="fake", max_chunk_chars=1400))
+    progress_messages = []
+    result = director.analyze_document(
+        source,
+        content_type="story",
+        progress=lambda fraction, desc="": progress_messages.append(desc),
+    )
+
+    assert any(length > 700 for length in director.attempted_lengths)
+    assert result["metrics"]["chunks"] >= 4
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+    assert any("超时" in message and "拆" in message for message in progress_messages)
 
 
 def test_tables_round_trip_role_voice_and_segment_annotations():

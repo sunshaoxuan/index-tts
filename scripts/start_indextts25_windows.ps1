@@ -12,10 +12,10 @@ param(
     [string]$AiModel = "qwen3:8b",
 
     [ValidateRange(30, 1800)]
-    [int]$AiTimeout = 120,
+    [int]$AiTimeout = 300,
 
     [ValidateRange(1000, 6000)]
-    [int]$AiChunkChars = 3600,
+    [int]$AiChunkChars = 1400,
 
     [string]$VoiceDesignPython = "",
 

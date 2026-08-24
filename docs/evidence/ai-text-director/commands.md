@@ -16,8 +16,8 @@ git diff --check
   -Port 7862 `
   -AiBaseUrl http://127.0.0.1:11434 `
   -AiModel qwen3:8b `
-  -AiTimeout 120 `
-  -AiChunkChars 3600
+  -AiTimeout 300 `
+  -AiChunkChars 1400
 ```
 
 ## 运行验收
