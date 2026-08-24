@@ -46,6 +46,19 @@ def test_windows_launcher_requires_local_ai_service_and_model():
     content = LAUNCHER.read_text(encoding="utf-8")
 
     assert '[string]$AiBaseUrl = "http://127.0.0.1:11434"' in content
-    assert '[string]$AiModel = "qwen3:14b"' in content
+    assert '[string]$AiModel = "qwen3:8b"' in content
+    assert '[int]$AiTimeout = 120' in content
     assert 'Invoke-RestMethod -Uri "$normalizedAiBaseUrl/api/tags"' in content
     assert "$AiModel -notin $availableAiModels" in content
+
+
+def test_windows_launcher_checks_voice_design_runtime_and_model():
+    content = LAUNCHER.read_text(encoding="utf-8")
+    setup = (ROOT / "scripts" / "setup_voice_design_windows.ps1").read_text(encoding="utf-8")
+
+    assert '"--voice-design-python" $VoiceDesignPython' in content
+    assert '"--voice-design-model" $VoiceDesignModel' in content
+    assert "importlib.util.find_spec" in content
+    assert '"config.json", "model.safetensors"' in content
+    assert "qwen-tts==0.1.1" in setup
+    assert "Qwen3-TTS-12Hz-1.7B-VoiceDesign" in setup

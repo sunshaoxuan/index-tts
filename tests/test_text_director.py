@@ -9,11 +9,14 @@ import pytest
 from text_director import (
     DIRECTOR_SCHEMA,
     DirectorConfig,
+    DirectorCancelled,
     DirectorError,
     OllamaTextDirector,
     ROLE_HEADERS,
     SEGMENT_HEADERS,
     concatenate_wav_segments,
+    apply_generated_voices,
+    build_voice_design_jobs,
     coverage_key,
     document_to_tables,
     render_directed_audio,
@@ -188,6 +191,44 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert segments[1]["attitude"] == "平静叙述"
 
 
+def test_role_voice_matching_prefers_semantic_chinese_voices():
+    document = {
+        "characters": [
+            _character(),
+            {**_character("child", "小雨", "character"), "profile": "活泼的孩子"},
+            {**_character("cold", "老周", "character"), "profile": "低沉沧桑，悲伤克制"},
+        ],
+        "segments": [],
+    }
+    rows, _ = document_to_tables(document, ["voice_01.wav", "voice_02.wav", "voice_05.wav", "voice_09.wav", "voice_11.wav"])
+
+    assert rows[0][4] == "voice_05.wav"
+    assert rows[1][4] == "voice_09.wav"
+    assert rows[2][4] == "voice_11.wav"
+    assert all(row[4] not in {"voice_01.wav", "voice_02.wav"} for row in rows)
+
+
+def test_voice_design_jobs_and_generated_voice_mapping(tmp_path):
+    document = {
+        "characters": [_character(), _character("role_001", "李 明", "character")],
+        "segments": [_segment(1, "你好。", "你好。", "role_001", "李 明", "character")],
+    }
+    roles = [
+        ["narrator", "旁白", "narrator", "成熟稳重", "voice_05.wav"],
+        ["role_001", "李 明", "character", "年轻明亮", "voice_09.wav"],
+    ]
+    jobs = build_voice_design_jobs(document, roles)
+    generated_path = tmp_path / jobs[1]["filename"]
+    generated_path.touch()
+    updated = apply_generated_voices(roles, [{"role_id": "role_001", "path": str(generated_path)}])
+
+    assert jobs[0]["language"] == "Chinese"
+    assert "旁白" in jobs[0]["instruct"]
+    assert jobs[1]["filename"].endswith(".wav")
+    assert " " not in jobs[1]["filename"]
+    assert updated[1][4] == generated_path.name
+
+
 def test_concat_writes_silence_between_wav_segments(tmp_path):
     first = tmp_path / "first.wav"
     second = tmp_path / "second.wav"
@@ -258,6 +299,34 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
         assert "director-script.csv" in names
     payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     assert payload["roles"][0]["voice_id"] == "voice_05.wav"
+
+
+def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+    output_root = tmp_path / "outputs"
+    cancelled = threading.Event()
+    cancelled.set()
+
+    class UnexpectedModel:
+        def infer(self, **kwargs):
+            raise AssertionError("inference should not start after cancellation")
+
+    with pytest.raises(DirectorCancelled):
+        render_directed_audio(
+            document={"title": "取消测试", "content_type": "story"},
+            role_table=[["narrator", "旁白", "narrator", "稳定", "voice_05.wav"]],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "平静", "calm", 0.5, "medium", 0]],
+            uploaded_files=None,
+            model=UnexpectedModel(),
+            model_lock=threading.Lock(),
+            output_root=output_root,
+            demo_dir=demo_dir,
+            demo_voices={"voice_05.wav": "五号"},
+            cancel_event=cancelled,
+        )
+
+    assert not list(output_root.glob("*"))
 
 
 def test_tables_reject_unknown_role_reference():

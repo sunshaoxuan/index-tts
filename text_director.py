@@ -125,6 +125,10 @@ class DirectorError(RuntimeError):
     pass
 
 
+class DirectorCancelled(DirectorError):
+    pass
+
+
 @dataclass(frozen=True)
 class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
@@ -675,18 +679,35 @@ JSON Schema：{schema_text}
             global_segments.append(merged)
 
 
+def _preferred_voice_ids(character: dict[str, Any], voice_ids: list[str]) -> list[str]:
+    description = " ".join(
+        str(character.get(key, "")) for key in ("name", "kind", "profile", "voice_hint")
+    ).casefold()
+    if character.get("kind") in {"narrator", "anchor"}:
+        preferred = ["voice_05.wav", "voice_04.wav", "voice_03.wav"]
+    elif any(keyword in description for keyword in ("孩子", "儿童", "少年", "少女", "活泼", "明亮", "轻快")):
+        preferred = ["voice_09.wav", "voice_03.wav", "voice_06.wav"]
+    elif any(keyword in description for keyword in ("低沉", "冷漠", "悲伤", "低落", "沧桑", "严肃")):
+        preferred = ["voice_11.wav", "voice_05.wav", "voice_04.wav"]
+    elif any(keyword in description for keyword in ("温柔", "诗", "抒情", "亲和", "平静")):
+        preferred = ["voice_06.wav", "voice_04.wav", "voice_05.wav"]
+    elif character.get("kind") in {"reporter", "interviewee"}:
+        preferred = ["voice_04.wav", "voice_03.wav", "voice_06.wav"]
+    else:
+        preferred = ["voice_04.wav", "voice_06.wav", "voice_09.wav", "voice_11.wav", "voice_03.wav"]
+    return [voice_id for voice_id in preferred if voice_id in voice_ids] or voice_ids
+
+
 def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) -> tuple[list[list[Any]], list[list[Any]]]:
     voice_ids = list(demo_voice_ids)
     if not voice_ids:
         raise DirectorError("没有可用于角色分配的演示音色。")
     roles: list[list[Any]] = []
-    non_narrator_index = 0
+    used_voices: set[str] = set()
     for character in document.get("characters", []):
-        if character["kind"] in {"narrator", "anchor"}:
-            preferred = "voice_05.wav" if "voice_05.wav" in voice_ids else voice_ids[0]
-        else:
-            preferred = voice_ids[non_narrator_index % len(voice_ids)]
-            non_narrator_index += 1
+        candidates = _preferred_voice_ids(character, voice_ids)
+        preferred = next((voice_id for voice_id in candidates if voice_id not in used_voices), candidates[0])
+        used_voices.add(preferred)
         roles.append(
             [
                 character["id"],
@@ -715,6 +736,71 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
         for segment in document.get("segments", [])
     ]
     return roles, segments
+
+
+VOICE_DESIGN_TEXT = {
+    "ZH": "这是我的声音。我会用清晰自然的方式，陪你走进这个故事。",
+    "EN": "This is my voice. I will speak clearly and naturally throughout this story.",
+    "JA": "これは私の声です。物語を自然で明瞭に語ります。",
+    "ES": "Esta es mi voz. Hablaré con claridad y naturalidad durante esta historia.",
+    "AR": "هذا هو صوتي. سأتحدث بوضوح وطبيعية طوال هذه القصة.",
+}
+QWEN_LANGUAGE_NAMES = {"ZH": "Chinese", "EN": "English", "JA": "Japanese", "ES": "Spanish", "AR": "Auto"}
+
+
+def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[dict[str, str]]:
+    rows = _table_rows(role_table)
+    characters = {str(item.get("id")): item for item in document.get("characters", [])}
+    role_languages: dict[str, str] = {}
+    for segment in document.get("segments", []):
+        role_languages.setdefault(str(segment.get("speaker_id")), str(segment.get("language", "ZH")).upper())
+    jobs: list[dict[str, str]] = []
+    for row_number, row in enumerate(rows, start=1):
+        if len(row) < len(ROLE_HEADERS):
+            raise DirectorError(f"角色表第 {row_number} 行字段不足。")
+        role_id = str(row[0]).strip()
+        name = str(row[1]).strip()
+        kind = str(row[2]).strip()
+        profile = str(row[3]).strip()
+        if not role_id or not name or kind not in ROLE_KINDS:
+            raise DirectorError(f"角色表第 {row_number} 行角色信息无效。")
+        character = characters.get(role_id, {})
+        voice_hint = str(character.get("voice_hint", "")).strip()
+        language = role_languages.get(role_id, "ZH")
+        kind_text = {
+            "narrator": "旁白",
+            "anchor": "新闻主播",
+            "reporter": "记者",
+            "interviewee": "采访对象",
+            "character": "人物",
+        }[kind]
+        instruct = (
+            f"为{kind_text}{name}设计可长期复用的独特声音。角色说明：{profile or '自然可信'}。"
+            f"音色提示：{voice_hint or '与人物身份和内容体裁相符'}。吐字清晰，干声，无背景音乐，无环境噪声。"
+        )
+        jobs.append(
+            {
+                "role_id": role_id,
+                "name": name,
+                "language": QWEN_LANGUAGE_NAMES.get(language, "Auto"),
+                "text": VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
+                "instruct": instruct,
+                "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
+            }
+        )
+    return jobs
+
+
+def apply_generated_voices(role_table: Any, generated: Iterable[dict[str, str]]) -> list[list[Any]]:
+    rows = _table_rows(role_table)
+    paths_by_role = {str(item["role_id"]): Path(str(item["path"])).name for item in generated}
+    updated: list[list[Any]] = []
+    for row in rows:
+        copied = list(row)
+        if copied and str(copied[0]) in paths_by_role:
+            copied[4] = paths_by_role[str(copied[0])]
+        updated.append(copied)
+    return updated
 
 
 def _table_rows(value: Any) -> list[list[Any]]:
@@ -791,12 +877,13 @@ def _build_voice_catalog(
     demo_dir: Path,
     demo_voices: dict[str, str],
     uploaded_files: Iterable[str] | None,
+    generated_files: Iterable[str] | None = None,
 ) -> dict[str, Path]:
     catalog = {voice_id: (demo_dir / voice_id).resolve() for voice_id in demo_voices}
     for voice_id, path in catalog.items():
         if not path.is_file():
             raise DirectorError(f"内置音色文件不存在：{voice_id}")
-    for raw_path in uploaded_files or []:
+    for raw_path in [*(uploaded_files or []), *(generated_files or [])]:
         path = Path(str(raw_path)).resolve()
         if not path.is_file():
             raise DirectorError(f"上传音色文件不存在：{path.name}")
@@ -845,15 +932,17 @@ def render_directed_audio(
     role_table: Any,
     segment_table: Any,
     uploaded_files: Iterable[str] | None,
+    generated_files: Iterable[str] | None = None,
     model: Any,
     model_lock: Any,
     output_root: Path,
     demo_dir: Path,
     demo_voices: dict[str, str],
     progress: Callable[..., Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> tuple[str, str, str, str]:
     roles, segments = tables_to_script(role_table, segment_table)
-    catalog = _build_voice_catalog(demo_dir, demo_voices, uploaded_files)
+    catalog = _build_voice_catalog(demo_dir, demo_voices, uploaded_files, generated_files)
     for role in roles.values():
         if role["voice_id"] not in catalog:
             available = "、".join(catalog)
@@ -869,6 +958,8 @@ def render_directed_audio(
     try:
         with model_lock:
             for index, segment in enumerate(segments, start=1):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise DirectorCancelled("音频生成已取消。")
                 role = roles[segment["speaker_id"]]
                 _notify(progress, (index - 1) / len(segments), f"IndexTTS 正在生成 {index}/{len(segments)}｜{role['name']}")
                 filename = f"{index:04d}-{_safe_name(role['id'], 'track')}.wav"
@@ -892,6 +983,8 @@ def render_directed_audio(
                 if not result or not output_path.is_file():
                     raise DirectorError(f"第 {index} 条语音没有生成有效 WAV。")
                 rendered.append({**segment, "role": role, "audio_path": output_path})
+                if cancel_event is not None and cancel_event.is_set():
+                    raise DirectorCancelled("音频生成已取消。")
 
         master_path = run_dir / "full-audio.wav"
         concatenate_wav_segments(rendered, master_path)

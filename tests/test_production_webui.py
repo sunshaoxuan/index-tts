@@ -79,8 +79,39 @@ def test_production_ui_exposes_ai_long_form_director_workflow():
 
 
 def test_production_ui_connects_ai_analysis_and_tts_render_handlers():
-    assert "TEXT_DIRECTOR.analyze_document(" in SOURCE
+    assert 'str(ROOT / "text_director_worker.py")' in SOURCE
     assert "render_directed_audio(" in SOURCE
     assert "director_analyze.click(" in SOURCE
     assert "director_generate.click(" in SOURCE
     assert "原文覆盖**　100%" in SOURCE
+
+
+def test_production_ui_exposes_readable_tables_and_real_task_feedback():
+    assert SOURCE.count("wrap=False") >= 2
+    assert "column_widths=[130, 110, 110, 360, 180]" in SOURCE
+    assert "pinned_columns=2" in SOURCE
+    assert "pinned_columns=5" in SOURCE
+    assert 'show_progress="hidden"' in SOURCE
+    for label in ("取消分析", "取消音色设计", "取消完整音频生成"):
+        assert label in SOURCE
+    assert "activity-card" in SOURCE
+    assert "cancel_active_task" in SOURCE
+    assert 'gr.update(value=button_label, interactive=True, visible=True)' in SOURCE
+    assert '"restore_indextts": True' in SOURCE
+    assert '"partial_output_dir": voice_dir' in SOURCE
+    assert "worker.join()" in SOURCE
+    assert "cancel_analysis_task" in SOURCE
+    assert "cancel_render_task" in SOURCE
+    assert "未完成输出已经清理" in SOURCE
+
+
+def test_production_ui_exposes_voice_design_strategy_and_preview():
+    assert '"AI 设计全新角色音色"' in SOURCE
+    assert '"智能匹配内置音色"' in SOURCE
+    assert 'label="角色音色试听"' in SOURCE
+    assert 'label="生成音色预览"' in SOURCE
+    assert 'str(ROOT / "voice_design_worker.py")' in SOURCE
+    assert "generated_files=generated_voices" in SOURCE
+    assert "_release_indextts_model()" in SOURCE
+    assert "_restore_indextts_model()" in SOURCE
+    assert 'default=os.getenv("INDEXTTS_AI_MODEL", "qwen3:8b")' in SOURCE

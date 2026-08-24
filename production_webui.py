@@ -1,24 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import html
+import json
 import os
+import queue
+import shutil
+import subprocess
+import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import gradio as gr
+import requests
 import torch
 
 from indextts.infer_v2_5 import IndexTTS2
 from text_director import (
     CONTENT_TYPES,
     CONTENT_TYPE_LABELS,
+    DirectorCancelled,
     DirectorConfig,
     DirectorError,
     OllamaTextDirector,
     ROLE_HEADERS,
     SEGMENT_HEADERS,
+    apply_generated_voices,
+    build_voice_design_jobs,
     document_to_tables,
     render_directed_audio,
     voice_catalog_markdown,
@@ -28,8 +39,12 @@ from text_director import (
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs" / "production"
 DIRECTOR_OUTPUT_DIR = ROOT / "outputs" / "director"
+ROLE_VOICE_OUTPUT_DIR = ROOT / "outputs" / "role-voices"
+TASK_OUTPUT_DIR = ROOT / "runtime-output" / "director-tasks"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DIRECTOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ROLE_VOICE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+TASK_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEMO_VOICES = {
     "voice_01.wav": "音色 01｜英语短句｜2.4 秒",
@@ -54,25 +69,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--model-dir", default=str(ROOT / "checkpoints"))
     parser.add_argument("--ai-base-url", default=os.getenv("INDEXTTS_AI_BASE_URL", "http://127.0.0.1:11434"))
-    parser.add_argument("--ai-model", default=os.getenv("INDEXTTS_AI_MODEL", "qwen3:14b"))
-    parser.add_argument("--ai-timeout", type=int, default=int(os.getenv("INDEXTTS_AI_TIMEOUT", "300")))
+    parser.add_argument("--ai-model", default=os.getenv("INDEXTTS_AI_MODEL", "qwen3:8b"))
+    parser.add_argument("--ai-timeout", type=int, default=int(os.getenv("INDEXTTS_AI_TIMEOUT", "120")))
     parser.add_argument("--ai-chunk-chars", type=int, default=int(os.getenv("INDEXTTS_AI_CHUNK_CHARS", "3600")))
+    parser.add_argument(
+        "--voice-design-python",
+        default=os.getenv("INDEXTTS_VOICE_DESIGN_PYTHON", str(ROOT / ".venv-voice-design" / "Scripts" / "python.exe")),
+    )
+    parser.add_argument(
+        "--voice-design-model",
+        default=os.getenv(
+            "INDEXTTS_VOICE_DESIGN_MODEL",
+            str(ROOT / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"),
+        ),
+    )
     return parser.parse_args()
 
 
 ARGS = parse_args()
 MODEL_DIR = Path(ARGS.model_dir).resolve()
-MODEL = IndexTTS2(
-    cfg_path=str(MODEL_DIR / "config.yaml"),
-    model_dir=str(MODEL_DIR),
-    use_bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
-    use_cuda_kernel=False,
-    use_deepspeed=False,
-    use_accel=False,
-    use_torch_compile=False,
-    use_qwen_emo=True,
-)
+def _create_indextts_model() -> IndexTTS2:
+    return IndexTTS2(
+        cfg_path=str(MODEL_DIR / "config.yaml"),
+        model_dir=str(MODEL_DIR),
+        use_bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        use_cuda_kernel=False,
+        use_deepspeed=False,
+        use_accel=False,
+        use_torch_compile=False,
+        use_qwen_emo=True,
+    )
+
+
+MODEL = _create_indextts_model()
 MODEL_LOCK = threading.Lock()
+TASK_LOCK = threading.Lock()
+ACTIVE_TASKS: dict[str, dict] = {}
 TEXT_DIRECTOR = OllamaTextDirector(
     DirectorConfig(
         base_url=ARGS.ai_base_url,
@@ -90,6 +122,98 @@ LANGUAGES = {
     "العربية": "AR",
 }
 EMOTIONS = ["沿用音色参考情绪", "使用情绪参考音频", "使用八维情绪向量", "使用情绪描述文本"]
+VOICE_STRATEGIES = ["AI 设计全新角色音色", "智能匹配内置音色", "使用表格中的音色"]
+
+
+def _activity(title: str, detail: str, fraction: float = 0.0, tone: str = "working") -> str:
+    percent = max(0, min(100, round(float(fraction) * 100)))
+    safe_title = html.escape(title)
+    safe_detail = html.escape(detail)
+    return (
+        f"<div class='activity-card {tone}'><div class='activity-head'><strong>{safe_title}</strong>"
+        f"<span>{percent}%</span></div><div class='activity-detail'>{safe_detail}</div>"
+        f"<div class='activity-track'><i style='width:{percent}%'></i></div></div>"
+    )
+
+
+def _read_json(path: Path) -> dict:
+    for _ in range(3):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+            time.sleep(0.05)
+    return {}
+
+
+def _stop_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _register_task(task_id: str, payload: dict) -> None:
+    with TASK_LOCK:
+        ACTIVE_TASKS[task_id] = payload
+
+
+def _pop_task(task_id: str) -> dict | None:
+    with TASK_LOCK:
+        return ACTIVE_TASKS.pop(task_id, None)
+
+
+def _cancel_task(task_id: str) -> bool:
+    with TASK_LOCK:
+        task = ACTIVE_TASKS.get(task_id or "")
+    if not task:
+        return False
+    cancel_event = task.get("cancel_event")
+    if cancel_event is not None:
+        cancel_event.set()
+    _stop_process(task.get("process"))
+    worker = task.get("worker")
+    if worker is not None and worker.is_alive():
+        worker.join()
+    for key in ("task_dir", "partial_output_dir"):
+        path = task.get(key)
+        if path:
+            shutil.rmtree(Path(path), ignore_errors=True)
+    if task.get("restore_indextts"):
+        _restore_indextts_model()
+    _pop_task(task_id)
+    return True
+
+
+def _unload_ollama_model() -> None:
+    try:
+        requests.post(
+            f"{ARGS.ai_base_url.rstrip('/')}/api/generate",
+            json={"model": ARGS.ai_model, "keep_alive": 0},
+            timeout=20,
+        ).raise_for_status()
+    except requests.RequestException as exc:
+        raise DirectorError(f"释放文本模型显存失败：{exc}") from exc
+
+
+def _release_indextts_model() -> None:
+    global MODEL
+    with MODEL_LOCK:
+        MODEL = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+
+def _restore_indextts_model() -> None:
+    global MODEL
+    with MODEL_LOCK:
+        if MODEL is None:
+            MODEL = _create_indextts_model()
 
 
 def toggle_emotion_controls(mode: str):
@@ -137,6 +261,7 @@ def generate_speech(
         raise gr.Error("请输入需要合成的文本。")
     if len(cleaned_text) > 1200:
         raise gr.Error("单次文本请控制在 1200 字符以内。")
+    yield None, _activity("准备单句生成", "正在校验文本与参考音频", 0.03), gr.update(value="正在生成", interactive=False)
 
     emotion_reference = None
     emotion_vector = None
@@ -153,22 +278,26 @@ def generate_speech(
 
     output_path = OUTPUT_DIR / f"voice-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}.wav"
     started = time.perf_counter()
-    with MODEL_LOCK:
-        result = MODEL.infer(
-            spk_audio_prompt=prompt_audio,
-            text=cleaned_text,
-            lang=LANGUAGES[language_label],
-            output_path=str(output_path),
-            emo_audio_prompt=emotion_reference,
-            emo_alpha=float(emotion_weight),
-            emo_vector=emotion_vector,
-            use_emo_text=use_emotion_text,
-            emo_text=(emotion_text or "").strip() or None,
-            use_random=bool(emotion_random),
-            duration_factor=float(duration_factor),
-            max_text_tokens_per_segment=120,
-            verbose=False,
-        )
+    try:
+        with MODEL_LOCK:
+            result = MODEL.infer(
+                spk_audio_prompt=prompt_audio,
+                text=cleaned_text,
+                lang=LANGUAGES[language_label],
+                output_path=str(output_path),
+                emo_audio_prompt=emotion_reference,
+                emo_alpha=float(emotion_weight),
+                emo_vector=emotion_vector,
+                use_emo_text=use_emotion_text,
+                emo_text=(emotion_text or "").strip() or None,
+                use_random=bool(emotion_random),
+                duration_factor=float(duration_factor),
+                max_text_tokens_per_segment=120,
+                verbose=False,
+            )
+    except Exception as exc:
+        yield None, _activity("单句生成失败", str(exc), 1.0, "cancelled"), gr.update(value="生成语音", interactive=True)
+        return
     elapsed = time.perf_counter() - started
     if not result or not output_path.exists():
         raise gr.Error("生成未产生有效音频，请调整文本或参考音频后重试。")
@@ -177,41 +306,210 @@ def generate_speech(
         f"<strong>{elapsed:.1f} 秒</strong><span>{language_label}</span>"
         f"<span>{emotion_mode}</span><span>时长系数 {duration_factor:.2f}</span></div>"
     )
-    return str(output_path), status
+    yield str(output_path), status, gr.update(value="生成语音", interactive=True)
 
 
 def analyze_director_document(
     content_type_label: str,
     source_text: str,
     guidance: str,
-    progress=gr.Progress(),
 ):
+    task_id = uuid.uuid4().hex
+    task_dir = TASK_OUTPUT_DIR / task_id
+    task_dir.mkdir(parents=True, exist_ok=False)
+    input_path = task_dir / "input.json"
+    result_path = task_dir / "result.json"
+    status_path = task_dir / "status.json"
+    log_path = task_dir / "worker.log"
+    process = None
+    error_message = ""
+    yield (
+        {}, [], [], "", "正在启动 AI 文本导演。",
+        _activity("AI 文本导演", "正在启动独立分析任务", 0.01),
+        gr.update(value="正在分析", interactive=False), gr.update(visible=True), task_id,
+    )
     try:
-        ai_status = TEXT_DIRECTOR.health_summary()
         content_type = CONTENT_TYPES.get(content_type_label)
         if content_type is None:
             raise DirectorError(f"不支持的内容体裁：{content_type_label}")
-        document = TEXT_DIRECTOR.analyze_document(
-            source_text,
-            content_type=content_type,
-            guidance=guidance,
-            progress=progress,
+        input_path.write_text(
+            json.dumps(
+                {
+                    "config": {
+                        "base_url": ARGS.ai_base_url,
+                        "model": ARGS.ai_model,
+                        "timeout_seconds": ARGS.ai_timeout,
+                        "max_chunk_chars": ARGS.ai_chunk_chars,
+                    },
+                    "source_text": source_text,
+                    "content_type": content_type,
+                    "guidance": guidance,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
         )
+        with log_path.open("w", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                [
+                    sys.executable, str(ROOT / "text_director_worker.py"),
+                    "--input", str(input_path), "--result", str(result_path), "--status", str(status_path),
+                ],
+                cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
+            )
+            _register_task(task_id, {"process": process, "kind": "analysis", "task_dir": task_dir})
+            last_status = None
+            while process.poll() is None:
+                current = _read_json(status_path)
+                signature = (current.get("phase"), current.get("fraction"), current.get("message"))
+                if current and signature != last_status:
+                    last_status = signature
+                    yield (
+                        {}, [], [], "", "AI 正在处理全文。",
+                        _activity("AI 文本导演", current.get("message", "正在分析文本"), current.get("fraction", 0.05)),
+                        gr.update(value="正在分析", interactive=False), gr.update(visible=True), task_id,
+                    )
+                time.sleep(0.25)
+        if process.returncode != 0:
+            status = _read_json(status_path)
+            detail = status.get("message") or log_path.read_text(encoding="utf-8", errors="replace")[-1000:]
+            raise DirectorError(f"AI 文本导演失败：{detail}")
+        document = _read_json(result_path)
+        if not document.get("segments"):
+            raise DirectorError("AI 文本导演没有返回有效分句。")
         role_rows, segment_rows = document_to_tables(document, DEMO_VOICES)
     except DirectorError as exc:
-        raise gr.Error(str(exc)) from exc
+        error_message = str(exc)
+    finally:
+        _stop_process(process)
+        _pop_task(task_id)
+        shutil.rmtree(task_dir, ignore_errors=True)
+    if error_message:
+        yield (
+            {}, [], [], "", f"### AI 导演失败\n\n{html.escape(error_message)}",
+            _activity("AI 文本导演失败", error_message, 1.0, "cancelled"),
+            gr.update(value="AI 清洗并分段分句分轨", interactive=True), gr.update(visible=False), "",
+        )
+        return
     metrics = document["metrics"]
     detected_label = CONTENT_TYPE_LABELS.get(document["content_type"], document["content_type"])
     summary = (
-        f"### AI 导演完成\n\n"
-        f"**标题**　{html.escape(document['title'])}\n\n"
+        f"### AI 导演完成\n\n**标题**　{html.escape(document['title'])}\n\n"
         f"**体裁**　{detected_label}　　**角色轨道**　{len(role_rows)}　　"
         f"**合成分句**　{len(segment_rows)}　　**原文覆盖**　100%\n\n"
-        f"**AI**　{ai_status}　　**文本块**　{metrics['chunks']}　　"
+        f"**AI**　Ollama {ARGS.ai_model}　　**文本块**　{metrics['chunks']}　　"
         f"**Token**　{metrics['prompt_tokens']} → {metrics['output_tokens']}　　"
         f"**耗时**　{metrics['duration_seconds']:.1f} 秒"
     )
-    return document, role_rows, segment_rows, document["cleaned_text"], summary
+    yield (
+        document, role_rows, segment_rows, document["cleaned_text"], summary,
+        _activity("AI 文本导演完成", "角色、分句和原文覆盖校验均已完成", 1.0, "complete"),
+        gr.update(value="AI 清洗并分段分句分轨", interactive=True), gr.update(visible=False), "",
+    )
+
+
+def cancel_active_task(task_id: str, label: str, button_label: str):
+    cancelled = _cancel_task(task_id)
+    detail = f"{label}已取消，后台任务已停止。" if cancelled else f"{label}已经结束。"
+    return (
+        _activity(label, detail, 1.0, "cancelled"),
+        gr.update(visible=False),
+        "",
+        gr.update(value=button_label, interactive=True, visible=True),
+    )
+
+
+def cancel_analysis_task(task_id: str):
+    result = cancel_active_task(task_id, "AI 文本导演", "AI 清洗并分段分句分轨")
+    return (*result, "AI 文本导演已取消，后台分析任务已经停止。")
+
+
+def cancel_render_task(task_id: str):
+    result = cancel_active_task(task_id, "完整音频生成", "按角色音色生成完整音频")
+    return (*result, "完整音频生成已取消，未完成输出已经清理。")
+
+
+def generate_role_voices(document: dict | None, role_table, strategy: str):
+    if not document or not document.get("characters"):
+        raise gr.Error("请先完成 AI 文本导演分析。")
+    if strategy == "使用表格中的音色":
+        yield role_table, [], gr.update(choices=[], value=None), None, _activity("角色音色", "继续使用表格中的音色配置", 1.0, "complete"), gr.update(value="生成或更新角色音色", interactive=True), gr.update(visible=False), ""
+        return
+    if strategy == "智能匹配内置音色":
+        matched, _ = document_to_tables(document, DEMO_VOICES)
+        yield matched, [], gr.update(choices=[], value=None), None, _activity("角色音色", "已按角色特征匹配内置中文音色", 1.0, "complete"), gr.update(value="生成或更新角色音色", interactive=True), gr.update(visible=False), ""
+        return
+
+    jobs = build_voice_design_jobs(document, role_table)
+    task_id = uuid.uuid4().hex
+    task_dir = TASK_OUTPUT_DIR / task_id
+    task_dir.mkdir(parents=True, exist_ok=False)
+    voice_dir = ROLE_VOICE_OUTPUT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    input_path, result_path, status_path = task_dir / "input.json", task_dir / "result.json", task_dir / "status.json"
+    log_path = task_dir / "worker.log"
+    process = None
+    error_message = ""
+    indextts_released = False
+    yield role_table, [], gr.update(choices=[], value=None), None, _activity("AI 角色音色", "正在释放文本模型显存", 0.01), gr.update(value="正在设计音色", interactive=False), gr.update(visible=True), task_id
+    try:
+        voice_python = Path(ARGS.voice_design_python)
+        model_dir = Path(ARGS.voice_design_model)
+        if not voice_python.is_file() or not (model_dir / "config.json").is_file():
+            raise DirectorError("AI 音色设计环境尚未就绪，请先运行 scripts/setup_voice_design_windows.ps1。")
+        _unload_ollama_model()
+        _release_indextts_model()
+        indextts_released = True
+        input_path.write_text(json.dumps({"jobs": jobs, "output_dir": str(voice_dir), "model_dir": str(model_dir), "seed": 42}, ensure_ascii=False), encoding="utf-8")
+        with log_path.open("w", encoding="utf-8") as log_file:
+            process = subprocess.Popen([str(voice_python), str(ROOT / "voice_design_worker.py"), "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)], cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT)
+            _register_task(
+                task_id,
+                {
+                    "process": process,
+                    "kind": "voice-design",
+                    "task_dir": task_dir,
+                    "partial_output_dir": voice_dir,
+                    "restore_indextts": True,
+                },
+            )
+            last_status = None
+            while process.poll() is None:
+                current = _read_json(status_path)
+                signature = (current.get("phase"), current.get("fraction"), current.get("message"))
+                if current and signature != last_status:
+                    last_status = signature
+                    yield role_table, [], gr.update(), None, _activity("AI 角色音色", current.get("message", "正在生成角色音色"), current.get("fraction", 0.05)), gr.update(value="正在设计音色", interactive=False), gr.update(visible=True), task_id
+                time.sleep(0.25)
+        if process.returncode != 0:
+            status = _read_json(status_path)
+            detail = status.get("message") or log_path.read_text(encoding="utf-8", errors="replace")[-1000:]
+            raise DirectorError(f"AI 角色音色生成失败：{detail}")
+        result = _read_json(result_path)
+        generated = result.get("generated") or []
+        updated_roles = apply_generated_voices(role_table, generated)
+        files = [item["path"] for item in generated]
+        choices = [(f"{item['name']}｜{Path(item['path']).name}", item["path"]) for item in generated]
+        yield updated_roles, files, gr.update(choices=choices, value=choices[0][1] if choices else None), choices[0][1] if choices else None, _activity("AI 角色音色", "正在恢复 IndexTTS 音频生成模型", 0.97), gr.update(value="正在恢复音频模型", interactive=False), gr.update(visible=False), task_id
+    except DirectorError as exc:
+        error_message = str(exc)
+        shutil.rmtree(voice_dir, ignore_errors=True)
+    finally:
+        _stop_process(process)
+        _pop_task(task_id)
+        shutil.rmtree(task_dir, ignore_errors=True)
+        if indextts_released:
+            try:
+                _restore_indextts_model()
+            except Exception as exc:
+                error_message = f"角色音色已经生成，IndexTTS 模型恢复失败：{exc}"
+    if error_message:
+        yield role_table, [], gr.update(choices=[], value=None), None, _activity("AI 角色音色失败", error_message, 1.0, "cancelled"), gr.update(value="生成或更新角色音色", interactive=True), gr.update(visible=False), ""
+        return
+    yield updated_roles, files, gr.update(choices=choices, value=choices[0][1] if choices else None), choices[0][1] if choices else None, _activity("AI 角色音色完成", f"已生成 {len(files)} 条可复用角色参考音频", 1.0, "complete"), gr.update(value="生成或更新角色音色", interactive=True), gr.update(visible=False), ""
+
+
+def preview_role_voice(path: str | None):
+    return path
 
 
 def generate_directed_project(
@@ -219,26 +517,60 @@ def generate_directed_project(
     role_table,
     segment_table,
     uploaded_voices: list[str] | None,
-    progress=gr.Progress(),
+    generated_voices: list[str] | None,
 ):
     if not document or not document.get("segments"):
         raise gr.Error("请先完成 AI 文本导演分析。")
+    task_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    updates: queue.Queue = queue.Queue()
+    result: dict = {}
+
+    def progress(fraction: float, desc: str = "", description: str = "") -> None:
+        updates.put((float(fraction), desc or description or "正在生成分句音频"))
+
+    def run() -> None:
+        try:
+            result["value"] = render_directed_audio(
+                document=document, role_table=role_table, segment_table=segment_table,
+                uploaded_files=uploaded_voices, generated_files=generated_voices,
+                model=MODEL, model_lock=MODEL_LOCK, output_root=DIRECTOR_OUTPUT_DIR,
+                demo_dir=ROOT / "examples", demo_voices=DEMO_VOICES,
+                progress=progress, cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=run, name=f"director-render-{task_id}", daemon=True)
+    _register_task(task_id, {"cancel_event": cancel_event, "kind": "render", "worker": worker})
+    worker.start()
+    yield None, None, None, "正在准备长篇音频生成。", _activity("完整音频", "正在准备模型和角色音色", 0.01), gr.update(value="正在生成完整音频", interactive=False), gr.update(visible=True), task_id
+    last = None
     try:
-        master, package, manifest, status = render_directed_audio(
-            document=document,
-            role_table=role_table,
-            segment_table=segment_table,
-            uploaded_files=uploaded_voices,
-            model=MODEL,
-            model_lock=MODEL_LOCK,
-            output_root=DIRECTOR_OUTPUT_DIR,
-            demo_dir=ROOT / "examples",
-            demo_voices=DEMO_VOICES,
-            progress=progress,
-        )
-    except DirectorError as exc:
-        raise gr.Error(str(exc)) from exc
-    return master, package, manifest, f"### 长篇音频生成完成\n\n{status}"
+        while worker.is_alive():
+            try:
+                while True:
+                    last = updates.get_nowait()
+            except queue.Empty:
+                pass
+            if last:
+                yield None, None, None, f"正在生成：{last[1]}", _activity("完整音频", last[1], last[0]), gr.update(value="正在生成完整音频", interactive=False), gr.update(visible=True), task_id
+            worker.join(timeout=0.25)
+        if result.get("error"):
+            error = result["error"]
+            if isinstance(error, DirectorCancelled):
+                message = "完整音频生成已取消，未完成目录已清理。"
+                yield None, None, None, message, _activity("完整音频已取消", message, 1.0, "cancelled"), gr.update(value="按角色音色生成完整音频", interactive=True), gr.update(visible=False), ""
+                return
+            if isinstance(error, DirectorError):
+                message = str(error)
+                yield None, None, None, f"### 长篇音频生成失败\n\n{message}", _activity("完整音频生成失败", message, 1.0, "cancelled"), gr.update(value="按角色音色生成完整音频", interactive=True), gr.update(visible=False), ""
+                return
+            raise error
+        master, package, manifest, status = result["value"]
+    finally:
+        _pop_task(task_id)
+    yield master, package, manifest, f"### 长篇音频生成完成\n\n{status}", _activity("完整音频完成", "完整 WAV、角色轨道和交付包已经生成", 1.0, "complete"), gr.update(value="按角色音色生成完整音频", interactive=True), gr.update(visible=False), ""
 
 
 CSS = """
@@ -292,6 +624,19 @@ body, .gradio-container {
 .studio-trust span { color:var(--studio-muted); font-size:12px; line-height:1.55; }
 .studio-tabs > .tab-nav { max-width:1240px; margin:0 auto 18px; }
 .director-table { border:1px solid var(--studio-line) !important; border-radius:8px !important; }
+.director-table .table-wrap { overflow-x:auto !important; }
+.director-table table { min-width:1180px !important; table-layout:fixed !important; }
+.director-table th, .director-table td { white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important; }
+.director-table textarea { white-space:normal !important; overflow-wrap:normal !important; word-break:normal !important; }
+.activity-card { border:1px solid #ffd5c0; background:#fff8f4; border-radius:8px; padding:12px 14px; margin:10px 0; }
+.activity-head { display:flex; justify-content:space-between; gap:16px; color:#9c3f13; }
+.activity-detail { color:var(--studio-muted); font-size:12px; margin:7px 0 9px; }
+.activity-track { height:5px; background:#f1e2db; border-radius:999px; overflow:hidden; }
+.activity-track i { display:block; height:100%; background:var(--studio-orange); transition:width .2s ease; }
+.activity-card.complete { border-color:#bee1c8; background:#f3fbf5; }
+.activity-card.complete .activity-head { color:#34734a; }
+.activity-card.cancelled { border-color:#d9dde1; background:#f7f8fa; }
+.studio-cancel { min-height:42px !important; }
 footer { display:none !important; }
 @media (max-width: 780px) {
   .studio-header { padding:0 18px; }
@@ -386,6 +731,10 @@ def build_ui() -> gr.Blocks:
 
             with gr.Tab("AI 长篇导演"):
                 director_state = gr.State({})
+                director_task_state = gr.State("")
+                voice_task_state = gr.State("")
+                render_task_state = gr.State("")
+                generated_voice_state = gr.State([])
                 with gr.Row(elem_classes="workspace-row"):
                     with gr.Column(scale=5, elem_classes="studio-card"):
                         gr.HTML("<h3><span class='studio-step'>1</span>全文输入与 AI 导演</h3><div class='section-note'>AI 会清洗全文，按自然段和句子切分，识别人物与旁白，并逐句标注态度、情绪、语速和停顿。</div>")
@@ -406,7 +755,10 @@ def build_ui() -> gr.Blocks:
                             placeholder="可选，例如：整体克制悬疑；新闻播报避免夸张；儿童故事更有亲和力。",
                             lines=3,
                         )
-                        director_analyze = gr.Button("AI 清洗并分段分句分轨", variant="primary", elem_classes="studio-primary")
+                        director_activity = gr.HTML(_activity("AI 文本导演", "等待提交全文", 0.0, "idle"))
+                        with gr.Row():
+                            director_analyze = gr.Button("AI 清洗并分段分句分轨", variant="primary", elem_classes="studio-primary")
+                            director_cancel = gr.Button("取消分析", visible=False, elem_classes="studio-cancel")
                     with gr.Column(scale=5, elem_classes="studio-card"):
                         gr.HTML("<h3><span class='studio-step'>2</span>导演结果</h3><div class='section-note'>AI 结果必须通过原文覆盖校验，出现漏文或顺序变化时会自动纠正一次。</div>")
                         director_summary = gr.Markdown(
@@ -422,6 +774,12 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Accordion("角色与音色映射", open=True):
                     gr.Markdown(voice_catalog_markdown(DEMO_VOICES))
+                    voice_strategy = gr.Radio(
+                        VOICE_STRATEGIES,
+                        value=VOICE_STRATEGIES[0],
+                        label="音色策略",
+                        info="AI 设计会生成可复用的新角色音色，智能匹配会直接选择现有中文音色。",
+                    )
                     director_uploaded_voices = gr.File(
                         label="上传自定义角色音色",
                         file_count="multiple",
@@ -438,10 +796,19 @@ def build_ui() -> gr.Blocks:
                         label="角色轨道表，可修改角色说明和音色ID",
                         interactive=True,
                         max_height=360,
-                        wrap=True,
+                        wrap=False,
+                        column_widths=[130, 110, 110, 360, 180],
+                        pinned_columns=2,
                         show_search="filter",
                         elem_classes="director-table",
                     )
+                    voice_activity = gr.HTML(_activity("角色音色", "等待选择策略", 0.0, "idle"))
+                    with gr.Row():
+                        voice_generate = gr.Button("生成或更新角色音色", variant="primary", elem_classes="studio-primary")
+                        voice_cancel = gr.Button("取消音色设计", visible=False, elem_classes="studio-cancel")
+                    with gr.Row():
+                        role_voice_preview_choice = gr.Dropdown(label="角色音色试听", choices=[], interactive=True)
+                        role_voice_preview = gr.Audio(label="生成音色预览", type="filepath")
 
                 with gr.Accordion("分句分轨与态度语气", open=True):
                     director_segments = gr.Dataframe(
@@ -454,12 +821,17 @@ def build_ui() -> gr.Blocks:
                         label="逐句导演表，可人工校正分轨、文本、态度、情绪、强度、语速和停顿",
                         interactive=True,
                         max_height=520,
-                        wrap=True,
+                        wrap=False,
+                        column_widths=[70, 120, 130, 100, 80, 280, 280, 180, 110, 100, 90, 120],
+                        pinned_columns=5,
                         show_search="filter",
                         static_columns=[0],
                         elem_classes="director-table",
                     )
-                    director_generate = gr.Button("按角色音色生成完整音频", variant="primary", elem_classes="studio-primary")
+                    render_activity = gr.HTML(_activity("完整音频", "等待导演表和角色音色", 0.0, "idle"))
+                    with gr.Row():
+                        director_generate = gr.Button("按角色音色生成完整音频", variant="primary", elem_classes="studio-primary")
+                        render_cancel = gr.Button("取消完整音频生成", visible=False, elem_classes="studio-cancel")
 
                 with gr.Row(elem_classes="workspace-row"):
                     with gr.Column(scale=6, elem_classes="studio-card result-panel"):
@@ -493,17 +865,45 @@ def build_ui() -> gr.Blocks:
                 emotion_text, emotion_random,
                 happy, angry, sad, afraid, disgusted, melancholic, surprised, calm,
             ],
-            outputs=[output_audio, result_status],
+            outputs=[output_audio, result_status, generate],
+            show_progress="hidden",
         )
-        director_analyze.click(
+        analysis_event = director_analyze.click(
             analyze_director_document,
             inputs=[director_content_type, director_source, director_guidance],
-            outputs=[director_state, director_roles, director_segments, director_cleaned, director_summary],
+            outputs=[director_state, director_roles, director_segments, director_cleaned, director_summary, director_activity, director_analyze, director_cancel, director_task_state],
+            show_progress="hidden",
         )
-        director_generate.click(
+        director_cancel.click(
+            cancel_analysis_task,
+            inputs=[director_task_state],
+            outputs=[director_activity, director_cancel, director_task_state, director_analyze, director_summary],
+            cancels=[analysis_event], queue=False, show_progress="hidden",
+        )
+        voice_event = voice_generate.click(
+            generate_role_voices,
+            inputs=[director_state, director_roles, voice_strategy],
+            outputs=[director_roles, generated_voice_state, role_voice_preview_choice, role_voice_preview, voice_activity, voice_generate, voice_cancel, voice_task_state],
+            show_progress="hidden",
+        )
+        voice_cancel.click(
+            cancel_active_task,
+            inputs=[voice_task_state, gr.State("AI 角色音色"), gr.State("生成或更新角色音色")],
+            outputs=[voice_activity, voice_cancel, voice_task_state, voice_generate],
+            cancels=[voice_event], queue=False, show_progress="hidden",
+        )
+        role_voice_preview_choice.change(preview_role_voice, role_voice_preview_choice, role_voice_preview, show_progress="hidden")
+        render_event = director_generate.click(
             generate_directed_project,
-            inputs=[director_state, director_roles, director_segments, director_uploaded_voices],
-            outputs=[director_master, director_package, director_manifest, director_render_status],
+            inputs=[director_state, director_roles, director_segments, director_uploaded_voices, generated_voice_state],
+            outputs=[director_master, director_package, director_manifest, director_render_status, render_activity, director_generate, render_cancel, render_task_state],
+            show_progress="hidden",
+        )
+        render_cancel.click(
+            cancel_render_task,
+            inputs=[render_task_state],
+            outputs=[render_activity, render_cancel, render_task_state, director_generate, director_render_status],
+            cancels=[render_event], queue=False, show_progress="hidden",
         )
     return app
 
