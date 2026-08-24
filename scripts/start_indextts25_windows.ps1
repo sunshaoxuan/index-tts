@@ -3,7 +3,19 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 7860,
 
-    [string]$HostAddress = "127.0.0.1"
+    [string]$HostAddress = "127.0.0.1",
+
+    [ValidateNotNullOrEmpty()]
+    [string]$AiBaseUrl = "http://127.0.0.1:11434",
+
+    [ValidateNotNullOrEmpty()]
+    [string]$AiModel = "qwen3:14b",
+
+    [ValidateRange(30, 1800)]
+    [int]$AiTimeout = 300,
+
+    [ValidateRange(1000, 6000)]
+    [int]$AiChunkChars = 3600
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,10 +43,26 @@ foreach ($file in $requiredModelFiles) {
     }
 }
 
+$normalizedAiBaseUrl = $AiBaseUrl.TrimEnd("/")
+try {
+    $aiTags = Invoke-RestMethod -Uri "$normalizedAiBaseUrl/api/tags" -TimeoutSec 10
+}
+catch {
+    throw "Local AI service is unavailable at $normalizedAiBaseUrl. Start Ollama before IndexTTS. $($_.Exception.Message)"
+}
+$availableAiModels = @($aiTags.models | ForEach-Object { $_.name })
+if ($AiModel -notin $availableAiModels) {
+    throw "AI model $AiModel is unavailable. Available models: $($availableAiModels -join ', ')"
+}
+
 $env:PYTHONUTF8 = "1"
 Set-Location -LiteralPath $projectRoot
 & $python "production_webui.py" `
     "--model-dir" $modelDir `
     "--host" $HostAddress `
-    "--port" $Port
+    "--port" $Port `
+    "--ai-base-url" $normalizedAiBaseUrl `
+    "--ai-model" $AiModel `
+    "--ai-timeout" $AiTimeout `
+    "--ai-chunk-chars" $AiChunkChars
 exit $LASTEXITCODE

@@ -11,6 +11,10 @@ def test_windows_launcher_uses_local_v25_bf16_runtime():
     assert '"production_webui.py"' in content
     assert '"--model-dir" $modelDir' in content
     assert '"--host" $HostAddress' in content
+    assert '"--ai-base-url" $normalizedAiBaseUrl' in content
+    assert '"--ai-model" $AiModel' in content
+    assert '"--ai-timeout" $AiTimeout' in content
+    assert '"--ai-chunk-chars" $AiChunkChars' in content
     assert "--cuda_kernel" not in content
     assert "--torch_compile" not in content
     assert "--deepspeed" not in content
@@ -36,3 +40,12 @@ def test_local_runtime_assets_are_ignored():
 
     assert "/checkpoints/config.yaml" in content
     assert "/runtime-output/" in content
+
+
+def test_windows_launcher_requires_local_ai_service_and_model():
+    content = LAUNCHER.read_text(encoding="utf-8")
+
+    assert '[string]$AiBaseUrl = "http://127.0.0.1:11434"' in content
+    assert '[string]$AiModel = "qwen3:14b"' in content
+    assert 'Invoke-RestMethod -Uri "$normalizedAiBaseUrl/api/tags"' in content
+    assert "$AiModel -notin $availableAiModels" in content

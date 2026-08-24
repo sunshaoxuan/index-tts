@@ -61,3 +61,26 @@ def test_production_ui_only_exposes_supported_languages_and_duration_range():
         assert f'"{language}"' in SOURCE
     assert "gr.Slider(0.5, 2.0" in SOURCE
     assert "max_file_size=\"50mb\"" in SOURCE
+
+
+def test_production_ui_exposes_ai_long_form_director_workflow():
+    assert "from text_director import" in SOURCE
+    assert 'with gr.Tab("AI 长篇导演")' in SOURCE
+    assert 'label="内容体裁"' in SOURCE
+    assert 'label="全文原稿"' in SOURCE
+    assert 'label="导演补充"' in SOURCE
+    assert '"AI 清洗并分段分句分轨"' in SOURCE
+    assert "ROLE_HEADERS" in SOURCE
+    assert "SEGMENT_HEADERS" in SOURCE
+    assert 'label="上传自定义角色音色"' in SOURCE
+    assert '"按角色音色生成完整音频"' in SOURCE
+    assert 'label="完整音频预览"' in SOURCE
+    assert 'label="下载分轨交付包"' in SOURCE
+
+
+def test_production_ui_connects_ai_analysis_and_tts_render_handlers():
+    assert "TEXT_DIRECTOR.analyze_document(" in SOURCE
+    assert "render_directed_audio(" in SOURCE
+    assert "director_analyze.click(" in SOURCE
+    assert "director_generate.click(" in SOURCE
+    assert "原文覆盖**　100%" in SOURCE
