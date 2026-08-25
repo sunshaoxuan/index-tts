@@ -57,32 +57,52 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
-    args = _parse_args()
-    input_path = Path(args.input).resolve()
-    result_path = Path(args.result).resolve()
-    status_path = Path(args.status).resolve()
-    payload = json.loads(input_path.read_text(encoding="utf-8"))
+class VoiceDesignRuntime:
+    def __init__(self) -> None:
+        self.model: Any | None = None
+        self.model_dir: Path | None = None
+        self.torch: Any | None = None
+
+    def get_model(self, payload: dict[str, Any], status_path: Path) -> tuple[Any, Any, bool]:
+        requested_model_dir = Path(payload["model_dir"]).resolve()
+        if self.model is not None:
+            if requested_model_dir != self.model_dir:
+                raise ValueError(f"驻留 VoiceDesign 已加载 {self.model_dir}，不能切换到 {requested_model_dir}")
+            _write_json(status_path, {"phase": "model_ready", "fraction": 0.04, "message": "正在复用已驻留的 Qwen3-TTS VoiceDesign"})
+            return self.model, self.torch, True
+
+        _write_json(status_path, {"phase": "loading", "fraction": 0.02, "message": "正在加载 Qwen3-TTS VoiceDesign"})
+        import torch
+        from qwen_tts import Qwen3TTSModel
+
+        torch.set_float32_matmul_precision("high")
+        self.model = Qwen3TTSModel.from_pretrained(
+            str(requested_model_dir),
+            device_map="cuda:0",
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+        )
+        self.model_dir = requested_model_dir
+        self.torch = torch
+        return self.model, self.torch, False
+
+
+def generate_voice_design(
+    payload: dict[str, Any],
+    result_path: Path,
+    status_path: Path,
+    runtime: VoiceDesignRuntime | None = None,
+) -> dict[str, Any]:
     jobs = payload.get("jobs") or []
     if not jobs:
         raise ValueError("没有需要生成的角色音色。")
 
     output_dir = Path(payload["output_dir"]).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(status_path, {"phase": "loading", "fraction": 0.02, "message": "正在加载 Qwen3-TTS VoiceDesign"})
-
     import soundfile as sf
-    import torch
-    from qwen_tts import Qwen3TTSModel
-
+    runtime = runtime or VoiceDesignRuntime()
+    model, torch, model_reused = runtime.get_model(payload, status_path)
     torch.manual_seed(int(payload.get("seed", 42)))
-    torch.set_float32_matmul_precision("high")
-    model = Qwen3TTSModel.from_pretrained(
-        str(Path(payload["model_dir"]).resolve()),
-        device_map="cuda:0",
-        dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-    )
 
     generated: list[dict[str, str]] = []
     started = time.perf_counter()
@@ -150,15 +170,25 @@ def main() -> int:
             }
         )
 
-    _write_json(
-        result_path,
-        {
-            "generated": generated,
-            "model": str(payload["model_dir"]),
-            "duration_seconds": round(time.perf_counter() - started, 3),
-        },
-    )
+    result = {
+        "generated": generated,
+        "model": str(payload["model_dir"]),
+        "model_reused": model_reused,
+        "runtime_pid": os.getpid(),
+        "duration_seconds": round(time.perf_counter() - started, 3),
+    }
+    _write_json(result_path, result)
     _write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": "角色音色设计完成"})
+    return result
+
+
+def main() -> int:
+    args = _parse_args()
+    input_path = Path(args.input).resolve()
+    result_path = Path(args.result).resolve()
+    status_path = Path(args.status).resolve()
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    generate_voice_design(payload, result_path, status_path)
     return 0
 
 

@@ -67,6 +67,43 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     assert generated["generation_attempts"] == 2
 
 
+def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_path, monkeypatch):
+    load_count = 0
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            nonlocal load_count
+            load_count += 1
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            return [np.zeros(2400, dtype=np.float32)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    runtime = worker.VoiceDesignRuntime()
+    model_dir = tmp_path / "model"
+
+    results = []
+    for index in range(2):
+        output_dir = tmp_path / f"voices-{index}"
+        result_path = tmp_path / f"result-{index}.json"
+        status_path = tmp_path / f"status-{index}.json"
+        payload = {
+            "jobs": [{"role_id": f"role_{index}", "name": f"角色{index}", "filename": f"role-{index}.wav", "text": "测试", "language": "Chinese", "instruct": "稳定"}],
+            "output_dir": str(output_dir),
+            "model_dir": str(model_dir),
+        }
+        results.append(worker.generate_voice_design(payload, result_path, status_path, runtime))
+
+    assert load_count == 1
+    assert results[0]["model_reused"] is False
+    assert results[1]["model_reused"] is True
+    assert results[0]["runtime_pid"] == results[1]["runtime_pid"]
+
+
 def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():
     assert not worker.gender_pitch_matches("female", 89.5)
     assert worker.gender_pitch_matches("female", 180.0)

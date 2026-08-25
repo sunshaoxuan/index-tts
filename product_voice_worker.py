@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 
 from novel_project import NovelProjectStore, pronunciation_rows
 from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs
+from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -88,18 +88,23 @@ def main() -> int:
         else:
             pending.append(job)
     generated = []
+    voice_runtime: dict[str, Any] | None = None
+    voice_result: dict[str, Any] = {}
     if pending:
-        write_json(status, {"phase": "loading", "fraction": 0.02, "message": f"正在启动 VoiceDesign，共 {len(pending)} 个待生成音色"})
+        voice_runtime = ensure_voice_design_daemon(root, voice_python)
+        runtime_dir = Path(voice_runtime["runtime_dir"])
+        warm = bool(voice_runtime.get("model_loaded"))
+        runtime_message = "正在复用已驻留的 VoiceDesign 模型" if warm else "VoiceDesign 常驻进程已就绪，正在首次加载模型"
+        write_json(status, {"phase": "loading", "fraction": 0.02, "message": f"{runtime_message}，共 {len(pending)} 个待生成音色"})
         with tempfile.TemporaryDirectory(dir=store.project_dir(project["project_id"]) / "process") as temporary:
             temp = Path(temporary)
             worker_input, worker_result, worker_status = temp / "input.json", temp / "result.json", temp / "status.json"
             write_json(worker_input, {"jobs": pending, "output_dir": str(output_dir), "model_dir": str(model_dir), "seed": 42})
-            completed = subprocess.Popen(
-                [str(voice_python), str(root / "voice_design_worker.py"), "--input", str(worker_input), "--result", str(worker_result), "--status", str(worker_status)],
-                cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
-            )
+            request_id, _ = enqueue_voice_design_request(runtime_dir, worker_input, worker_result, worker_status)
             last_inner = None
-            while completed.poll() is None:
+            deadline = time.monotonic() + 3600
+            inner: dict[str, Any] = {}
+            while True:
                 if worker_status.is_file():
                     try:
                         inner = json.loads(worker_status.read_text(encoding="utf-8"))
@@ -108,14 +113,20 @@ def main() -> int:
                             fraction = min(0.95, 0.03 + 0.92 * float(inner.get("fraction", 0)))
                             write_json(status, {"phase": "voice_design", "fraction": fraction, "message": str(inner.get("message") or "正在生成角色音色")})
                             last_inner = signature
+                        if inner.get("phase") in {"complete", "error"}:
+                            break
                     except (OSError, ValueError, TypeError):
                         pass
+                current_runtime = read_runtime_state(runtime_dir)
+                if not current_runtime or not process_alive(current_runtime.get("pid")):
+                    raise RuntimeError(f"VoiceDesign Runtime 在请求 {request_id} 期间退出")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"VoiceDesign Runtime 请求 {request_id} 超过 3600 秒")
                 time.sleep(0.5)
-            stdout, stderr = completed.communicate()
-            if completed.returncode:
-                detail = json.loads(worker_status.read_text(encoding="utf-8")).get("message", stderr[-1000:])
-                raise RuntimeError(detail)
-            generated = json.loads(worker_result.read_text(encoding="utf-8"))["generated"]
+            if inner.get("phase") == "error":
+                raise RuntimeError(str(inner.get("message") or "VoiceDesign Runtime 生成失败"))
+            voice_result = json.loads(worker_result.read_text(encoding="utf-8"))
+            generated = voice_result["generated"]
             write_json(status, {"phase": "registering", "fraction": 0.97, "message": "正在注册永久音色并更新工程"})
     for item in generated:
         job = jobs_by_role[item["role_id"]]
@@ -133,8 +144,9 @@ def main() -> int:
         pronunciations=pronunciation_rows(project.get("pronunciations")),
         voice_files=list(dict.fromkeys([*(project.get("voice_files") or []), *[item["path"] for item in registered]])),
     )
-    write_json(Path(args.result), {"roles": roles, "voices": registered})
-    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色设计完成，新生成 {len(generated)} 个，签名复用 {len(registered) - len(generated)} 个，保留已有 {preserved_count} 个"})
+    runtime_summary = "已复用驻留模型" if voice_result.get("model_reused") else "模型已保持驻留" if generated else "未调用模型"
+    write_json(Path(args.result), {"roles": roles, "voices": registered, "voice_runtime": {"pid": voice_result.get("runtime_pid") or (voice_runtime or {}).get("pid"), "model_reused": voice_result.get("model_reused"), "resident": bool(generated)}})
+    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色设计完成，新生成 {len(generated)} 个，签名复用 {len(registered) - len(generated)} 个，保留已有 {preserved_count} 个；{runtime_summary}"})
     return 0
 
 
