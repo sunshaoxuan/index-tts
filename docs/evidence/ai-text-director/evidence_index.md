@@ -13,6 +13,10 @@
 | AI 任务 POST 不再返回空 JSON 400 | `product-studio/src/api.ts`、Fastify 真实请求 202 | 高 | 分析、音色和渲染共用同一请求形态 |
 | 白夜行长文本真实分析完成 | 任务 `a13728f8f7f2477fa86d718f89b01943`、`status.json`、`result.json` | 高 | 3 块，188.449 秒 |
 | 半透明阅读层提供文字边界 | `21-tinted-workspace-ai-success.png`、`22-mobile-tinted-workspace.png` | 高 | Bark Brown 透明渐变 |
+| 前景进度面板在 0% 清晰可见 | `23-foreground-progress-version-lock.png`、浏览器几何测量 | 高 | 显示真实 0%，轨道使用最小活动填充 |
+| 角色表在任务期间只读 | `24-locked-role-table.png`、浏览器 disabled 计数 | 高 | 任务终态自动恢复 |
+| 移动端进度面板完整可见 | `25-mobile-foreground-progress.png`、390 x 844 几何测量 | 高 | 无横向溢出 |
+| 服务端保证任务版本唯一 | Node 409 回归测试、生产任务 `47947e1a0d284c9a88b88b550a02d0b0` | 高 | 锁定粒度为活动工程 projectId |
 | 有限字段为原生枚举 | 角色节奏和分句态度的真实展开 DOM、Node 枚举 API | 高 | 高级音色提示按模型能力保留自由文本 |
 | 旧工程有限值可迁移 | Node 测试 `migrates legacy natural language controls` | 高 | 使用确定性关键词映射 |
 | 保存失败不会继续启动任务 | `App.tsx` 的布尔保存门 | 高 | 前端构建验证 |

@@ -4,7 +4,7 @@ import {
   Popconfirm, Progress, Select, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretRightOutlined, DeleteOutlined, FolderOpenOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
+  AudioOutlined, CaretRightOutlined, DeleteOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from './api';
@@ -46,11 +46,14 @@ function Studio() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [render, setRender] = useState<{ available: boolean; audio?: string; package?: string; manifest?: string }>({ available: false });
-  const [job, setJob] = useState<{ id: string; phase: string; fraction: number; message: string }>();
+  const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; phase: string; fraction: number; message: string }>();
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newContentType, setNewContentType] = useState('novel');
   const [activeTab, setActiveTab] = useState('source');
+  const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
+  const jobPercent = Math.round((job?.fraction ?? 0) * 100);
+  const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
 
   useEffect(() => {
     Promise.all([api.presets(), api.projects()]).then(([p, list]) => {
@@ -94,6 +97,7 @@ function Studio() {
   }, []);
 
   const setRole = (index: number, column: number, value: string | number) => {
+    if (jobRunning) return;
     setProject((current) => {
       if (!current) return current;
       const roles = current.roles.map((row, i) => i === index ? row.map((cell, c) => c === column ? value : cell) as RoleRow : row);
@@ -102,6 +106,7 @@ function Studio() {
   };
 
   const setSegment = (index: number, column: number, value: string | number) => {
+    if (jobRunning) return;
     setProject((current) => {
       if (!current) return current;
       const segments = current.segments.map((row, i) => {
@@ -118,11 +123,13 @@ function Studio() {
   };
 
   const patchProject = <K extends keyof ProjectPayload>(key: K, value: ProjectPayload[K]) => {
+    if (jobRunning) return;
     setProject(current => current ? { ...current, [key]: value } : current);
     setDirty(true);
   };
 
   const createProject = async () => {
+    if (jobRunning) return;
     try {
       const created = await api.createProject(newTitle, newContentType);
       const list = await api.projects();
@@ -132,20 +139,20 @@ function Studio() {
   };
 
   const addRole = () => {
-    if (!project) return;
+    if (!project || jobRunning) return;
     let suffix = project.roles.length + 1;
     while (project.roles.some(row => row[0] === `role-${suffix}`)) suffix += 1;
     patchProject('roles', [...project.roles, [`role-${suffix}`, '新角色', 'character', '', '中性清晰', '', '自然叙述', '是']]);
   };
 
   const removeRole = (roleId: string) => {
-    if (!project) return;
+    if (!project || jobRunning) return;
     if (project.segments.some(row => row[2] === roleId)) { message.error('该角色仍被分句引用，请先调整分句归属'); return; }
     patchProject('roles', project.roles.filter(row => row[0] !== roleId));
   };
 
   const save = async (): Promise<boolean> => {
-    if (!project) return false;
+    if (!project || jobRunning) return false;
     setSaving(true);
     try { setProject(await api.save(project)); setDirty(false); message.success('工程已保存并通过枚举校验'); return true; }
     catch (error) { message.error((error as Error).message); return false; }
@@ -158,11 +165,11 @@ function Studio() {
     let started: { jobId: string };
     try { started = await api[kind](project.project_id); }
     catch (error) { message.error((error as Error).message); return; }
-    setJob({ id: started.jobId, phase: 'queued', fraction: 0, message: '任务已进入队列' });
+    setJob({ id: started.jobId, kind, phase: 'queued', fraction: 0, message: '任务已进入队列' });
     const timer = window.setInterval(async () => {
       try {
         const status = await api.job(started.jobId);
-        setJob({ id: started.jobId, ...status });
+        setJob({ id: started.jobId, kind, ...status });
         if (status.phase === 'complete' || status.phase === 'error') {
           window.clearInterval(timer);
           if (status.phase === 'complete') {
@@ -176,7 +183,6 @@ function Studio() {
   };
 
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];
-  const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
     { value: 'reporter', label: '记者' }, { value: 'interviewee', label: '采访对象' },
@@ -185,46 +191,46 @@ function Studio() {
     if (!presets) return [];
     return [
       { title: '轨道 ID', dataIndex: 0, width: 150, fixed: 'left', render: (v) => <Text code>{v}</Text> },
-      { title: '角色', dataIndex: 1, width: 130, render: (v, _r, i) => <Input value={v} onChange={(e) => setRole(i, 1, e.target.value)} /> },
-      { title: '类型', dataIndex: 2, width: 135, render: (v, _r, i) => <Select value={v} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={(x) => setRole(i, 2, x)} /> },
-      { title: '角色说明', dataIndex: 3, width: 240, render: (v, _r, i) => <Input value={v} onChange={(e) => setRole(i, 3, e.target.value)} /> },
+      { title: '角色', dataIndex: 1, width: 130, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={(e) => setRole(i, 1, e.target.value)} /> },
+      { title: '类型', dataIndex: 2, width: 135, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={(x) => setRole(i, 2, x)} /> },
+      { title: '角色说明', dataIndex: 3, width: 240, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={(e) => setRole(i, 3, e.target.value)} /> },
       { title: '音色预设或高级提示', dataIndex: 4, width: 300, render: (v, _r, i) => {
         const predefined = presets.voiceStyles.includes(v);
         return <Space direction="vertical" size={4} className="cell-control">
-          <Select value={predefined ? v : '__custom__'} options={[...presets.voiceStyles.map(value => ({ value, label: value })), { value: '__custom__', label: '高级自定义提示' }]} onChange={(x) => setRole(i, 4, x === '__custom__' ? '' : x)} />
-          {!predefined && <Input value={v} placeholder="输入 VoiceDesign 原生提示" onChange={(e) => setRole(i, 4, e.target.value)} />}
+          <Select disabled={jobRunning} value={predefined ? v : '__custom__'} options={[...presets.voiceStyles.map(value => ({ value, label: value })), { value: '__custom__', label: '高级自定义提示' }]} onChange={(x) => setRole(i, 4, x === '__custom__' ? '' : x)} />
+          {!predefined && <Input disabled={jobRunning} value={v} placeholder="输入 VoiceDesign 原生提示" onChange={(e) => setRole(i, 4, e.target.value)} />}
         </Space>;
       } },
       { title: '音色 ID', dataIndex: 5, width: 210, render: (v) => <Tag icon={<SoundOutlined />}>{v}</Tag> },
-      { title: '角色节奏', dataIndex: 6, width: 160, render: (v, _r, i) => <Select value={v} options={presets.rhythms.map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 6, x)} /> },
-      { title: '重新生成', dataIndex: 7, width: 120, render: (v, _r, i) => <Select value={v} options={['是', '否'].map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 7, x)} /> },
-      { title: '操作', key: 'actions', width: 90, render: (_v, row) => <Popconfirm title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm> },
+      { title: '角色节奏', dataIndex: 6, width: 160, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.rhythms.map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 6, x)} /> },
+      { title: '重新生成', dataIndex: 7, width: 120, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={['是', '否'].map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 7, x)} /> },
+      { title: '操作', key: 'actions', width: 90, render: (_v, row) => <Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm> },
     ];
-  }, [presets, project]);
+  }, [presets, project, jobRunning]);
 
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
     return [
       { title: '序号', dataIndex: 0, width: 70, fixed: 'left' },
       { title: '章节', dataIndex: 1, width: 130, fixed: 'left' },
-      { title: '角色', dataIndex: 2, width: 190, render: (v, _r, i) => <Select showSearch value={v} options={roleOptions} onChange={(x) => setSegment(i, 2, x)} /> },
-      { title: '语言', dataIndex: 4, width: 100, render: (v, _r, i) => <Select value={v} options={presets.languages.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 4, x)} /> },
+      { title: '角色', dataIndex: 2, width: 190, render: (v, _r, i) => <Select disabled={jobRunning} showSearch value={v} options={roleOptions} onChange={(x) => setSegment(i, 2, x)} /> },
+      { title: '语言', dataIndex: 4, width: 100, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.languages.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 4, x)} /> },
       { title: '原文', dataIndex: 5, width: 300, render: (v) => <Text>{v}</Text> },
-      { title: '合成文本', dataIndex: 6, width: 320, render: (v, _r, i) => <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={v} onChange={(e) => setSegment(i, 6, e.target.value)} /> },
-      { title: '态度', dataIndex: 7, width: 160, render: (v, _r, i) => <Select value={v} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 7, x)} /> },
-      { title: '情绪', dataIndex: 8, width: 130, render: (v, _r, i) => <Select value={v} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 8, x)} /> },
-      { title: '强度', dataIndex: 9, width: 110, render: (v, _r, i) => <InputNumber min={0} max={1} step={0.05} value={v} onChange={(x) => setSegment(i, 9, x ?? 0.5)} /> },
-      { title: '句内节奏', dataIndex: 10, width: 150, render: (v, _r, i) => <Select value={v} options={presets.paces.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 10, x)} /> },
-      { title: '停顿 ms', dataIndex: 11, width: 130, render: (v, _r, i) => <InputNumber min={0} max={3000} step={50} value={v} onChange={(x) => setSegment(i, 11, x ?? 0)} /> },
+      { title: '合成文本', dataIndex: 6, width: 320, render: (v, _r, i) => <Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={v} onChange={(e) => setSegment(i, 6, e.target.value)} /> },
+      { title: '态度', dataIndex: 7, width: 160, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 7, x)} /> },
+      { title: '情绪', dataIndex: 8, width: 130, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 8, x)} /> },
+      { title: '强度', dataIndex: 9, width: 110, render: (v, _r, i) => <InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={v} onChange={(x) => setSegment(i, 9, x ?? 0.5)} /> },
+      { title: '句内节奏', dataIndex: 10, width: 150, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.paces.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 10, x)} /> },
+      { title: '停顿 ms', dataIndex: 11, width: 130, render: (v, _r, i) => <InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={v} onChange={(x) => setSegment(i, 11, x ?? 0)} /> },
     ];
-  }, [presets, roleOptions, project]);
+  }, [presets, roleOptions, project, jobRunning]);
 
   const pronunciationColumns: ColumnsType<ProjectPayload['pronunciations'][number]> = [
-    { title: '固定组合', dataIndex: 'source', width: 220, render: (v, _r, i) => <Input value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, source: e.target.value } : row))} /> },
-    { title: '朗读替换', dataIndex: 'replacement', width: 260, render: (v, _r, i) => <Input value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, replacement: e.target.value } : row))} /> },
-    { title: '说明', dataIndex: 'note', render: (v, _r, i) => <Input value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, note: e.target.value } : row))} /> },
-    { title: '启用', dataIndex: 'enabled', width: 90, render: (v, _r, i) => <Switch checked={v} onChange={checked => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, enabled: checked } : row))} /> },
-    { title: '操作', width: 80, render: (_v, _r, i) => <Button type="text" danger icon={<DeleteOutlined />} aria-label={`删除纠音规则 ${i + 1}`} onClick={() => patchProject('pronunciations', project!.pronunciations.filter((_row, x) => x !== i))} /> },
+    { title: '固定组合', dataIndex: 'source', width: 220, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, source: e.target.value } : row))} /> },
+    { title: '朗读替换', dataIndex: 'replacement', width: 260, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, replacement: e.target.value } : row))} /> },
+    { title: '说明', dataIndex: 'note', render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, note: e.target.value } : row))} /> },
+    { title: '启用', dataIndex: 'enabled', width: 90, render: (v, _r, i) => <Switch disabled={jobRunning} checked={v} onChange={checked => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, enabled: checked } : row))} /> },
+    { title: '操作', width: 80, render: (_v, _r, i) => <Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除纠音规则 ${i + 1}`} onClick={() => patchProject('pronunciations', project!.pronunciations.filter((_row, x) => x !== i))} /> },
   ];
 
   const openWorkspace = (key: string) => {
@@ -255,26 +261,31 @@ function Studio() {
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
-          <div className="project-select"><Text strong>打开声音工程</Text><Select showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
-          <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty} onClick={save}>保存当前工程</Button>
+          <div className="project-select"><Text strong>打开声音工程</Text><Select disabled={jobRunning} showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
+          <Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={jobRunning || !dirty} onClick={save}>保存当前工程</Button>
           <Button disabled={jobRunning || !project?.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
           <Button disabled={jobRunning || !project?.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
           <Button disabled={jobRunning || !project?.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
           {dirty ? <span className="project-state">有未保存修改</span> : <span className="project-state">工程已同步</span>}
         </Flex>
-        {job && <div className="job-progress"><Progress percent={Math.round(job.fraction * 100)} status={job.phase === 'error' ? 'exception' : job.phase === 'complete' ? 'success' : 'active'} /><Text>{job.message}</Text></div>}
+        {job && !jobRunning && <div className={`job-result job-result-${job.phase}`}><Text>{job.message}</Text></div>}
       </div>
+      {job && jobRunning && <aside className="job-progress-float" role="status" aria-live="polite" aria-label={`${jobLabels[job.kind]}进度`}>
+        <div className="job-progress-head"><div><span>Processing / 处理中</span><strong>{jobLabels[job.kind]}</strong></div><b>{jobPercent}%</b></div>
+        <Progress percent={Math.max(2, jobPercent)} showInfo={false} status="active" strokeLinecap="butt" />
+        <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
+      </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
-          { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1600, y: 520 }} /></Card> },
+          { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
+          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1600, y: 520 }} /></Card> },
           { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="角色、语言、态度、情绪和节奏均为下拉选择。强度与停顿使用受限数值。" /><Table className="studio-table" rowKey={(row) => String(row[0])} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1900, y: 560 }} /></Card> },
-          { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
+          { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><StudioAudio src={render.audio!} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card></div> },
         ]} /></div>
       </>}
-      <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
+      <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
       </section>
     </Content>
   </Layout>;

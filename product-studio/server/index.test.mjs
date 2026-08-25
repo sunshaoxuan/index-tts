@@ -87,7 +87,7 @@ test('migrates legacy natural language controls to supported presets', async () 
 });
 
 test('allows one worker at a time and records a failed worker as error', async () => {
-  const { root } = await fixture();
+  const { root, project } = await fixture();
   let child;
   const app = await buildApp({ repoRoot: root, launchWorker: () => {
     child = new EventEmitter();
@@ -97,6 +97,9 @@ test('allows one worker at a time and records a failed worker as error', async (
   } });
   const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} });
   assert.equal(started.statusCode, 202);
+  const lockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(lockedSave.statusCode, 409);
+  assert.match(lockedSave.json().error, /工程版本已被任务.*锁定/);
   const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(rejected.statusCode, 409);
   child.stderr.write('fixture worker failed');
@@ -107,6 +110,8 @@ test('allows one worker at a time and records a failed worker as error', async (
   const status = await app.inject(`/api/jobs/${started.json().jobId}`);
   assert.equal(status.json().phase, 'error');
   assert.match(status.json().message, /fixture worker failed/);
+  const unlockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(unlockedSave.statusCode, 200);
   const restarted = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(restarted.statusCode, 202);
   child.emit('close', 0);

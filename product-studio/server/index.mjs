@@ -158,6 +158,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
   app.put('/api/projects/:id', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
+      if (activeJob?.projectId === id) {
+        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+        error.statusCode = 409;
+        throw error;
+      }
       const currentPath = path.join(projectRoot, id, 'project.json');
       await access(currentPath);
       const payload = validateProject(request.body, id);
@@ -166,7 +171,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       await rename(temporary, currentPath);
       return payload;
-    } catch (error) { return reply.code(400).send({ error: error.message }); }
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/latest-render', async (request) => {
     const id = safeProjectId(request.params.id);
@@ -184,45 +189,56 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     const id = safeProjectId(projectId);
     await access(path.join(projectRoot, id, 'project.json'));
     const jobId = randomUUID().replaceAll('-', '');
-    const dir = path.join(jobRoot, jobId);
-    await mkdir(dir, { recursive: true });
-    const input = path.join(dir, 'input.json');
-    const status = path.join(dir, 'status.json');
-    const result = path.join(dir, 'result.json');
-    const worker = kind === 'analysis' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
-    const payload = { root: repoRoot, project_id: id };
-    if (kind === 'analysis') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
-    await writeFile(input, JSON.stringify(payload), 'utf8');
-    await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
-    const python = path.join(repoRoot, '.venv', 'Scripts', 'python.exe');
-    const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
-    const child = launchWorker
-      ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
-      : spawn(python, workerArgs, {
-        cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
+    activeJob = { jobId, kind, projectId: id };
+    try {
+      const dir = path.join(jobRoot, jobId);
+      await mkdir(dir, { recursive: true });
+      const input = path.join(dir, 'input.json');
+      const status = path.join(dir, 'status.json');
+      const result = path.join(dir, 'result.json');
+      const worker = kind === 'analysis' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
+      const payload = { root: repoRoot, project_id: id };
+      if (kind === 'analysis') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
+      await writeFile(input, JSON.stringify(payload), 'utf8');
+      await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
+      const python = path.join(repoRoot, '.venv', 'Scripts', 'python.exe');
+      const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
+      const child = launchWorker
+        ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
+        : spawn(python, workerArgs, {
+          cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
+        });
+      const log = path.join(dir, 'worker.log');
+      const chunks = [];
+      child.stdout.on('data', chunk => chunks.push(chunk));
+      child.stderr.on('data', chunk => chunks.push(chunk));
+      child.on('close', async code => {
+        try {
+          const logText = Buffer.concat(chunks).toString('utf8');
+          await writeFile(log, logText, 'utf8');
+          if (code && code !== 0) {
+            let prior = {};
+            try { prior = JSON.parse(await readFile(status, 'utf8')); } catch {}
+            const workerDetail = logText.trim().split(/\r?\n/).at(-1);
+            const detail = String(prior.phase === 'error' && prior.message ? prior.message : workerDetail || `Worker 退出码 ${code}`);
+            await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail }), 'utf8');
+          }
+        } finally {
+          if (activeJob?.jobId === jobId) activeJob = undefined;
+        }
       });
-    activeJob = { jobId, kind };
-    const log = path.join(dir, 'worker.log');
-    const chunks = [];
-    child.stdout.on('data', chunk => chunks.push(chunk));
-    child.stderr.on('data', chunk => chunks.push(chunk));
-    child.on('close', async code => {
-      const logText = Buffer.concat(chunks).toString('utf8');
-      await writeFile(log, logText, 'utf8');
-      if (code && code !== 0) {
-        let prior = {};
-        try { prior = JSON.parse(await readFile(status, 'utf8')); } catch {}
-        const workerDetail = logText.trim().split(/\r?\n/).at(-1);
-        const detail = String(prior.phase === 'error' && prior.message ? prior.message : workerDetail || `Worker 退出码 ${code}`);
-        await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail }), 'utf8');
-      }
+      child.on('error', async error => {
+        try {
+          await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${error.message}` }), 'utf8');
+        } finally {
+          if (activeJob?.jobId === jobId) activeJob = undefined;
+        }
+      });
+      return { jobId, kind };
+    } catch (error) {
       if (activeJob?.jobId === jobId) activeJob = undefined;
-    });
-    child.on('error', async error => {
-      await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${error.message}` }), 'utf8');
-      if (activeJob?.jobId === jobId) activeJob = undefined;
-    });
-    return { jobId, kind };
+      throw error;
+    }
   }
   app.post('/api/projects/:id/analyze', async (request, reply) => {
     try { return reply.code(202).send(await startJob(request.params.id, 'analysis')); }
@@ -240,6 +256,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     try {
       const id = safeProjectId(request.params.id);
       const status = JSON.parse(await readFile(path.join(jobRoot, id, 'status.json'), 'utf8'));
+      if (['complete', 'error'].includes(status.phase) && activeJob?.jobId === id) activeJob = undefined;
       let result;
       try { result = JSON.parse(await readFile(path.join(jobRoot, id, 'result.json'), 'utf8')); } catch {}
       return { jobId: id, ...status, result };
