@@ -8,7 +8,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from './api';
-import { updateSegmentByOrder } from './segmentState';
+import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
 import type { Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
 
 const { Header, Content } = Layout;
@@ -92,6 +92,9 @@ function Studio() {
   const [activeTab, setActiveTab] = useState('source');
   const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
   const [roleDraft, setRoleDraft] = useState<RoleRow>();
+  const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
+  const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
+  const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
@@ -108,10 +111,20 @@ function Studio() {
 
   useEffect(() => {
     if (!projectId) return;
+    setSelectedSegmentOrders([]);
+    setSplitEditor(undefined);
     Promise.all([api.project(projectId), api.latestRender(projectId)]).then(([data, latest]) => {
       setProject(data); setRender(latest); setDirty(false);
     }).catch((error) => message.error(error.message));
   }, [projectId, message]);
+
+  useEffect(() => {
+    if (!splitEditor) return;
+    window.requestAnimationFrame(() => {
+      splitSourceRef.current?.focus();
+      splitSourceRef.current?.setSelectionRange(splitEditor.offset, splitEditor.offset);
+    });
+  }, [splitEditor?.order, splitEditor?.offset]);
 
   useEffect(() => {
     if (!job || ['complete', 'error'].includes(job.phase)) return;
@@ -132,6 +145,7 @@ function Studio() {
             const [updated, latest] = await Promise.all([api.project(job.projectId), api.latestRender(job.projectId)]);
             if (!cancelled) {
               setProject(updated); setRender(latest); setDirty(false); message.success(status.message);
+              setSelectedSegmentOrders([]); setSplitEditor(undefined);
             }
           } else message.error(status.message);
         }
@@ -212,6 +226,36 @@ function Studio() {
       setDirty(true);
       return { ...current, segments };
     });
+  };
+
+  const mergeSelected = () => {
+    if (!project || jobRunning) return;
+    try {
+      const segments = mergeAdjacentSegments(project.segments, selectedSegmentOrders);
+      setProject({ ...project, segments });
+      setSelectedSegmentOrders([]);
+      setDirty(true);
+      message.success('所选相邻分句已合并，请检查角色与导演参数后保存');
+    } catch (error) { message.error((error as Error).message); }
+  };
+
+  const openSplitEditor = () => {
+    if (!project || selectedSegmentOrders.length !== 1 || jobRunning) return;
+    const row = project.segments.find(item => item[0] === selectedSegmentOrders[0]);
+    if (!row) { message.error('所选分句已变化，请重新选择'); return; }
+    setSplitEditor({ order: row[0], offset: suggestSplitOffset(String(row[5])) });
+  };
+
+  const applySplit = () => {
+    if (!project || !splitEditor || jobRunning) return;
+    try {
+      const segments = splitSegmentAtOffset(project.segments, splitEditor.order, splitEditor.offset);
+      setProject({ ...project, segments });
+      setSelectedSegmentOrders([]);
+      setSplitEditor(undefined);
+      setDirty(true);
+      message.success('分句已拆成两条，合成文本可继续逐条调整');
+    } catch (error) { message.error((error as Error).message); }
   };
 
   const patchProject = <K extends keyof ProjectPayload>(key: K, value: ProjectPayload[K]) => {
@@ -332,6 +376,13 @@ function Studio() {
     ];
   }, [presets, roleOptions, project, jobRunning]);
 
+  const splitRow = splitEditor ? project?.segments.find(row => row[0] === splitEditor.order) : undefined;
+  const splitSource = String(splitRow?.[5] ?? '');
+  const splitBefore = splitSource.slice(0, splitEditor?.offset ?? 0);
+  const splitAfter = splitSource.slice(splitEditor?.offset ?? 0);
+  const splitValid = Boolean(splitEditor && splitEditor.offset > 0 && splitEditor.offset < splitSource.length
+    && [splitBefore, splitAfter].every(value => /[\p{L}\p{N}]/u.test(value)));
+
   const pronunciationColumns: ColumnsType<ProjectPayload['pronunciations'][number]> = [
     { title: '固定组合', dataIndex: 'source', width: 220, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, source: e.target.value } : row))} /> },
     { title: '朗读替换', dataIndex: 'replacement', width: 260, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={e => patchProject('pronunciations', project!.pronunciations.map((row, x) => x === i ? { ...row, replacement: e.target.value } : row))} /> },
@@ -387,12 +438,18 @@ function Studio() {
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
           { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="AI 全文分析会为每个角色建立人物小传和声音导演建议。点击“编辑人物与音色”可查看生成依据、调整方案并预览最终 VoiceDesign 指令。" /><Table className="studio-table role-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1315, y: 560 }} /></Card> },
-          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="角色、语言、态度、情绪和节奏均为下拉选择。强度与停顿使用受限数值。" /><Table className="studio-table" rowKey={(row) => String(row[0])} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1900, y: 560 }} /></Card> },
+          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="AI 结果会拦截纯标点分句。勾选连续分句可以合并；勾选一条可以按原文光标位置拆分。" /><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button></Space></div><Table className="studio-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1950, y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><StudioAudio src={render.audio!} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card></div> },
         ]} /></div>
       </>}
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
+      <Modal className="split-segment-modal" width={760} title={splitRow ? `拆分第 ${splitRow[0]} 条分句` : '拆分分句'} open={Boolean(splitEditor && splitRow)} okText="在光标处拆分" cancelText="取消" okButtonProps={{ disabled: jobRunning || !splitValid }} onOk={applySplit} onCancel={() => setSplitEditor(undefined)}>
+        <Alert type="info" showIcon message="点击原文中的目标位置放置光标。拆分后两条继承当前角色和导演参数，前半句使用 250 ms 短停顿，后半句保留原停顿。" />
+        <label className="split-source-field"><Text strong>在原文中选择拆分位置</Text><textarea ref={splitSourceRef} readOnly aria-label="选择分句拆分位置" value={splitSource} onSelect={event => setSplitEditor(current => current ? { ...current, offset: event.currentTarget.selectionStart } : current)} /></label>
+        <Text className="split-position">拆分位置 {splitEditor?.offset ?? 0} / {splitSource.length}</Text>
+        <div className="split-preview"><section><Text strong>前半句</Text><p>{splitBefore || '尚无可朗读文字'}</p></section><section><Text strong>后半句</Text><p>{splitAfter || '尚无可朗读文字'}</p></section></div>
+      </Modal>
       <Modal className="role-editor-modal" width={920} title={roleDraft ? `${roleDraft[1]} · 人物与音色导演` : '人物与音色导演'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); }}>
         {roleDraft && presets && project && <div className="role-editor-grid">
           <section className="role-editor-fields">

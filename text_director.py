@@ -649,7 +649,7 @@ class OllamaTextDirector:
 
 任务要求：
 1. 清理适合朗读的文本，修正多余空白和明显排版噪声，不改变事实、人物关系和原意。
-2. 智能识别自然段、段内句子、人物、旁白、主播、记者和采访对象，每个可独立配音的句子形成一条 segment。
+2. 智能识别自然段、段内句子、人物、旁白、主播、记者和采访对象，每个可独立配音的句子形成一条 segment。任何 segment 都必须包含可朗读文字，禁止把句号、逗号、引号、省略号或其他纯标点单独输出为 segment。
 3. 拆句前先由你结合完整句、相邻句、人物表和说话动作，判断每组引号的语义功能属于人物对白、心理活动、句内引用或普通叙述，再决定 segment 边界和角色轨道。不要输出中间推理。旁白和说话归属文字也必须保留并单独成句。例如“李明说：”属于旁白，不能只保留引号内台词。名称、招牌文字、术语和标题等句内短引用属于所在叙述句的句法成分，不得仅因引号独立拆句。例如“店门挂着‘烤乌贼饼’的招牌”应保持为同一条旁白 segment。
 4. 每条 source_text 必须从本次原文中按顺序逐字复制。全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
 5. text 是对应 source_text 的可朗读清洗稿。去除只用于排版的外层引号，不得遗漏可朗读信息。
@@ -828,6 +828,7 @@ JSON Schema：{schema_text}
             segments = split_segments
         segments = self._assign_adjacent_quoted_speakers(segments, characters)
         segments = self._merge_inline_quoted_narration(segments)
+        segments = self._merge_punctuation_only_segments(segments)
         character_ids = {character["id"] for character in characters}
         for segment in segments:
             if segment["speaker_id"] not in character_ids:
@@ -1069,6 +1070,41 @@ JSON Schema：{schema_text}
 
             merged[index - 1 : index + 2] = replacement
             index = max(1, index - 1)
+        return merged
+
+    @staticmethod
+    def _merge_punctuation_only_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Attach punctuation-only AI output to adjacent readable segments without losing source coverage."""
+        merged: list[dict[str, Any]] = []
+        leading_source = ""
+        leading_text = ""
+        for segment in segments:
+            source_text = str(segment.get("source_text", ""))
+            synthesis_text = str(segment.get("text", ""))
+            readable = any(character.isalnum() for character in source_text + synthesis_text)
+            if readable:
+                if leading_source or leading_text:
+                    segment = {
+                        **segment,
+                        "source_text": leading_source + source_text,
+                        "text": leading_text + synthesis_text,
+                    }
+                    leading_source = ""
+                    leading_text = ""
+                merged.append(segment)
+                continue
+            if merged:
+                merged[-1] = {
+                    **merged[-1],
+                    "source_text": str(merged[-1]["source_text"]) + source_text,
+                    "text": str(merged[-1]["text"]) + synthesis_text,
+                    "pause_after_ms": segment.get("pause_after_ms", merged[-1].get("pause_after_ms", 300)),
+                }
+            else:
+                leading_source += source_text
+                leading_text += synthesis_text
+        if leading_source or leading_text:
+            raise DirectorValidationError("AI 分句结果只有标点，缺少可朗读文本。")
         return merged
 
     @staticmethod

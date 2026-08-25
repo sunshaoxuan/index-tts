@@ -293,6 +293,56 @@ def test_inline_name_continuation_takes_priority_over_ambiguous_call_verb():
     assert result["segments"][0]["speaker_name"] == "旁白"
 
 
+def test_punctuation_only_segment_is_absorbed_into_previous_readable_segment():
+    source = "第一句。第二句。"
+    response = {
+        "content_type": "novel",
+        "title": "标点门禁",
+        "characters": [_character()],
+        "segments": [
+            _segment(1, "第一句", "第一句"),
+            _segment(2, "。", "。"),
+            _segment(3, "第二句。", "第二句。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == ["第一句。", "第二句。"]
+    assert all(any(character.isalnum() for character in item["text"]) for item in result["segments"])
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+
+
+def test_leading_punctuation_is_absorbed_into_next_readable_segment():
+    source = "……故事开始。"
+    response = {
+        "content_type": "novel",
+        "title": "前置标点",
+        "characters": [_character()],
+        "segments": [
+            _segment(1, "……", "……"),
+            _segment(2, "故事开始。", "故事开始。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == [source]
+
+
+def test_all_punctuation_result_is_rejected_by_segment_gate():
+    response = {
+        "content_type": "novel",
+        "title": "无正文",
+        "characters": [_character()],
+        "segments": [_segment(1, "。", "。")],
+    }
+
+    director = FakeDirector([response, response])
+    with pytest.raises(DirectorValidationError, match="只有标点"):
+        director.analyze_document("。", content_type="novel")
+
+
 def test_pre_split_unpunctuated_dialogue_inherits_profile_alias_speaker():
     source = "充分加热后，老板娘包好饼，说声“好了”，把饼递给笹垣。"
     shopkeeper = {
@@ -647,6 +697,8 @@ def test_director_prompt_requires_evidence_grounded_biography_and_voice_directio
     assert "烤乌贼饼" in prompt
     assert "人物对白、心理活动、句内引用或普通叙述" in prompt
     assert "相邻句、人物表和说话动作" in prompt
+    assert "纯标点" in prompt
+    assert "必须包含可朗读文字" in prompt
 
 
 def test_quoted_speaker_inference_does_not_treat_low_voice_as_a_name():

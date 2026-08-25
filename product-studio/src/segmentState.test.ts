@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RoleRow, SegmentRow } from './types.ts';
-import { updateSegmentByOrder } from './segmentState.ts';
+import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState.ts';
 
 const roles: RoleRow[] = [
   ['narrator', '旁白', 'narrator', '', '', '', '', '否'],
@@ -30,4 +30,49 @@ test('rejects an unknown role without changing the segment collection', () => {
 test('returns the original collection when the stable order does not exist', () => {
   const segments = [segment(1)];
   assert.equal(updateSegmentByOrder(segments, roles, 103, 7, '严肃'), segments);
+});
+
+test('merges two or more adjacent rows and keeps final pause while resequencing', () => {
+  const rows = [segment(1), segment(2), segment(3), segment(4)];
+  rows[1][5] = '第二句，'; rows[1][6] = '第二句，'; rows[1][11] = 250;
+  rows[2][5] = '继续。'; rows[2][6] = '继续。'; rows[2][11] = 900;
+
+  const merged = mergeAdjacentSegments(rows, [2, 3]);
+
+  assert.equal(merged.length, 3);
+  assert.deepEqual(merged.map(row => row[0]), [1, 2, 3]);
+  assert.equal(merged[1][5], '第二句，继续。');
+  assert.equal(merged[1][6], '第二句，继续。');
+  assert.equal(merged[1][11], 900);
+});
+
+test('rejects non-adjacent, cross-role and cross-section merges', () => {
+  const rows = [segment(1), segment(2), segment(3)];
+  assert.throws(() => mergeAdjacentSegments(rows, [1, 3]), /连续相邻/);
+  rows[1][2] = 'narrator';
+  assert.throws(() => mergeAdjacentSegments(rows, [1, 2]), /跨角色/);
+  rows[1][2] = rows[0][2]; rows[1][1] = '第二章';
+  assert.throws(() => mergeAdjacentSegments(rows, [1, 2]), /跨章节/);
+});
+
+test('splits one row at a source offset and preserves exact source coverage', () => {
+  const rows = [segment(1), segment(2)];
+  rows[0][5] = '第一部分，第二部分。'; rows[0][6] = rows[0][5]; rows[0][11] = 800;
+  const offset = rows[0][5].indexOf('第', 1);
+
+  const split = splitSegmentAtOffset(rows, 1, offset);
+
+  assert.equal(split.length, 3);
+  assert.equal(split[0][5] + split[1][5], rows[0][5]);
+  assert.equal(split[0][11], 250);
+  assert.equal(split[1][11], 800);
+  assert.deepEqual(split.map(row => row[0]), [1, 2, 3]);
+});
+
+test('rejects edge and punctuation-only split sides and suggests a punctuation boundary', () => {
+  const rows = [segment(1)]; rows[0][5] = '较长的前半句，适合拆开的后半句。';
+  assert.throws(() => splitSegmentAtOffset(rows, 1, 0), /有效拆分位置/);
+  assert.throws(() => splitSegmentAtOffset(rows, 1, rows[0][5].length - 1), /可朗读文字/);
+  assert.equal(suggestSplitOffset(rows[0][5]), rows[0][5].indexOf('，') + 1);
+  assert.equal(suggestSplitOffset('😀甲，乙'), 4);
 });

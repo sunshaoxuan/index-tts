@@ -92,3 +92,23 @@ Invoke-RestMethod http://127.0.0.1:7864/api/active-job
 ```
 
 辅助检查 `ollama ps` 在当前 PowerShell PATH 中不可用。实际 AI 可用性由产品任务 `29437e3f39534deb8c236752cca1e956`、`e0b8cf9a8e97490c933892c47d41b24d` 和 `30f055efd138422984cbf81496ed5b49` 的完成终态验证。
+
+## 纯标点门禁与分句结构编辑验证
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_text_director.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director_worker.py tests\test_text_director.py tests\test_voice_design_worker.py tests\test_windows_launcher.py -q
+.\.venv\Scripts\python.exe -m py_compile text_director.py
+git diff --check
+
+$env:PATH = 'C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;' + $env:PATH
+& 'C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback\pnpm.cmd' test
+& 'C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback\pnpm.cmd' build
+
+Invoke-RestMethod http://127.0.0.1:7864/api/health
+Invoke-RestMethod http://127.0.0.1:7864/api/active-job
+Invoke-RestMethod http://127.0.0.1:7864/api/projects/20260825035622-React架构完整链路验收-a7d672
+Get-NetTCPConnection -LocalPort 7864 -State Listen
+```
+
+浏览器依次验证连续两条合并、保存刷新、单条光标拆分、再次保存刷新、非相邻拒绝、跨角色拒绝、桌面截图、390 x 844 截图和 Console。测试后以 SHA256 核对并恢复专用工程原始文件。
