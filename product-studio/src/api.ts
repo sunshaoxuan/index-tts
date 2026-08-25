@@ -3,9 +3,11 @@ import type { Presets, ProjectPayload } from './types';
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `请求失败 ${response.status}`);
+  if (!response.ok) throw new Error(body.message || body.error || `请求失败 ${response.status}`);
   return body as T;
 }
+
+const emptyPost: RequestInit = { method: 'POST', body: JSON.stringify({}) };
 
 export const api = {
   presets: () => request<Presets>('/api/presets'),
@@ -16,8 +18,8 @@ export const api = {
     method: 'PUT', body: JSON.stringify(project),
   }),
   latestRender: (id: string) => request<{ available: boolean; audio?: string; package?: string; manifest?: string }>(`/api/projects/${encodeURIComponent(id)}/latest-render`),
-  analyze: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/analyze`, { method: 'POST' }),
-  render: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/render`, { method: 'POST' }),
-  voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, { method: 'POST' }),
+  analyze: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/analyze`, emptyPost),
+  render: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/render`, emptyPost),
+  voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),
   job: (id: string) => request<{ phase: string; fraction: number; message: string }>(`/api/jobs/${encodeURIComponent(id)}`),
 };

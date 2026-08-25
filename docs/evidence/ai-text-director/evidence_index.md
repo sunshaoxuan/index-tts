@@ -10,6 +10,9 @@
 | 移动端没有文字重叠或页面横向溢出 | `18-mobile-workspace-no-overlap.png`、390 x 844 浏览器验收 | 高 | 验收设备为浏览器视口模拟 |
 | 透明角色表保持可读和可操作 | `19-transparent-roles-table.png`、角色枚举实际展开 | 高 | 表内提供横向滚动 |
 | 透明分句表保持可读和可滚动 | `20-transparent-director-table.png`、浏览器宽度测量 | 高 | 表内提供横向滚动 |
+| AI 任务 POST 不再返回空 JSON 400 | `product-studio/src/api.ts`、Fastify 真实请求 202 | 高 | 分析、音色和渲染共用同一请求形态 |
+| 白夜行长文本真实分析完成 | 任务 `a13728f8f7f2477fa86d718f89b01943`、`status.json`、`result.json` | 高 | 3 块，188.449 秒 |
+| 半透明阅读层提供文字边界 | `21-tinted-workspace-ai-success.png`、`22-mobile-tinted-workspace.png` | 高 | Bark Brown 透明渐变 |
 | 有限字段为原生枚举 | 角色节奏和分句态度的真实展开 DOM、Node 枚举 API | 高 | 高级音色提示按模型能力保留自由文本 |
 | 旧工程有限值可迁移 | Node 测试 `migrates legacy natural language controls` | 高 | 使用确定性关键词映射 |
 | 保存失败不会继续启动任务 | `App.tsx` 的布尔保存门 | 高 | 前端构建验证 |

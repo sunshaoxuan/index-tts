@@ -227,7 +227,7 @@ body * { box-shadow: none !important; }
   border-radius: 12px 12px 0 0;
   padding: 102px 24px 68px;
   color: var(--cream);
-  background: transparent;
+  background: linear-gradient(180deg, rgba(56, 36, 22, .72) 0%, rgba(56, 36, 22, .56) 18%, rgba(56, 36, 22, .48) 100%);
 }
 .project-bar {
   margin-bottom: 31px;
@@ -378,7 +378,7 @@ body * { box-shadow: none !important; }
   .hero-info-card p { font-size: 9px; }
   .hero-serial { z-index: 3; width: 34px; height: 164px; padding: 14px 9px; font-size: 8px; }
   .scroll-cue { z-index: 3; right: 16px; bottom: 18px; }
-  .project-section { padding: 88px 12px 45px; }
+  .project-section { padding: 88px 12px 45px; background: linear-gradient(180deg, rgba(56, 36, 22, .78) 0%, rgba(56, 36, 22, .62) 18%, rgba(56, 36, 22, .54) 100%); }
   .project-bar { padding: 18px; }
   .source-grid { grid-template-columns: 1fr; }
 }

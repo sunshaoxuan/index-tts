@@ -95,9 +95,9 @@ test('allows one worker at a time and records a failed worker as error', async (
     child.stderr = new PassThrough();
     return child;
   } });
-  const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze' });
+  const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} });
   assert.equal(started.statusCode, 202);
-  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render' });
+  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(rejected.statusCode, 409);
   child.stderr.write('fixture worker failed');
   child.stderr.end();
@@ -107,7 +107,7 @@ test('allows one worker at a time and records a failed worker as error', async (
   const status = await app.inject(`/api/jobs/${started.json().jobId}`);
   assert.equal(status.json().phase, 'error');
   assert.match(status.json().message, /fixture worker failed/);
-  const restarted = await app.inject({ method: 'POST', url: '/api/projects/demo/render' });
+  const restarted = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(restarted.statusCode, 202);
   child.emit('close', 0);
   await app.close();
