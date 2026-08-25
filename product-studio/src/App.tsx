@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, App as AntApp, Button, Card, Col, Empty, Flex, Input, InputNumber, Layout, Modal,
-  Popconfirm, Progress, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Typography,
+  Alert, App as AntApp, Button, Card, Empty, Flex, Input, InputNumber, Layout, Modal,
+  Popconfirm, Progress, Select, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CloudServerOutlined, DeleteOutlined, FolderOpenOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
+  AudioOutlined, CaretRightOutlined, DeleteOutlined, FolderOpenOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from './api';
@@ -12,6 +12,30 @@ import type { Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
+
+function StudioAudio({ src }: { src: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const format = (value: number) => {
+    const safe = Number.isFinite(value) && value > 0 ? value : 0;
+    return `${Math.floor(safe / 60)}:${String(Math.floor(safe % 60)).padStart(2, '0')}`;
+  };
+  const toggle = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) await audio.play(); else audio.pause();
+  };
+  return <div className="studio-audio">
+    <audio ref={audioRef} src={src} preload="metadata" onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+    <button type="button" onClick={toggle} aria-label={playing ? '暂停音频' : '播放音频'}>{playing ? <PauseOutlined /> : <CaretRightOutlined />}</button>
+    <span>{format(current)}</span>
+    <input aria-label="音频进度" type="range" min={0} max={safeDuration} step={0.1} value={Math.min(current, safeDuration)} onChange={(event) => { const value = Number(event.target.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} />
+    <span>{format(safeDuration)}</span>
+  </div>;
+}
 
 function Studio() {
   const { message } = AntApp.useApp();
@@ -26,6 +50,7 @@ function Studio() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newContentType, setNewContentType] = useState('novel');
+  const [activeTab, setActiveTab] = useState('source');
 
   useEffect(() => {
     Promise.all([api.presets(), api.projects()]).then(([p, list]) => {
@@ -39,6 +64,34 @@ function Studio() {
       setProject(data); setRender(latest); setDirty(false);
     }).catch((error) => message.error(error.message));
   }, [projectId, message]);
+
+  useEffect(() => {
+    let frame = 0;
+    const updateHeroDepth = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const hero = document.querySelector<HTMLElement>('.hero-section');
+        if (!hero) return;
+        const progress = Math.min(1, Math.max(0, window.scrollY / Math.max(1, window.innerHeight * 0.82)));
+        hero.style.setProperty('--hero-blur', `${(progress * 20).toFixed(2)}px`);
+        hero.style.setProperty('--hero-content-blur', `${(progress * 5).toFixed(2)}px`);
+        hero.style.setProperty('--hero-content-opacity', String(1 - progress * 0.72));
+        hero.style.setProperty('--hero-brightness', String(1 - progress * 0.38));
+        hero.style.setProperty('--hero-scale', String(1.02 + progress * 0.055));
+        hero.dataset.depth = progress.toFixed(3);
+        document.body.classList.toggle('workbench-active', progress > 0.9);
+      });
+    };
+    updateHeroDepth();
+    window.addEventListener('scroll', updateHeroDepth, { passive: true });
+    window.addEventListener('resize', updateHeroDepth);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', updateHeroDepth);
+      window.removeEventListener('resize', updateHeroDepth);
+      document.body.classList.remove('workbench-active');
+    };
+  }, []);
 
   const setRole = (index: number, column: number, value: string | number) => {
     setProject((current) => {
@@ -174,18 +227,33 @@ function Studio() {
     { title: '操作', width: 80, render: (_v, _r, i) => <Button type="text" danger icon={<DeleteOutlined />} aria-label={`删除纠音规则 ${i + 1}`} onClick={() => patchProject('pronunciations', project!.pronunciations.filter((_row, x) => x !== i))} /> },
   ];
 
+  const openWorkspace = (key: string) => {
+    setActiveTab(key);
+    window.requestAnimationFrame(() => document.getElementById('project')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+
   return <Layout className="studio-shell">
     <Header className="studio-header">
       <Flex justify="space-between" align="center">
-        <Space><div className="brand-mark">IV</div><div><Title level={4}>Index Voice Studio</Title><Text type="secondary">Product Edition</Text></div></Space>
-        <Space><Tag color="green" icon={<CloudServerOutlined />}>Node 24 LTS</Tag><Tag color="blue">React 19</Tag><Tag color="purple">Ant Design 6</Tag></Space>
+        <div className="brand-lockup"><div className="brand-mark">IV</div><div><Title level={4}>Index Voice Studio</Title><Text>Product Edition</Text></div></div>
+        <nav className="studio-nav" aria-label="工作台功能导航"><button type="button" onClick={() => openWorkspace('source')}>Workspace</button><button type="button" onClick={() => openWorkspace('roles')}>Voices</button><button type="button" onClick={() => openWorkspace('segments')}>Director</button><button type="button" onClick={() => openWorkspace('delivery')}>Delivery</button></nav>
       </Flex>
     </Header>
     <Content className="studio-content">
-      <Card className="hero-card">
-        <Row gutter={24} align="middle"><Col flex="auto"><Text className="eyebrow">LONG FORM AUDIO PRODUCTION</Text><Title>长篇声音作品工程台</Title><Paragraph>角色音色、分句导演、纠音和交付文件在同一个版本化工程中管理。</Paragraph></Col><Col><Statistic title="当前分句" value={project?.segments.length ?? 0} suffix="句" /></Col></Row>
-      </Card>
-      <Card className="project-bar">
+      <section className="hero-section" id="intro">
+        <div className="hero-credit"><span>Built by</span> IndexTTS 2.5 Product Studio</div>
+        <div className="hero-grid">
+          <div className="hero-heading"><Text className="eyebrow">AI Directed. Built For Stories.</Text><Title>Index<br />Voice</Title><Text className="hero-cn-title">长篇声音作品工程台</Text></div>
+          <div className="hero-product-anchor" aria-hidden="true" />
+          <div className="hero-copy"><Paragraph>角色音色、分句导演、全篇纠音与交付文件，共同保存在一个可持续制作的声音工程里。</Paragraph><div className="hero-stat"><span>Current Segments</span><strong>{project?.segments.length ?? 0}</strong><small>句</small></div></div>
+        </div>
+        <div className="hero-info-card"><strong>Designed For<br />Long-Form<br />Voice Production.</strong><div /><p>从文字导演到分角色声音交付，让每一部作品保持连续、一致、可复用。</p></div>
+        <div className="hero-serial">Index Voice 01 / 2026</div>
+        <a className="scroll-cue" href="#project">Scroll To Continue</a>
+      </section>
+      <section className="project-section" id="project">
+      <div className="project-bar">
+        <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
           <div className="project-select"><Text strong>打开声音工程</Text><Select showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
           <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
@@ -193,20 +261,21 @@ function Studio() {
           <Button disabled={jobRunning || !project?.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
           <Button disabled={jobRunning || !project?.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
           <Button disabled={jobRunning || !project?.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
-          {dirty ? <Tag color="orange">有未保存修改</Tag> : <Tag color="green">工程已同步</Tag>}
+          {dirty ? <span className="project-state">有未保存修改</span> : <span className="project-state">工程已同步</span>}
         </Flex>
         {job && <div className="job-progress"><Progress percent={Math.round(job.fraction * 100)} status={job.phase === 'error' ? 'exception' : job.phase === 'complete' ? 'success' : 'active'} /><Text>{job.message}</Text></div>}
-      </Card>
+      </div>
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
-        <Tabs size="large" items={[
+        <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
           { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1600, y: 520 }} /></Card> },
           { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="角色、语言、态度、情绪和节奏均为下拉选择。强度与停顿使用受限数值。" /><Table className="studio-table" rowKey={(row) => String(row[0])} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1900, y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
-          { key: 'delivery', label: '完整音频与交付', children: <Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><audio controls src={render.audio} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card> },
-        ]} />
+          { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><StudioAudio src={render.audio!} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card></div> },
+        ]} /></div>
       </>}
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
+      </section>
     </Content>
   </Layout>;
 }

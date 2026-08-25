@@ -252,7 +252,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     const selected = files[request.params.kind];
     if (!selected) return reply.code(404).send({ error: '交付文件类型无效' });
     const file = path.join(projectRoot, id, 'renders', render, selected[0]);
-    try { await access(file); reply.type(selected[1]); return reply.send(createReadStream(file)); }
+    try {
+      await access(file);
+      const info = await stat(file);
+      reply.type(selected[1]).header('Content-Length', info.size).header('Accept-Ranges', 'bytes');
+      return reply.send(createReadStream(file));
+    }
     catch { return reply.code(404).send({ error: '交付文件不存在' }); }
   });
   app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: '接口不存在' }) : reply.sendFile('index.html'));

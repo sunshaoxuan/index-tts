@@ -28,6 +28,24 @@ test('serves presets and project data', async () => {
   await app.close();
 });
 
+test('serves the latest audio with stable media headers', async () => {
+  const { root } = await fixture();
+  const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-001');
+  await mkdir(renderDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('RIFFfake'));
+  const app = await buildApp({ repoRoot: root });
+  const latest = await app.inject('/api/projects/demo/latest-render');
+  assert.equal(latest.statusCode, 200);
+  assert.equal(latest.json().available, true);
+  const audio = await app.inject(latest.json().audio);
+  assert.equal(audio.statusCode, 200);
+  assert.match(audio.headers['content-type'], /^audio\/wav/);
+  assert.equal(audio.headers['content-length'], '8');
+  assert.equal(audio.headers['accept-ranges'], 'bytes');
+  assert.deepEqual(audio.rawPayload, Buffer.from('RIFFfake'));
+  await app.close();
+});
+
 test('rejects unknown finite presets', async () => {
   const { root, project } = await fixture();
   const app = await buildApp({ repoRoot: root });

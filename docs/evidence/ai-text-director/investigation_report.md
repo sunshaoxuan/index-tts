@@ -2,7 +2,7 @@
 
 ## 结论
 
-Index Voice Studio 产品页面已经迁移到 React 19、Ant Design 6、Node.js 24 和独立 Python Worker。Gradio 页面、测试、工具和可选依赖已经移除。页面设计已经应用 ORYZO AI 暖暗产品编辑规范。
+Index Voice Studio 产品页面已经迁移到 React 19、Ant Design 6、Node.js 24 和独立 Python Worker。Gradio 页面、测试、工具和可选依赖已经移除。页面设计已经应用 ORYZO AI 暖暗产品编辑规范，并完成摄影首屏、连续模糊、透明工作区和功能导航重构。
 
 ## 实现路径
 
@@ -12,10 +12,14 @@ Index Voice Studio 产品页面已经迁移到 React 19、Ant Design 6、Node.js
 4. `product_voice_worker.py` 负责永久音色复用和 VoiceDesign。
 5. `product_render_worker.py` 负责 IndexTTS 2.5 完整音频、章节、分句、角色轨和 ZIP。
 6. `product-studio/src/styles.css` 应用 Walnut Shadow、Warm Cream、Bark Brown、Cork Border 和 Ember 设计令牌。
+7. `product-studio/public/hero-voice-workbench.png` 提供原创摄影主视觉，网页文字由 React 独立叠加。
+8. `updateHeroDepth()` 将滚动进度映射到背景和首屏内容的模糊、亮度、缩放与透明度。
 
 ## 返工记录
 
 浏览器首次打开现有工程时，角色节奏仍显示旧自然语言值。根因是 Node 直接读取旧工程 JSON，有限字段没有经过新枚举迁移。服务层增加确定性迁移后，旧节奏、态度、情绪和句内节奏均返回受支持枚举。迁移和拒绝未知值分别有独立 Node 测试。
+
+工作区首次采用固定顶部导航时，导航深色背景遮住工程顶部。移除背景后，固定层上的导航文字仍与工程文字重叠。最终结构把导航定位限定在首屏内，让导航随首屏离开；工作区从视口 `top: 0` 进入，并在内部保留 102px 顶部安全距离。浏览器测量结果为导航 `bottom: -830px`、工程控制区 `top: 103px`、重叠判定 false。
 
 ## 运行证据
 
@@ -26,7 +30,13 @@ Index Voice Studio 产品页面已经迁移到 React 19、Ant Design 6、Node.js
 5. IndexTTS 使用新音色生成 5 条分句、1 个章节、2 个角色轨、完整 WAV 和 ZIP。
 6. 桌面和 390 像素移动端截图均未见文字遮盖。
 7. 浏览器 Console 为 0 error、0 warning。
-8. 产品端口固定为 7864，正式启动器真实终止原监听 PID 35080 并在相同端口启动 PID 37624；7861、7862、7863 无监听。
+8. 产品端口固定为 7864，本轮正式启动器终止原监听 PID 29252 并在相同端口启动 PID 22512；7861、7862、7863 无监听。
+9. 摄影首屏清晰、中间过渡和工作区完整模糊三个状态均完成截图检查，工作区、卡片和表格计算背景为透明。
+10. Workspace、Voices、Director、Delivery 四个菜单均切换实际标签并滚动到工程区域。
+11. 最新桌面端工作区的工程控制区从 103px 开始，顶部导航位于视口外，重叠判定为 false。
+12. 390 x 844 移动端的工程控制区从 89px 开始，顶部导航位于视口外，页面根节点横向溢出为 false。
+13. 角色表内部宽度为 1600px、可视宽度为 1166px；分句表内部宽度为 1900px、可视宽度为 1166px，均使用表内横向滚动。角色枚举实际展开显示旁白、人物、主播、记者和采访对象。
+14. 最新页面 Browser Console 查询结果为空数组。
 
 ## 质量观察
 

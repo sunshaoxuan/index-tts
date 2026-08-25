@@ -4,8 +4,12 @@
 |---|---|---|---|
 | 产品架构为 React、Ant Design、Node 和 Python Worker | `product-studio`、三个 `product_*_worker.py`、`/api/health` | 高 | 无 |
 | 旧 Gradio 产品架构已移除 | Git 删除清单、`pyproject.toml`、`uv.lock` | 高 | 模型推理模块中的历史注释不属于 UI 架构 |
-| ORYZO AI 设计已应用 | `product-studio/src/styles.css`、`11-react-oryzo-product-studio.png` | 高 | Halyard 使用 Inter 系统替代字体 |
-| 移动端没有文字遮盖 | `12-react-oryzo-mobile.png`、390 x 844 浏览器验收 | 高 | 验收设备为浏览器视口模拟 |
+| ORYZO AI 摄影产品设计已应用 | `product-studio/src/styles.css`、`product-studio/public/hero-voice-workbench.png`、`14-photo-hero-clear.png` | 高 | Halyard 使用 Inter 系统替代字体 |
+| 滚动过程连续模糊且工作区透明 | `15-photo-hero-transition.png`、`16-transparent-workspace.png` | 高 | 浏览器滚动状态截图 |
+| 顶部导航不会覆盖工作区 | `17-header-clear-workspace.png`、浏览器几何测量 | 高 | 桌面视口 1294 x 912 |
+| 移动端没有文字重叠或页面横向溢出 | `18-mobile-workspace-no-overlap.png`、390 x 844 浏览器验收 | 高 | 验收设备为浏览器视口模拟 |
+| 透明角色表保持可读和可操作 | `19-transparent-roles-table.png`、角色枚举实际展开 | 高 | 表内提供横向滚动 |
+| 透明分句表保持可读和可滚动 | `20-transparent-director-table.png`、浏览器宽度测量 | 高 | 表内提供横向滚动 |
 | 有限字段为原生枚举 | 角色节奏和分句态度的真实展开 DOM、Node 枚举 API | 高 | 高级音色提示按模型能力保留自由文本 |
 | 旧工程有限值可迁移 | Node 测试 `migrates legacy natural language controls` | 高 | 使用确定性关键词映射 |
 | 保存失败不会继续启动任务 | `App.tsx` 的布尔保存门 | 高 | 前端构建验证 |
