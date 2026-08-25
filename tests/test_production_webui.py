@@ -88,9 +88,11 @@ def test_production_ui_connects_ai_analysis_and_tts_render_handlers():
 
 def test_production_ui_exposes_readable_tables_and_real_task_feedback():
     assert SOURCE.count("wrap=False") >= 3
-    assert "column_widths=[130, 110, 110, 260, 360, 190, 130, 110]" in SOURCE
+    assert "column_widths=[130, 110, 110, 260, 300, 190, 150, 110]" in SOURCE
     assert "pinned_columns=2" in SOURCE
     assert "pinned_columns=5" in SOURCE
+    assert "static_columns=[0, 2, 4, 6, 7]" in SOURCE
+    assert "static_columns=[0, 2, 3, 7, 8, 10]" in SOURCE
     assert 'show_progress="hidden"' in SOURCE
     for label in ("取消分析", "取消音色设计", "取消完整音频生成"):
         assert label in SOURCE
@@ -128,17 +130,29 @@ def test_production_ui_exposes_persistent_novel_projects_voice_library_and_pronu
         "创建新工程",
         "打开工程",
         "保存当前工程",
-        "音色设计条件",
-        "角色表达节奏",
+        "音色预设",
+        "高级自定义音色提示",
+        "角色节奏预设",
         "重新生成",
         "永久音色库",
         "全篇固定纠音表",
         "添加纠音规则",
         "批量修改角色归属",
-        "长篇导演不会用整句倍数冒充自然语速",
+        "批量应用导演预设",
     ):
         assert text in SOURCE
     assert "NovelProjectStore" in SOURCE
     assert "PROJECT_STORE.register_voice" in SOURCE
     assert "project_process_dir=project_dir / \"process\"" in SOURCE
     assert "pronunciation_table=pronunciation_table" in SOURCE
+
+
+def test_production_ui_uses_enums_for_limited_controls_and_keeps_native_voice_prompt():
+    for text in ("态度预设", "情绪预设", "句内节奏预设", "角色节奏预设"):
+        assert text in SOURCE
+    assert 'choices=list(ATTITUDE_PRESETS)' in SOURCE
+    assert 'choices=list(EMOTION_VALUES)' in SOURCE
+    assert 'choices=list(PACE_PRESETS)' in SOURCE
+    assert 'choices=list(RHYTHM_PRESETS)' in SOURCE
+    assert "VoiceDesign 原生支持自然语言" in SOURCE
+    assert "填写后优先使用此提示" in SOURCE

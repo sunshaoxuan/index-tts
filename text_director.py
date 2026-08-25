@@ -37,6 +37,49 @@ EMOTION_LABELS = {
     "surprised": "惊喜",
     "calm": "平静",
 }
+EMOTION_VALUES = {label: value for value, label in EMOTION_LABELS.items()}
+VOICE_STYLE_PRESETS = {
+    "中性清晰": "中性、清晰、自然，吐字准确",
+    "低沉厚实": "低沉厚实，声音有支撑，气息稳定",
+    "温和亲切": "温和亲切，声线柔和，交流感自然",
+    "清亮年轻": "清亮年轻，声音通透，富有朝气",
+    "冷静克制": "冷静克制，情绪内收，表达理性",
+    "紧张警觉": "紧张警觉，声音收紧，保持清晰",
+    "悲伤低落": "悲伤低落，声音低回，情绪含蓄",
+    "威严有力": "威严有力，声音坚实，表达明确",
+    "沙哑沧桑": "略带沙哑和沧桑感，气息自然",
+    "轻快活泼": "轻快活泼，声音明亮，富有活力",
+}
+RHYTHM_PRESETS = {
+    "自然叙述": "自然表达，按语义停连",
+    "沉稳舒缓": "沉稳舒缓，重音清晰，短语间自然停连",
+    "紧凑清晰": "紧凑表达，声母清晰，保持自然换气",
+    "轻快活泼": "轻快灵动，声母清楚，短句间自然换气",
+    "克制停连": "克制表达，短语边界清楚，停连分明",
+    "低声内敛": "低声内敛，韵母轻收，短语间自然停连",
+    "威严有力": "坚定有力，重音明确，停顿干脆",
+}
+PACE_PRESETS = {
+    "自然": ("medium", "自然表达，按语义停连"),
+    "舒缓": ("slow", "舒缓表达，韵母自然舒展，短语间停连清晰"),
+    "紧凑": ("fast", "紧凑表达，声母清晰，保持自然换气"),
+    "轻快": ("medium", "轻快表达，短句间自然换气"),
+    "克制": ("medium", "克制表达，重音内收，停连清楚"),
+    "低声": ("medium", "低声表达，韵母轻收，短语间自然停连"),
+    "强调": ("medium", "重点词清晰强调，语义停顿明确"),
+}
+ATTITUDE_PRESETS = {
+    "中性叙述": "中性、客观地叙述",
+    "沉稳叙述": "沉稳、从容地叙述",
+    "温和交流": "温和、亲切地交流",
+    "紧张警觉": "紧张、警觉地表达",
+    "克制低沉": "克制、低沉地表达",
+    "悲伤压抑": "悲伤、压抑地表达",
+    "喜悦明快": "喜悦、明快地表达",
+    "愤怒强烈": "愤怒、强烈地表达",
+    "恐惧迟疑": "恐惧、迟疑地表达",
+    "威严命令": "威严、明确地命令",
+}
 PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
@@ -45,7 +88,7 @@ ATTRIBUTION_PATTERN = re.compile(
 )
 QUOTE_TRANSLATION = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'", "„": '"', "‟": '"'})
 
-ROLE_HEADERS = ["轨道ID", "角色", "类型", "角色说明", "音色设计条件", "音色ID", "角色表达节奏", "重新生成"]
+ROLE_HEADERS = ["轨道ID", "角色", "类型", "角色说明", "音色预设或高级提示", "音色ID", "角色节奏预设", "重新生成"]
 SEGMENT_HEADERS = [
     "序号",
     "章节",
@@ -54,10 +97,10 @@ SEGMENT_HEADERS = [
     "语言",
     "原文片段",
     "合成文本",
-    "态度语气",
-    "情绪",
+    "态度预设",
+    "情绪预设",
     "情绪强度",
-    "句内节奏提示",
+    "句内节奏预设",
     "句后停顿ms",
 ]
 
@@ -853,6 +896,99 @@ def _preferred_voice_ids(character: dict[str, Any], voice_ids: list[str]) -> lis
     return [voice_id for voice_id in preferred if voice_id in voice_ids] or voice_ids
 
 
+def _closest_preset(value: Any, presets: dict[str, Any], default: str) -> str:
+    text = str(value or "").strip()
+    if text in presets:
+        return text
+    for label, prompt in presets.items():
+        prompt_text = prompt[1] if isinstance(prompt, tuple) else prompt
+        if text == str(prompt_text) or label in text:
+            return label
+    return default
+
+
+def migrate_voice_style(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in VOICE_STYLE_PRESETS:
+        return text
+    # VoiceDesign 原生支持自然语言。旧音色条件作为高级提示完整保留。
+    return text or "中性清晰"
+
+
+def migrate_rhythm_preset(value: Any) -> str:
+    text = str(value or "").strip()
+    for keyword, label in (
+        ("轻快", "轻快活泼"), ("灵动", "轻快活泼"), ("沉稳", "沉稳舒缓"),
+        ("舒缓", "沉稳舒缓"), ("紧凑", "紧凑清晰"), ("快速", "紧凑清晰"),
+        ("克制", "克制停连"), ("低声", "低声内敛"), ("威严", "威严有力"),
+        ("有力", "威严有力"),
+    ):
+        if keyword in text:
+            return label
+    return _closest_preset(text, RHYTHM_PRESETS, "自然叙述")
+
+
+def migrate_pace_preset(value: Any) -> str:
+    legacy = {"slow": "舒缓", "medium": "自然", "fast": "紧凑"}
+    text = str(value or "").strip()
+    if text in legacy:
+        return legacy[text]
+    for keyword, label in (
+        ("轻快", "轻快"), ("舒缓", "舒缓"), ("缓慢", "舒缓"), ("紧凑", "紧凑"),
+        ("快速", "紧凑"), ("克制", "克制"), ("低声", "低声"), ("强调", "强调"),
+    ):
+        if keyword in text:
+            return label
+    return _closest_preset(text, PACE_PRESETS, "自然")
+
+
+def migrate_attitude_preset(value: Any) -> str:
+    text = str(value or "").strip()
+    for keyword, label in (
+        ("温和", "温和交流"), ("亲切", "温和交流"), ("紧张", "紧张警觉"),
+        ("警觉", "紧张警觉"), ("克制", "克制低沉"), ("低沉", "克制低沉"),
+        ("悲伤", "悲伤压抑"), ("压抑", "悲伤压抑"), ("喜悦", "喜悦明快"),
+        ("明快", "喜悦明快"), ("愤怒", "愤怒强烈"), ("恐惧", "恐惧迟疑"),
+        ("迟疑", "恐惧迟疑"), ("威严", "威严命令"), ("命令", "威严命令"),
+        ("沉稳", "沉稳叙述"), ("平静", "中性叙述"),
+    ):
+        if keyword in text:
+            return label
+    return _closest_preset(text, ATTITUDE_PRESETS, "中性叙述")
+
+
+def migrate_emotion_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in EMOTION_VALUES:
+        return text
+    return EMOTION_LABELS.get(text, "平静")
+
+
+def migrate_role_rows(role_table: Any) -> list[list[Any]]:
+    rows = _table_rows(role_table)
+    migrated = []
+    for row in rows:
+        copied = list(row)
+        if len(copied) >= len(ROLE_HEADERS):
+            copied[4] = migrate_voice_style(copied[4])
+            copied[6] = migrate_rhythm_preset(copied[6])
+        migrated.append(copied)
+    return migrated
+
+
+def migrate_segment_rows(segment_table: Any) -> list[list[Any]]:
+    rows = _table_rows(segment_table)
+    migrated = []
+    for row in rows:
+        copied = list(row)
+        if len(copied) >= len(SEGMENT_HEADERS):
+            copied[7] = migrate_attitude_preset(copied[7])
+            copied[8] = migrate_emotion_label(copied[8])
+            copied[10] = migrate_pace_preset(copied[10])
+        migrated.append(copied)
+    return migrated
+
+
 def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) -> tuple[list[list[Any]], list[list[Any]]]:
     voice_ids = list(demo_voice_ids)
     if not voice_ids:
@@ -877,9 +1013,9 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
                 character["name"],
                 character["kind"],
                 character.get("profile") or character.get("voice_hint", ""),
-                character.get("voice_hint", "") or character.get("profile", "") or "自然可信，符合人物身份",
+                migrate_voice_style(character.get("voice_hint", "") or character.get("profile", "")),
                 preferred,
-                role_rhythm,
+                migrate_rhythm_preset(role_rhythm),
                 "否",
             ]
         )
@@ -893,14 +1029,10 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
             segment["language"],
             segment["source_text"],
             segment["text"],
-            segment["attitude"],
-            segment["emotion"],
+            migrate_attitude_preset(segment["attitude"]),
+            migrate_emotion_label(segment["emotion"]),
             segment["intensity"],
-            {
-                "slow": "舒缓表达，韵母自然舒展，短语间停连清晰",
-                "medium": "自然表达，按语义停连",
-                "fast": "紧凑表达，声母清晰，保持自然换气",
-            }[segment["pace"]],
+            migrate_pace_preset(segment["pace"]),
             segment["pause_after_ms"],
         ]
         for segment in document.get("segments", [])
@@ -933,11 +1065,19 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
         kind = str(row[2]).strip()
         profile = str(row[3]).strip()
         voice_condition = str(row[4]).strip()
-        rhythm_prompt = str(row[6]).strip()
+        rhythm_preset = str(row[6]).strip()
         if not role_id or not name or kind not in ROLE_KINDS:
             raise DirectorError(f"角色表第 {row_number} 行角色信息无效。")
         character = characters.get(role_id, {})
-        voice_hint = voice_condition or str(character.get("voice_hint", "")).strip()
+        if voice_condition in VOICE_STYLE_PRESETS:
+            voice_hint = VOICE_STYLE_PRESETS[voice_condition]
+        elif voice_condition:
+            voice_hint = voice_condition
+        else:
+            voice_hint = str(character.get("voice_hint", "")).strip()
+        if rhythm_preset not in RHYTHM_PRESETS:
+            raise DirectorError(f"角色表第 {row_number} 行包含未知角色节奏预设：{rhythm_preset}")
+        rhythm_prompt = RHYTHM_PRESETS[rhythm_preset]
         language = role_languages.get(role_id, "ZH")
         kind_text = {
             "narrator": "旁白",
@@ -1005,11 +1145,14 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         name = str(row[1]).strip()
         kind = str(row[2]).strip()
         voice_id = str(row[5]).strip()
-        rhythm_prompt = str(row[6]).strip()
+        voice_style = str(row[4]).strip()
+        rhythm_preset = str(row[6]).strip()
         if not role_id or not name or kind not in ROLE_KINDS or not voice_id:
             raise DirectorError(f"角色表第 {row_number} 行包含无效角色或音色。")
-        if not rhythm_prompt:
-            raise DirectorError(f"角色表第 {row_number} 行必须填写角色表达节奏。")
+        if not voice_style:
+            raise DirectorError(f"角色表第 {row_number} 行必须选择音色预设或填写高级提示。")
+        if rhythm_preset not in RHYTHM_PRESETS:
+            raise DirectorError(f"角色表第 {row_number} 行包含未知角色节奏预设：{rhythm_preset}")
         if role_id in roles:
             raise DirectorError(f"角色表存在重复轨道ID：{role_id}")
         roles[role_id] = {
@@ -1017,9 +1160,10 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
             "name": name,
             "kind": kind,
             "profile": str(row[3]).strip(),
-            "voice_condition": str(row[4]).strip(),
+            "voice_condition": voice_style,
             "voice_id": voice_id,
-            "rhythm_prompt": rhythm_prompt,
+            "rhythm_preset": rhythm_preset,
+            "rhythm_prompt": RHYTHM_PRESETS[rhythm_preset],
         }
 
     segments: list[dict[str, Any]] = []
@@ -1034,16 +1178,16 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         if role_id not in roles:
             raise DirectorError(f"分句表第 {row_number} 行引用了未知轨道：{role_id}")
         orders.add(order)
-        raw_pace = str(row[10]).strip()
-        pace_prompts = {
-            "slow": "舒缓表达，韵母自然舒展，短语间停连清晰",
-            "medium": "自然表达，按语义停连",
-            "fast": "紧凑表达，声母清晰，保持自然换气",
-        }
-        pace = raw_pace if raw_pace in PACES else "medium"
-        pace_prompt = pace_prompts.get(raw_pace, raw_pace)
-        if not pace_prompt:
-            raise DirectorError(f"分句表第 {row_number} 行必须填写句内节奏提示。")
+        pace_preset = str(row[10]).strip()
+        attitude_preset = str(row[7]).strip()
+        emotion_label = str(row[8]).strip()
+        if pace_preset not in PACE_PRESETS:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知句内节奏预设：{pace_preset}")
+        if attitude_preset not in ATTITUDE_PRESETS:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知态度预设：{attitude_preset}")
+        if emotion_label not in EMOTION_VALUES:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知情绪预设：{emotion_label}")
+        pace, pace_prompt = PACE_PRESETS[pace_preset]
         raw = {
             "order": order,
             "section": str(row[1]).strip() or "正文",
@@ -1053,13 +1197,16 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
             "language": str(row[4]).strip().upper(),
             "source_text": str(row[5]),
             "text": str(row[6]).strip(),
-            "attitude": str(row[7]).strip(),
-            "emotion": str(row[8]).strip(),
+            "attitude": ATTITUDE_PRESETS[attitude_preset],
+            "emotion": EMOTION_VALUES[emotion_label],
             "intensity": row[9],
             "pace": pace,
             "pause_after_ms": row[11],
         }
         normalized = OllamaTextDirector._normalize_segment(raw, row_number)
+        normalized["attitude_preset"] = attitude_preset
+        normalized["emotion_label"] = emotion_label
+        normalized["pace_preset"] = pace_preset
         normalized["pace_prompt"] = pace_prompt
         segments.append(normalized)
     if not roles or not segments:
@@ -1306,10 +1453,10 @@ def render_directed_audio(
                                 item["language"],
                                 item["source_text"],
                                 item["text"],
-                                item["attitude"],
-                                item["emotion"],
+                                item.get("attitude_preset", item["attitude"]),
+                                item.get("emotion_label", EMOTION_LABELS[item["emotion"]]),
                                 item["intensity"],
-                                item["pace_prompt"],
+                                item.get("pace_preset", item["pace_prompt"]),
                                 item["pause_after_ms"],
                             ],
                         )

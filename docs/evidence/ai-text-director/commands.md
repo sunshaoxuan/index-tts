@@ -31,3 +31,13 @@ git diff --check
 7. 真实生成完整音频、章节 WAV、角色轨道和分句 WAV，随后再次生成验证 7/7 缓存复用。
 8. 使用 Python 检查 WAV 参数、JSON 原文与实际朗读文本、章节数量、ZIP 内容和 ZIP CRC。
 9. 检查浏览器控制台并保存 `09-novel-project.png` 和 `10-novel-project-delivery.png`。
+## 中文枚举导演变更
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile text_director.py production_webui.py novel_project.py
+.\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director.py tests\test_production_webui.py tests\test_voice_design_worker.py tests\test_text_director_worker.py tests\test_windows_launcher.py -q
+.\.venv\Scripts\python.exe -m pytest -m "not gpu" -q
+git diff --check
+```
+
+运行态使用 `scripts/start_indextts25_windows.ps1 -Port 7863`，由启动脚本设置 `PYTHONUTF8=1`。浏览器打开旧工程，应用角色音色和分句导演预设，保存重开后连续生成两次，第二次复用 7/7 分句缓存。

@@ -8,7 +8,7 @@
 .\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director.py tests\test_production_webui.py tests\test_voice_design_worker.py tests\test_text_director_worker.py tests\test_windows_launcher.py -q
 ```
 
-结果：48 项通过。
+结果：51 项通过。
 
 ## 全量非 GPU 测试
 
@@ -18,7 +18,19 @@
 .\.venv\Scripts\python.exe -m pytest -m "not gpu" -q
 ```
 
-结果：201 项通过，22 项按 GPU 标记跳过，30 个子测试通过。存在 3 条第三方弃用警告。
+结果：204 项通过，22 项按 GPU 标记跳过，30 个子测试通过。存在 3 条第三方弃用警告。
+
+## 中文枚举导演验收
+
+1. 旧工程打开后，4 条角色节奏、7 条分句态度、英文情绪和自由文本句内节奏全部迁移为中文预设。
+2. 角色导演控件把旁白音色条件改为 VoiceDesign 高级提示“成熟中年旁白，低沉厚实，克制而清晰”，角色节奏选择“沉稳舒缓”，保存后重开保持一致。
+3. 第 3 句通过选择器应用“中性叙述、低落、自然”，保存后重开保持一致。
+4. 第一次真实生成完成 7 条分句、2 个章节和 3 个有内容角色轨，完整 WAV 约 31 秒。
+5. 第二次真实生成复用 7 条工程分句缓存。
+6. 最终 ZIP 包含 15 个条目，CRC 检查为空值。
+7. 最终 manifest 的统一时长系数只有 `1.0`，态度、情绪和节奏均记录中文预设。
+8. 浏览器 Console 为 0 条 error、0 条 warning，全页截图已在验收会话中人工检查，未发现文字遮盖。
+9. 首次手动重启遗漏 `PYTHONUTF8=1` 时，中文输出路径触发 CP932 编码错误。使用正式 Windows 启动脚本重启后真实生成通过，启动器回归测试固定 UTF-8 环境。
 
 ## 真实 AI
 

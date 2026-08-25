@@ -15,12 +15,18 @@ from text_director import (
     DirectorValidationError,
     OllamaTextDirector,
     ROLE_HEADERS,
+    RHYTHM_PRESETS,
     SEGMENT_HEADERS,
+    VOICE_STYLE_PRESETS,
     concatenate_wav_segments,
     apply_generated_voices,
     build_voice_design_jobs,
     coverage_key,
     document_to_tables,
+    migrate_attitude_preset,
+    migrate_emotion_label,
+    migrate_pace_preset,
+    migrate_rhythm_preset,
     render_directed_audio,
     is_speech_attribution,
     split_document,
@@ -93,8 +99,8 @@ def _write_wav(path: Path, frame_count=2205):
         output.writeframes(b"\x01\x00" * frame_count)
 
 
-def _role_row(role_id="narrator", name="旁白", kind="narrator", voice_id="voice_05.wav", rhythm="沉稳舒缓，短语间自然停连"):
-    return [role_id, name, kind, "测试角色", "稳定自然", voice_id, rhythm, "否"]
+def _role_row(role_id="narrator", name="旁白", kind="narrator", voice_id="voice_05.wav", rhythm="沉稳舒缓"):
+    return [role_id, name, kind, "测试角色", "中性清晰", voice_id, rhythm, "否"]
 
 
 def test_schema_requires_lossless_source_and_directing_fields():
@@ -357,7 +363,38 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert roles["narrator"]["voice_id"] == "voice_05.wav"
     assert "停连" in roles["narrator"]["rhythm_prompt"]
     assert segments[1]["speaker_id"] == "role_001"
-    assert segments[1]["attitude"] == "平静叙述"
+    assert segments[1]["attitude_preset"] == "中性叙述"
+    assert segments[1]["emotion_label"] == "平静"
+
+
+def test_legacy_natural_language_directing_values_migrate_to_presets():
+    assert migrate_rhythm_preset("沉稳从容，韵母自然舒展，停连清晰") == "沉稳舒缓"
+    assert migrate_rhythm_preset("轻快灵动，短句间自然换气") == "轻快活泼"
+    assert migrate_pace_preset("短语间停连清晰，整体舒缓") == "舒缓"
+    assert migrate_attitude_preset("平静叙述") == "中性叙述"
+    assert migrate_emotion_label("melancholic") == "低落"
+
+
+def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_prompt():
+    document = {
+        "characters": [_character()],
+        "segments": [_segment(1, "测试。", "测试。")],
+    }
+    role_rows = [["narrator", "旁白", "narrator", "成熟", "五十岁女声，略带沙哑", "voice_05.wav", "自然叙述", "是"]]
+    jobs = build_voice_design_jobs(document, role_rows)
+    assert "五十岁女声，略带沙哑" in jobs[0]["instruct"]
+
+    invalid_roles = [list(role_rows[0])]
+    invalid_roles[0][6] = "随便慢一点"
+    segment_rows = [[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.5, "自然", 0]]
+    with pytest.raises(DirectorError, match="未知角色节奏预设"):
+        tables_to_script(invalid_roles, segment_rows)
+
+    for index, value, message in ((7, "自行发挥", "未知态度预设"), (8, "惆怅", "未知情绪预设"), (10, "拖慢", "未知句内节奏预设")):
+        invalid_segments = [list(segment_rows[0])]
+        invalid_segments[0][index] = value
+        with pytest.raises(DirectorError, match=message):
+            tables_to_script(role_rows, invalid_segments)
 
 
 def test_role_voice_matching_prefers_semantic_chinese_voices():
@@ -385,7 +422,7 @@ def test_voice_design_jobs_and_generated_voice_mapping(tmp_path):
     }
     roles = [
         ["narrator", "旁白", "narrator", "成熟稳重", "厚实沉稳", "voice_05.wav", "沉稳舒缓", "是"],
-        ["role_001", "李 明", "character", "年轻明亮", "清澈明亮", "voice_09.wav", "轻快清晰", "是"],
+        ["role_001", "李 明", "character", "年轻明亮", "清澈明亮", "voice_09.wav", "轻快活泼", "是"],
     ]
     jobs = build_voice_design_jobs(document, roles)
     generated_path = tmp_path / jobs[1]["filename"]
@@ -435,11 +472,11 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
 
     role_rows = [
         _role_row(),
-        _role_row("role_001", "李明", "character", "voice_01.wav", "克制紧张，短句清晰"),
+        _role_row("role_001", "李明", "character", "voice_01.wav", "克制停连"),
     ]
     segment_rows = [
-        [1, "开场", "narrator", "旁白", "ZH", "雨夜。", "雨夜。", "低沉叙述", "calm", 0.5, "slow", 200],
-        [2, "开场", "role_001", "李明", "ZH", "你好。", "你好。", "克制警惕", "afraid", 0.7, "fast", 300],
+        [1, "开场", "narrator", "旁白", "ZH", "雨夜。", "雨夜。", "克制低沉", "平静", 0.5, "舒缓", 200],
+        [2, "开场", "role_001", "李明", "ZH", "你好。", "你好。", "紧张警觉", "恐惧", 0.7, "紧凑", 300],
     ]
     model = FakeModel()
     master, package, manifest, status = render_directed_audio(
@@ -463,7 +500,7 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
     assert (Path(master).parent / "director-script.csv").is_file()
     assert "2 条分句" in status
     assert "2 个角色配置、2 个有内容的角色轨道" in status
-    assert model.calls[0]["emo_text"].endswith("低沉叙述。平静。")
+    assert model.calls[0]["emo_text"].endswith("克制、低沉地表达。平静。")
     assert "韵母自然舒展" in model.calls[0]["emo_text"]
     assert model.calls[0]["duration_factor"] == 1.0
     assert "沉稳舒缓" in model.calls[0]["emo_text"]
@@ -492,7 +529,7 @@ def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path)
         render_directed_audio(
             document={"title": "取消测试", "content_type": "story"},
             role_table=[_role_row()],
-            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "平静", "calm", 0.5, "medium", 0]],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.5, "自然", 0]],
             uploaded_files=None,
             model=UnexpectedModel(),
             model_lock=threading.Lock(),
@@ -520,8 +557,8 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
             _write_wav(Path(kwargs["output_path"]), 100)
             return kwargs["output_path"]
 
-    role_rows = [_role_row(rhythm="沉稳舒缓，韵母自然舒展")]
-    segment_rows = [[1, "第一章", "narrator", "旁白", "ZH", "重庆银行。", "重庆银行。", "平静", "calm", 0.5, "短语间停连清晰", 100]]
+    role_rows = [_role_row(rhythm="沉稳舒缓")]
+    segment_rows = [[1, "第一章", "narrator", "旁白", "ZH", "重庆银行。", "重庆银行。", "中性叙述", "平静", 0.5, "舒缓", 100]]
     pronunciations = [["重庆银行", "重 庆 银行", "固定专名读法", "是"]]
     first_model = FakeModel()
     first = render_directed_audio(
@@ -567,7 +604,7 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
 
 def test_tables_reject_unknown_role_reference():
     role_rows = [_role_row()]
-    segment_rows = [[1, "正文", "missing", "人物", "ZH", "原文", "原文", "平静", "calm", 0.5, "medium", 300]]
+    segment_rows = [[1, "正文", "missing", "人物", "ZH", "原文", "原文", "中性叙述", "平静", 0.5, "自然", 300]]
 
     with pytest.raises(DirectorError, match="未知轨道"):
         tables_to_script(role_rows, segment_rows)

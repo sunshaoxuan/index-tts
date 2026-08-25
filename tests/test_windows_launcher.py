@@ -15,6 +15,7 @@ def test_windows_launcher_uses_local_v25_bf16_runtime():
     assert '"--ai-model" $AiModel' in content
     assert '"--ai-timeout" $AiTimeout' in content
     assert '"--ai-chunk-chars" $AiChunkChars' in content
+    assert '$env:PYTHONUTF8 = "1"' in content
     assert "--cuda_kernel" not in content
     assert "--torch_compile" not in content
     assert "--deepspeed" not in content

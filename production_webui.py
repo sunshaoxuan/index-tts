@@ -28,19 +28,27 @@ from novel_project import (
     pronunciation_rows,
 )
 from text_director import (
+    ATTITUDE_PRESETS,
     CONTENT_TYPES,
     CONTENT_TYPE_LABELS,
     DirectorCancelled,
     DirectorConfig,
     DirectorError,
     OllamaTextDirector,
+    EMOTION_VALUES,
+    PACE_PRESETS,
     ROLE_HEADERS,
     ROLE_KINDS,
+    RHYTHM_PRESETS,
     SEGMENT_HEADERS,
+    VOICE_STYLE_PRESETS,
     apply_generated_voices,
     build_voice_design_jobs,
     document_to_tables,
+    migrate_role_rows,
+    migrate_segment_rows,
     render_directed_audio,
+    tables_to_script,
     voice_catalog_markdown,
 )
 
@@ -406,6 +414,10 @@ def save_novel_project(
     if not project_id:
         raise gr.Error("请先创建或打开小说工程。")
     try:
+        role_rows = _rows(role_table)
+        segment_rows = _rows(segment_table)
+        if role_rows or segment_rows:
+            tables_to_script(role_rows, segment_rows)
         payload = PROJECT_STORE.save(
             project_id,
             title=title,
@@ -413,12 +425,12 @@ def save_novel_project(
             source_text=source_text,
             guidance=guidance,
             document=document,
-            roles=_rows(role_table),
-            segments=_rows(segment_table),
+            roles=role_rows,
+            segments=segment_rows,
             pronunciations=pronunciation_table,
             voice_files=generated_voices,
         )
-    except ProjectError as exc:
+    except (ProjectError, DirectorError) as exc:
         raise gr.Error(str(exc)) from exc
     return (
         f"工程已保存。章节 {len(payload['chapters'])} 个，角色 {len(payload['roles'])} 个，分句 {len(payload['segments'])} 条。",
@@ -434,8 +446,8 @@ def load_novel_project(project_id: str):
     except ProjectError as exc:
         raise gr.Error(str(exc)) from exc
     document = payload.get("document") or {}
-    role_rows = payload.get("roles") or []
-    segment_rows = payload.get("segments") or []
+    role_rows = migrate_role_rows(payload.get("roles") or [])
+    segment_rows = migrate_segment_rows(payload.get("segments") or [])
     voice_files = [path for path in payload.get("voice_files", []) if Path(path).is_file()]
     preview_choices = []
     for row in role_rows:
@@ -465,11 +477,14 @@ def load_novel_project(project_id: str):
         preview_choices[0][1] if preview_choices else None,
         gr.update(choices=_role_choices(role_rows), value=None),
         gr.update(choices=_role_choices(role_rows), value=None),
+        gr.update(choices=_role_choices(role_rows), value=None),
         f"已打开工程。章节 {len(payload.get('chapters', []))} 个，角色 {len(role_rows)} 个，分句 {len(segment_rows)} 条。",
     )
 
 
-def add_project_role(role_table, name: str, kind: str, profile: str, voice_condition: str, rhythm_prompt: str):
+def add_project_role(
+    role_table, name: str, kind: str, profile: str, voice_style: str, custom_voice_prompt: str, rhythm_preset: str
+):
     rows = _rows(role_table)
     cleaned_name = str(name or "").strip()
     if not cleaned_name:
@@ -485,9 +500,9 @@ def add_project_role(role_table, name: str, kind: str, profile: str, voice_condi
             cleaned_name,
             kind or "character",
             str(profile or "").strip(),
-            str(voice_condition or "").strip() or "自然可信，符合人物身份",
+            str(custom_voice_prompt or "").strip() or str(voice_style or "中性清晰"),
             DEFAULT_DEMO_VOICE,
-            str(rhythm_prompt or "").strip() or "自然交流，按语义停连",
+            str(rhythm_preset or "自然叙述"),
             "是",
         ]
     )
@@ -495,9 +510,31 @@ def add_project_role(role_table, name: str, kind: str, profile: str, voice_condi
     return rows, gr.update(choices=choices, value=role_id), gr.update(choices=choices, value=role_id), f"已新增角色 {cleaned_name}。"
 
 
+def apply_role_presets(
+    role_table, role_id: str, voice_style: str, custom_voice_prompt: str, rhythm_preset: str, regenerate: str
+):
+    rows = _rows(role_table)
+    if voice_style not in VOICE_STYLE_PRESETS:
+        raise gr.Error("请选择有效的音色预设。")
+    if rhythm_preset not in RHYTHM_PRESETS:
+        raise gr.Error("请选择有效的角色节奏预设。")
+    custom = str(custom_voice_prompt or "").strip()
+    changed = False
+    for row in rows:
+        if str(row[0]) == str(role_id):
+            row[4] = custom or voice_style
+            row[6] = rhythm_preset
+            row[7] = regenerate if regenerate in {"是", "否"} else "是"
+            changed = True
+    if not changed:
+        raise gr.Error("请选择需要调整的角色。")
+    mode = "高级自定义提示" if custom else f"音色预设“{voice_style}”"
+    return rows, f"已应用{mode}和角色节奏“{rhythm_preset}”。"
+
+
 def refresh_role_choices(role_table):
     choices = _role_choices(role_table)
-    return gr.update(choices=choices), gr.update(choices=choices)
+    return gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
 
 
 def _parse_orders(value: str) -> set[int]:
@@ -535,6 +572,34 @@ def assign_known_role(segment_table, role_table, order_expression: str, role_id:
     if not changed:
         raise gr.Error("指定序号没有命中任何分句。")
     return rows, f"已将 {changed} 条分句归属调整为 {role[1]}。"
+
+
+def apply_segment_presets(
+    segment_table, order_expression: str, attitude_preset: str, emotion_label: str, pace_preset: str
+):
+    if attitude_preset not in ATTITUDE_PRESETS:
+        raise gr.Error("请选择有效的态度预设。")
+    if emotion_label not in EMOTION_VALUES:
+        raise gr.Error("请选择有效的情绪预设。")
+    if pace_preset not in PACE_PRESETS:
+        raise gr.Error("请选择有效的句内节奏预设。")
+    try:
+        orders = _parse_orders(order_expression)
+    except (ValueError, IndexError) as exc:
+        raise gr.Error("分句序号格式无效，可填写 3、5,7 或 10-15。") from exc
+    if not orders:
+        raise gr.Error("请填写需要调整的分句序号。")
+    rows = _rows(segment_table)
+    changed = 0
+    for row in rows:
+        if row and int(float(row[0])) in orders:
+            row[7] = attitude_preset
+            row[8] = emotion_label
+            row[10] = pace_preset
+            changed += 1
+    if not changed:
+        raise gr.Error("指定序号没有命中任何分句。")
+    return rows, f"已为 {changed} 条分句应用态度“{attitude_preset}”、情绪“{emotion_label}”和节奏“{pace_preset}”。"
 
 
 def add_pronunciation_rule(pronunciation_table, source: str, replacement: str, note: str):
@@ -1196,6 +1261,7 @@ def build_ui() -> gr.Blocks:
                         )
 
                 with gr.Accordion("角色与音色映射", open=True):
+                    gr.Markdown("音色可使用中文预设，也可在高级入口填写 VoiceDesign 原生自然语言提示。角色表达节奏使用固定预设，保证页面含义和程序映射一致。")
                     gr.Markdown(voice_catalog_markdown(DEMO_VOICES))
                     voice_strategy = gr.Radio(
                         VOICE_STRATEGIES,
@@ -1216,13 +1282,14 @@ def build_ui() -> gr.Blocks:
                         value=[],
                         row_count=(1, "dynamic"),
                         col_count=(len(ROLE_HEADERS), "fixed"),
-                        label="角色轨道表，可修改音色条件、固定音色、角色表达节奏并决定是否重新生成",
+                        label="角色轨道表，请使用下方导演控件修改音色和节奏",
                         interactive=True,
                         max_height=360,
                         wrap=False,
-                        column_widths=[130, 110, 110, 260, 360, 190, 130, 110],
+                        column_widths=[130, 110, 110, 260, 300, 190, 150, 110],
                         pinned_columns=2,
                         show_search="filter",
+                        static_columns=[0, 2, 4, 6, 7],
                         elem_classes="director-table",
                     )
                     voice_activity = gr.HTML(_activity("角色音色", "等待选择策略", 0.0, "idle"))
@@ -1232,13 +1299,34 @@ def build_ui() -> gr.Blocks:
                     with gr.Row():
                         role_voice_preview_choice = gr.Dropdown(label="角色音色试听", choices=[], interactive=True)
                         role_voice_preview = gr.Audio(label="生成音色预览", type="filepath")
+                    with gr.Accordion("角色音色与节奏导演", open=True):
+                        with gr.Row():
+                            role_preset_target = gr.Dropdown(label="需要调整的角色", choices=[])
+                            role_voice_style = gr.Dropdown(
+                                label="音色预设", choices=list(VOICE_STYLE_PRESETS), value="中性清晰",
+                                info="选项会映射为经过固定定义的 VoiceDesign 指令。",
+                            )
+                            role_rhythm_preset = gr.Dropdown(
+                                label="角色节奏预设", choices=list(RHYTHM_PRESETS), value="自然叙述"
+                            )
+                            role_regenerate = gr.Radio(["是", "否"], value="是", label="重新生成音色")
+                        role_custom_voice_prompt = gr.Textbox(
+                            label="高级自定义音色提示，可选",
+                            placeholder="VoiceDesign 原生支持自然语言。填写后优先使用此提示，例如年龄、声线、气质、力度和语言习惯。",
+                            lines=2,
+                        )
+                        role_preset_apply = gr.Button("应用角色音色与节奏")
                     with gr.Accordion("补充角色与复用音色库", open=False):
                         with gr.Row():
                             new_role_name = gr.Textbox(label="新增角色名称")
                             new_role_kind = gr.Dropdown(choices=sorted(ROLE_KINDS), value="character", label="角色类型")
-                            new_role_rhythm = gr.Textbox(label="角色表达节奏", value="自然交流，按语义停连")
+                            new_role_voice_style = gr.Dropdown(choices=list(VOICE_STYLE_PRESETS), value="中性清晰", label="音色预设")
+                            new_role_rhythm = gr.Dropdown(choices=list(RHYTHM_PRESETS), value="自然叙述", label="角色节奏预设")
                         new_role_profile = gr.Textbox(label="角色说明")
-                        new_role_condition = gr.Textbox(label="音色设计条件", placeholder="年龄、声线、气质、力度和语言习惯")
+                        new_role_condition = gr.Textbox(
+                            label="高级自定义音色提示，可选",
+                            placeholder="填写后优先于音色预设，原样交给 VoiceDesign。",
+                        )
                         add_role_button = gr.Button("添加角色")
                         with gr.Row():
                             library_target_role = gr.Dropdown(label="分配给角色", choices=[])
@@ -1254,6 +1342,18 @@ def build_ui() -> gr.Blocks:
                         segment_order_expression = gr.Textbox(label="需要调整的分句序号", placeholder="例如：3、5,7 或 10-15")
                         segment_role_choice = gr.Dropdown(label="选择已知角色", choices=[])
                         segment_role_apply = gr.Button("批量修改角色归属")
+                    with gr.Row():
+                        segment_attitude_preset = gr.Dropdown(
+                            label="态度预设", choices=list(ATTITUDE_PRESETS), value="中性叙述"
+                        )
+                        segment_emotion_preset = gr.Dropdown(
+                            label="情绪预设", choices=list(EMOTION_VALUES), value="平静",
+                            info="对应 QwenEmotion 支持的八维情绪。",
+                        )
+                        segment_pace_preset = gr.Dropdown(
+                            label="句内节奏预设", choices=list(PACE_PRESETS), value="自然"
+                        )
+                        segment_preset_apply = gr.Button("批量应用导演预设")
                     segment_edit_status = gr.Markdown("角色归属会同步轨道 ID 和角色名称。")
                     director_segments = gr.Dataframe(
                         headers=SEGMENT_HEADERS,
@@ -1269,10 +1369,10 @@ def build_ui() -> gr.Blocks:
                         column_widths=[70, 120, 130, 100, 80, 280, 280, 180, 110, 100, 90, 120],
                         pinned_columns=5,
                         show_search="filter",
-                        static_columns=[0],
+                        static_columns=[0, 2, 3, 7, 8, 10],
                         elem_classes="director-table",
                     )
-                    gr.Markdown("句内节奏请用中文描述，例如“韵母自然舒展，短语间停连清晰”或“紧凑表达，声母清晰”。长篇导演不会用整句倍数冒充自然语速。")
+                    gr.Markdown("态度、情绪和句内节奏使用中文预设。句内节奏控制语义停连和表达方式，长篇导演的统一时长系数固定为 1.0。")
                     gr.Markdown("**全篇固定纠音表**　合成前按较长词组优先应用，原始文本和实际朗读文本都会保留在 JSON 清单中。")
                     with gr.Row():
                         pronunciation_source = gr.Textbox(label="原词组合", placeholder="例如：重庆银行")
@@ -1345,7 +1445,7 @@ def build_ui() -> gr.Blocks:
                 project_id_state, project_title, director_content_type, director_source, director_guidance,
                 director_state, director_roles, director_segments, director_cleaned, director_summary,
                 pronunciation_table, generated_voice_state, role_voice_preview_choice, role_voice_preview,
-                library_target_role, segment_role_choice, project_status,
+                library_target_role, segment_role_choice, role_preset_target, project_status,
             ],
             show_progress="hidden",
         )
@@ -1385,14 +1485,20 @@ def build_ui() -> gr.Blocks:
         role_voice_preview_choice.change(preview_role_voice, role_voice_preview_choice, role_voice_preview, show_progress="hidden")
         add_role_button.click(
             add_project_role,
-            inputs=[director_roles, new_role_name, new_role_kind, new_role_profile, new_role_condition, new_role_rhythm],
+            inputs=[director_roles, new_role_name, new_role_kind, new_role_profile, new_role_voice_style, new_role_condition, new_role_rhythm],
             outputs=[director_roles, library_target_role, segment_role_choice, role_edit_status],
+            show_progress="hidden",
+        )
+        role_preset_apply.click(
+            apply_role_presets,
+            inputs=[director_roles, role_preset_target, role_voice_style, role_custom_voice_prompt, role_rhythm_preset, role_regenerate],
+            outputs=[director_roles, role_edit_status],
             show_progress="hidden",
         )
         director_roles.change(
             refresh_role_choices,
             inputs=[director_roles],
-            outputs=[library_target_role, segment_role_choice],
+            outputs=[library_target_role, segment_role_choice, role_preset_target],
             show_progress="hidden",
         )
         voice_library_apply.click(
@@ -1415,6 +1521,12 @@ def build_ui() -> gr.Blocks:
         segment_role_apply.click(
             assign_known_role,
             inputs=[director_segments, director_roles, segment_order_expression, segment_role_choice],
+            outputs=[director_segments, segment_edit_status],
+            show_progress="hidden",
+        )
+        segment_preset_apply.click(
+            apply_segment_presets,
+            inputs=[director_segments, segment_order_expression, segment_attitude_preset, segment_emotion_preset, segment_pace_preset],
             outputs=[director_segments, segment_edit_status],
             show_progress="hidden",
         )
