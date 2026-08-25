@@ -63,3 +63,20 @@ Invoke-RestMethod http://127.0.0.1:7864/api/health
 git diff --check
 Get-NetTCPConnection -LocalPort 7861,7862,7863,7864 -State Listen
 ```
+
+## 第 103 行跨页角色修改修复
+
+```powershell
+Set-Location D:\workspace\IndexTTS-2.5\product-studio
+pnpm test
+pnpm build
+
+Set-Location D:\workspace\IndexTTS-2.5
+.\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director_worker.py tests\test_text_director.py tests\test_voice_design_worker.py tests\test_windows_launcher.py -q
+.\.venv\Scripts\python.exe -m py_compile text_director.py novel_project.py product_analysis_worker.py product_voice_worker.py voice_design_worker.py
+git diff --check
+.\scripts\start_indextts25_windows.ps1 -SkipBuild
+Invoke-RestMethod http://127.0.0.1:7864/api/health
+Invoke-RestMethod http://127.0.0.1:7864/api/active-job
+Invoke-RestMethod http://127.0.0.1:7864/api/projects/20260825-104455-白夜行01-869866
+```

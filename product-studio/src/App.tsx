@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from './api';
+import { updateSegmentByOrder } from './segmentState';
 import type { Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
 
 const { Header, Content } = Layout;
@@ -202,20 +203,14 @@ function Studio() {
     };
   }, []);
 
-  const setSegment = (index: number, column: number, value: string | number) => {
+  const setSegment = (order: number, column: number, value: string | number) => {
     if (jobRunning) return;
     setProject((current) => {
       if (!current) return current;
-      const segments = current.segments.map((row, i) => {
-        if (i !== index) return row;
-        const updated = row.map((cell, c) => c === column ? value : cell) as SegmentRow;
-        if (column === 2) {
-          const role = current.roles.find((item) => item[0] === value);
-          if (role) updated[3] = role[1];
-        }
-        return updated;
-      });
-      setDirty(true); return { ...current, segments };
+      const segments = updateSegmentByOrder(current.segments, current.roles, order, column, value);
+      if (segments === current.segments) return current;
+      setDirty(true);
+      return { ...current, segments };
     });
   };
 
@@ -325,15 +320,15 @@ function Studio() {
     return [
       { title: '序号', dataIndex: 0, width: 70, fixed: 'left' },
       { title: '章节', dataIndex: 1, width: 130, fixed: 'left' },
-      { title: '角色', dataIndex: 2, width: 190, render: (v, _r, i) => <Select disabled={jobRunning} showSearch value={v} options={roleOptions} onChange={(x) => setSegment(i, 2, x)} /> },
-      { title: '语言', dataIndex: 4, width: 100, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.languages.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 4, x)} /> },
+      { title: '角色', dataIndex: 2, width: 190, render: (v, row) => <Select disabled={jobRunning} showSearch value={v} options={roleOptions} onChange={(x) => setSegment(row[0], 2, x)} /> },
+      { title: '语言', dataIndex: 4, width: 100, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.languages.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 4, x)} /> },
       { title: '原文', dataIndex: 5, width: 300, render: (v) => <Text>{v}</Text> },
-      { title: '合成文本', dataIndex: 6, width: 320, render: (v, _r, i) => <Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={v} onChange={(e) => setSegment(i, 6, e.target.value)} /> },
-      { title: '态度', dataIndex: 7, width: 160, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 7, x)} /> },
-      { title: '情绪', dataIndex: 8, width: 130, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 8, x)} /> },
-      { title: '强度', dataIndex: 9, width: 110, render: (v, _r, i) => <InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={v} onChange={(x) => setSegment(i, 9, x ?? 0.5)} /> },
-      { title: '句内节奏', dataIndex: 10, width: 150, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.paces.map(value => ({ value, label: value }))} onChange={(x) => setSegment(i, 10, x)} /> },
-      { title: '停顿 ms', dataIndex: 11, width: 130, render: (v, _r, i) => <InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={v} onChange={(x) => setSegment(i, 11, x ?? 0)} /> },
+      { title: '合成文本', dataIndex: 6, width: 320, render: (v, row) => <Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={v} onChange={(e) => setSegment(row[0], 6, e.target.value)} /> },
+      { title: '态度', dataIndex: 7, width: 160, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 7, x)} /> },
+      { title: '情绪', dataIndex: 8, width: 130, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 8, x)} /> },
+      { title: '强度', dataIndex: 9, width: 110, render: (v, row) => <InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={v} onChange={(x) => setSegment(row[0], 9, x ?? 0.5)} /> },
+      { title: '句内节奏', dataIndex: 10, width: 150, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.paces.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 10, x)} /> },
+      { title: '停顿 ms', dataIndex: 11, width: 130, render: (v, row) => <InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={v} onChange={(x) => setSegment(row[0], 11, x ?? 0)} /> },
     ];
   }, [presets, roleOptions, project, jobRunning]);
 

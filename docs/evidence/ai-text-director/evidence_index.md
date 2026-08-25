@@ -45,3 +45,6 @@
 | AI 路由能处理姓名和人物小传指代 | 只读真实调用“笹垣说话更疲惫”“经营烤乌贼饼摊位的女性声音更温和” | 高 | 分别分配到 role_001 和 role_002 |
 | 明确点名角色不能扩散成全局 | 首次真实错误结果、`validate_guidance_assignments`、自动重试后的正确结果 | 高 | 确定性规则用于验证 AI 输出范围 |
 | 女性角色拒绝明显男声音色 | 原老板娘 89.5 Hz、原死者妻子 76.7 Hz；新音色 165.5 Hz 和 155.9 Hz；Worker 重试测试 | 高 | 基频用于明显错配防线，不能描述全部性别表现差异 |
+| 第 103 行角色可以跨页修改 | `segmentState.ts`、Node 类型剥离测试、`39-segment-role-edit-saved-reloaded.png` | 高 | 白夜行真实第 6 页 |
+| 角色修改同步 ID 与名称并持久化 | `/api/projects/20260825-104455-白夜行01-869866` 返回 `narrator / 旁白`、保存刷新复查 | 高 | 本次修正第 103 行 |
+| 角色列表可见且可选择 | `40-segment-role-select-options.png`、7 个真实角色选项、`select-popup-open=true` | 高 | 桌面浏览器视口 |

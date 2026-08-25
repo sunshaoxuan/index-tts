@@ -65,3 +65,9 @@
 43. 浏览器实际播放老板娘新音色 1.18 秒，音频总长 5.52 秒；页面显示 qwen3:8b 语义分配、女性硬约束和无旁白条件的最终 VoiceDesign 指令；Console 0 error、0 warning。
 44. 相关 Python 回归 48/48、Node 10/10、Windows 启动器 3/3、TypeScript 与 Vite 生产构建通过。新增覆盖 AI 路由、显式目标验证、女性错配重试、未验证缓存拒绝和跨轨污染音色隔离。
 45. 七个历史受污染永久音色已标记 `quarantined=true`，包含原老板娘、原笹垣两个版本及其他受影响人物；隔离音色不会被签名查找或音色库列表复用，音频过程文件继续保留以供审计。
+46. Node 13/13 通过，其中 3 项新增测试覆盖按稳定序号更新第 103 行、角色 ID 与名称同步、未知角色和未知序号拒绝。
+47. TypeScript 与 Vite 生产构建通过。测试文件从浏览器应用编译范围排除，由 Node 24 类型剥离测试流程独立执行。
+48. 产品相关 Python 回归 48/48 通过，`py_compile` 与 `git diff --check` 通过。唯一警告来自 librosa 依赖的弃用提示。
+49. 白夜行真实第 103 行选择旁白后，页面显示 `旁白 narrator`，保存按钮启用；保存完成后刷新并重新打开第 6 页仍显示相同角色。
+50. 项目 API 返回第 103 行 `role_id=narrator`、`role_name=旁白`。`/api/active-job` 返回 `available=false`，7864 由当前 Node 产品服务监听。
+51. 截图 39 显示保存重载后的第 103 行，截图 40 显示该行完整角色选项。最终 Browser Console 0 error、0 warning。
