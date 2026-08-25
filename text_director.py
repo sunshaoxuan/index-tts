@@ -86,6 +86,20 @@ LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
 )
+INLINE_QUOTE_LEFT_PATTERN = re.compile(
+    r"(?:叫作|叫做|名为|称为|命名为|写着|写有|标着|挂着|所谓|提到|看见|看到|读作|标题是|名称是|称[^。！？!?；;]{0,12}为)\s*$"
+)
+INLINE_QUOTE_RIGHT_PATTERN = re.compile(r"^(?:的|之|这个|这项|这种|这类|一词|一语|等|所|被称|叫作|叫做)")
+INLINE_QUOTED_TEXT_PATTERN = re.compile(
+    r"\s*(?:“([^“”\n]{1,24})”|\"([^\"\n]{1,24})\"|‘([^‘’\n]{1,24})’|「([^「」\n]{1,24})」|『([^『』\n]{1,24})』)\s*"
+)
+SPEECH_CUE_PATTERN = re.compile(
+    r"(?:说|说道|道|问|问道|答|回答|回应|喊|叫|低语|耳语|吼|笑)(?:了)?(?:一|这|那)?(?:声|句)?\s*[：:]?\s*$"
+)
+ROLE_REFERENCE_TERMS = (
+    "老板娘", "女老板", "店老板", "店主", "老板", "教授", "老师", "医生", "护士", "警察", "刑警",
+    "组长", "队长", "记者", "主播", "妻子", "丈夫", "母亲", "父亲", "妇人", "女子", "男人", "女人",
+)
 QUOTE_TRANSLATION = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'", "„": '"', "‟": '"'})
 
 ROLE_HEADERS = ["轨道ID", "角色", "类型", "角色说明", "音色预设或高级提示", "音色ID", "角色节奏预设", "重新生成"]
@@ -636,7 +650,7 @@ class OllamaTextDirector:
 任务要求：
 1. 清理适合朗读的文本，修正多余空白和明显排版噪声，不改变事实、人物关系和原意。
 2. 智能识别自然段、段内句子、人物、旁白、主播、记者和采访对象，每个可独立配音的句子形成一条 segment。
-3. 旁白和说话归属文字也必须保留并单独成句。例如“李明说：”属于旁白，不能只保留引号内台词。
+3. 拆句前先由你结合完整句、相邻句、人物表和说话动作，判断每组引号的语义功能属于人物对白、心理活动、句内引用或普通叙述，再决定 segment 边界和角色轨道。不要输出中间推理。旁白和说话归属文字也必须保留并单独成句。例如“李明说：”属于旁白，不能只保留引号内台词。名称、招牌文字、术语和标题等句内短引用属于所在叙述句的句法成分，不得仅因引号独立拆句。例如“店门挂着‘烤乌贼饼’的招牌”应保持为同一条旁白 segment。
 4. 每条 source_text 必须从本次原文中按顺序逐字复制。全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
 5. text 是对应 source_text 的可朗读清洗稿。去除只用于排版的外层引号，不得遗漏可朗读信息。
 6. 标注具体态度语气、八类情绪、0 到 1 情绪强度、slow/medium/fast 语速和 0 到 3000 毫秒句后停顿。
@@ -807,7 +821,13 @@ JSON Schema：{schema_text}
             segments.append(segment)
 
         restore_exact_source_text(segments, source)
-        segments = self._split_embedded_dialogue(segments, characters)
+        while True:
+            split_segments = self._split_embedded_dialogue(segments, characters)
+            if len(split_segments) == len(segments):
+                break
+            segments = split_segments
+        segments = self._assign_adjacent_quoted_speakers(segments, characters)
+        segments = self._merge_inline_quoted_narration(segments)
         character_ids = {character["id"] for character in characters}
         for segment in segments:
             if segment["speaker_id"] not in character_ids:
@@ -846,9 +866,9 @@ JSON Schema：{schema_text}
         for segment in segments:
             source_text = segment["source_text"]
             quote_bounds: tuple[int, int] | None = None
-            for opening, closing in (("“", "”"), ('"', '"')):
+            for opening, closing in (("“", "”"), ('"', '"'), ("‘", "’"), ("「", "」"), ("『", "』")):
                 start = source_text.find(opening)
-                end = source_text.rfind(closing)
+                end = source_text.find(closing, start + 1) if start >= 0 else -1
                 if start >= 0 and end > start:
                     quote_bounds = (start, end)
                     break
@@ -881,7 +901,7 @@ JSON Schema：{schema_text}
 
             dialogue_speaker = segment
             if segment["speaker_kind"] == "narrator":
-                matched = next((character for character in speakers if character["name"] in prefix), None)
+                matched = OllamaTextDirector._match_context_speaker(prefix, speakers)
                 if matched is None:
                     inferred_name = OllamaTextDirector._infer_quoted_speaker(prefix)
                     if inferred_name:
@@ -926,13 +946,139 @@ JSON Schema：{schema_text}
         return split_segments
 
     @staticmethod
+    def _match_context_speaker(context: str, speakers: list[dict[str, Any]]) -> dict[str, Any] | None:
+        compact = re.sub(r"\s+", "", str(context or ""))
+        exact = next((character for character in speakers if str(character.get("name", "")) in compact), None)
+        if exact is not None:
+            return exact
+        matches: list[tuple[int, dict[str, Any]]] = []
+        for character in speakers:
+            identity = f"{character.get('name', '')}{character.get('profile', '')}"
+            for term in ROLE_REFERENCE_TERMS:
+                if term in compact and term in identity:
+                    matches.append((len(term), character))
+        if matches:
+            return max(matches, key=lambda item: item[0])[1]
+        inferred_name = OllamaTextDirector._infer_quoted_speaker(compact)
+        if inferred_name:
+            return next(
+                (
+                    character
+                    for character in speakers
+                    if inferred_name == str(character.get("name", ""))
+                    or inferred_name in str(character.get("profile", ""))
+                ),
+                None,
+            )
+        return None
+
+    @staticmethod
+    def _assign_adjacent_quoted_speakers(
+        segments: list[dict[str, Any]],
+        characters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        speakers = [character for character in characters if character["kind"] != "narrator"]
+        assigned: list[dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            source_text = str(segment.get("source_text", ""))
+            previous_source = str(segments[index - 1].get("source_text", "")) if index else ""
+            quote_only = bool(INLINE_QUOTED_TEXT_PATTERN.fullmatch(source_text))
+            speech_context = bool(is_speech_attribution(previous_source) or SPEECH_CUE_PATTERN.search(previous_source.strip()))
+            if segment.get("speaker_kind") == "narrator" and quote_only and speech_context:
+                matched = OllamaTextDirector._match_context_speaker(previous_source, speakers)
+                if matched is not None:
+                    segment = {
+                        **segment,
+                        "speaker_id": matched["id"],
+                        "speaker_name": matched["name"],
+                        "speaker_kind": matched["kind"],
+                    }
+            assigned.append(segment)
+        return assigned
+
+    @staticmethod
+    def _merge_inline_quoted_narration(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Rebuild a narrator sentence when a short quoted name was split as if it were dialogue."""
+        merged = list(segments)
+        index = 1
+        while index + 1 < len(merged):
+            left = merged[index - 1]
+            quoted = merged[index]
+            right = merged[index + 1]
+            match = INLINE_QUOTED_TEXT_PATTERN.fullmatch(str(quoted.get("source_text", "")))
+            content = next((group.strip() for group in match.groups() if group is not None), "") if match else ""
+            left_source = str(left.get("source_text", ""))
+            right_source = str(right.get("source_text", ""))
+            inline_context = bool(
+                match
+                and content
+                and not any(mark in content for mark in "。！？!?；;：:")
+                and left.get("speaker_kind") == "narrator"
+                and right.get("speaker_kind") == "narrator"
+                and (
+                    INLINE_QUOTE_RIGHT_PATTERN.match(right_source.lstrip())
+                    or (
+                        INLINE_QUOTE_LEFT_PATTERN.search(left_source.strip())
+                        and not SPEECH_CUE_PATTERN.search(left_source.strip())
+                    )
+                )
+            )
+            if not inline_context:
+                index += 1
+                continue
+
+            left_boundary = max((position for position, char in enumerate(left_source) if char in "。！？!?；;\n"), default=-1)
+            before_end = left_boundary + 1
+            while before_end < len(left_source) and left_source[before_end].isspace():
+                before_end += 1
+            before_source = left_source[:before_end]
+            inline_left = left_source[before_end:]
+
+            right_end = len(right_source)
+            for position, char in enumerate(right_source):
+                if char in "。！？!?；;\n":
+                    right_end = position + 1
+                    while right_end < len(right_source) and right_source[right_end].isspace():
+                        right_end += 1
+                    break
+            inline_source = inline_left + str(quoted["source_text"]) + right_source[:right_end]
+            after_source = right_source[right_end:]
+
+            replacement: list[dict[str, Any]] = []
+            if coverage_key(before_source):
+                replacement.append({**left, "source_text": before_source, "text": before_source.strip()})
+            else:
+                inline_source = before_source + inline_source
+
+            replacement.append(
+                {
+                    **left,
+                    "speaker_id": "narrator",
+                    "speaker_name": "旁白",
+                    "speaker_kind": "narrator",
+                    "source_text": inline_source,
+                    "text": inline_source.strip(),
+                    "pace": "medium",
+                    "pause_after_ms": right.get("pause_after_ms", left.get("pause_after_ms", 300)),
+                }
+            )
+            if coverage_key(after_source):
+                replacement.append({**right, "source_text": after_source, "text": after_source.strip()})
+            elif after_source:
+                replacement[-1]["source_text"] += after_source
+
+            merged[index - 1 : index + 2] = replacement
+            index = max(1, index - 1)
+        return merged
+
+    @staticmethod
     def _infer_quoted_speaker(prefix: str) -> str:
         compact = re.sub(r"\s+", "", prefix)
         patterns = (
             r"(?:传来|响起|听见|听到)([\u4e00-\u9fff]{1,6})的(?:喊声|声音|叫声|低语)",
             r"([\u4e00-\u9fff]{1,6})在[^，。！？；：]{0,16}(?:说|问|答|回应|喊|叫|道)[：:]$",
             r"(?:^|[。！？；])([\u4e00-\u9fff]{2,4}?)(?:握|抬|看|走|站|坐|转|伸|点|摇|皱|拿|放|推|拉)[^，。！？；：]{0,16}，(?:冷冷|轻声|低声|大声|焦急|平静|愤怒)?(?:地)?(?:说|问|答|回应|喊|叫|道)[：:]$",
-            r"([\u4e00-\u9fff]{1,6})(?:冷冷|轻声|大声|焦急|平静|愤怒)?(?:地)?(?:说|问|答|回应|喊|叫|道)[：:]$",
+            r"([\u4e00-\u9fff]{1,6}?)(?:冷冷|轻声|低声|大声|焦急|平静|愤怒|亲切|温和|严肃|缓缓)?(?:地)?(?:说|问|答|回应|喊|叫|道)[：:]$",
         )
         for pattern in patterns:
             match = re.search(pattern, compact)

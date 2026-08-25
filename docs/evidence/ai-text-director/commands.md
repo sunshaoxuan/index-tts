@@ -80,3 +80,15 @@ Invoke-RestMethod http://127.0.0.1:7864/api/health
 Invoke-RestMethod http://127.0.0.1:7864/api/active-job
 Invoke-RestMethod http://127.0.0.1:7864/api/projects/20260825-104455-白夜行01-869866
 ```
+
+## 句内短引用与多组引号验证
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_text_director.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_novel_project.py tests\test_text_director_worker.py tests\test_text_director.py tests\test_voice_design_worker.py tests\test_windows_launcher.py -q
+.\.venv\Scripts\python.exe -m py_compile text_director.py novel_project.py product_analysis_worker.py product_voice_worker.py voice_design_worker.py
+git diff --check
+Invoke-RestMethod http://127.0.0.1:7864/api/active-job
+```
+
+辅助检查 `ollama ps` 在当前 PowerShell PATH 中不可用。实际 AI 可用性由产品任务 `29437e3f39534deb8c236752cca1e956`、`e0b8cf9a8e97490c933892c47d41b24d` 和 `30f055efd138422984cbf81496ed5b49` 的完成终态验证。

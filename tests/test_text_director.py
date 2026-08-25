@@ -193,6 +193,148 @@ def test_ai_analysis_restores_curly_quotes_and_splits_embedded_dialogue():
     assert result["segments"][2]["text"] == "你来了。"
 
 
+def test_ai_analysis_keeps_short_quoted_sign_name_inside_narrator_sentence():
+    source = "笹垣没有直接走向大楼，而是在公园前右转。转角数来第五家店挂着“烤乌贼饼”的招牌，店面仅一叠大小。烤乌贼饼的台子面向马路。"
+    response = {
+        "content_type": "novel",
+        "title": "白夜行",
+        "characters": [_character()],
+        "segments": [
+            _segment(1, "笹垣没有直接走向大楼，而是在公园前右转。转角数来第五家店挂着", "笹垣没有直接走向大楼，而是在公园前右转。转角数来第五家店挂着"),
+            _segment(2, "“烤乌贼饼”", "烤乌贼饼"),
+            _segment(3, "的招牌，店面仅一叠大小。烤乌贼饼的台子面向马路。", "的招牌，店面仅一叠大小。烤乌贼饼的台子面向马路。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == [
+        "笹垣没有直接走向大楼，而是在公园前右转。",
+        "转角数来第五家店挂着“烤乌贼饼”的招牌，店面仅一叠大小。",
+        "烤乌贼饼的台子面向马路。",
+    ]
+    assert all(item["speaker_id"] == "narrator" for item in result["segments"])
+    assert result["segments"][1]["pace"] == "medium"
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+
+
+def test_ai_analysis_keeps_short_unpunctuated_dialogue_as_character_speech():
+    source = "老板娘说声“好了”，把饼递给笹垣。"
+    response = {
+        "content_type": "novel",
+        "title": "白夜行",
+        "characters": [_character(), _character("shopkeeper", "老板娘", "character")],
+        "segments": [_segment(1, source, source, "shopkeeper", "老板娘", "character")],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["speaker_name"] for item in result["segments"]] == ["旁白", "老板娘", "旁白"]
+    assert result["segments"][1]["source_text"] == "“好了”"
+    assert result["segments"][1]["text"] == "好了"
+
+
+def test_ai_analysis_pairs_multiple_quotes_and_distinguishes_sign_from_dialogue():
+    source = "笹垣看了看写着“烤乌贼饼四十元”的牌子，付了钱。老板娘说：“多谢。”"
+    response = {
+        "content_type": "novel",
+        "title": "白夜行",
+        "characters": [_character(), _character("shopkeeper", "老板娘", "character")],
+        "segments": [_segment(1, source, source)],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == [
+        "笹垣看了看写着“烤乌贼饼四十元”的牌子，付了钱。",
+        "老板娘说：",
+        "“多谢。”",
+    ]
+    assert [item["speaker_name"] for item in result["segments"]] == ["旁白", "旁白", "老板娘"]
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+
+
+@pytest.mark.parametrize(("opening", "closing"), [("‘", "’"), ("「", "」"), ("『", "』"), ('"', '"')])
+def test_ai_analysis_keeps_common_inline_quote_styles(opening, closing):
+    source = f"文章提到{opening}寂静之海{closing}这个标题。"
+    response = {
+        "content_type": "novel",
+        "title": "引号",
+        "characters": [_character()],
+        "segments": [
+            _segment(1, "文章提到", "文章提到"),
+            _segment(2, f"{opening}寂静之海{closing}", "寂静之海"),
+            _segment(3, "这个标题。", "这个标题。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == [source]
+    assert result["segments"][0]["speaker_name"] == "旁白"
+
+
+def test_inline_name_continuation_takes_priority_over_ambiguous_call_verb():
+    source = "他叫“张三”这个名字。"
+    response = {
+        "content_type": "novel",
+        "title": "名字",
+        "characters": [_character()],
+        "segments": [
+            _segment(1, "他叫", "他叫"),
+            _segment(2, "“张三”", "张三"),
+            _segment(3, "这个名字。", "这个名字。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["source_text"] for item in result["segments"]] == [source]
+    assert result["segments"][0]["speaker_name"] == "旁白"
+
+
+def test_pre_split_unpunctuated_dialogue_inherits_profile_alias_speaker():
+    source = "充分加热后，老板娘包好饼，说声“好了”，把饼递给笹垣。"
+    shopkeeper = {
+        **_character("shopkeeper", "中年妇人", "character"),
+        "profile": "经营店铺的老板娘，热情招待顾客。",
+    }
+    response = {
+        "content_type": "novel",
+        "title": "白夜行",
+        "characters": [_character(), shopkeeper],
+        "segments": [
+            _segment(1, "充分加热后，老板娘包好饼，说声", "充分加热后，老板娘包好饼，说声"),
+            _segment(2, "“好了”", "好了"),
+            _segment(3, "，把饼递给笹垣。", "，把饼递给笹垣。"),
+        ],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["speaker_name"] for item in result["segments"]] == ["旁白", "中年妇人", "旁白"]
+    assert result["segments"][1]["source_text"] == "“好了”"
+
+
+def test_embedded_dialogue_uses_profile_alias_without_creating_adverb_role():
+    source = "老板娘亲切地说：“多谢。”"
+    shopkeeper = {
+        **_character("shopkeeper", "中年妇人", "character"),
+        "profile": "经营店铺的老板娘，热情招待顾客。",
+    }
+    response = {
+        "content_type": "novel",
+        "title": "白夜行",
+        "characters": [_character(), shopkeeper],
+        "segments": [_segment(1, source, source)],
+    }
+
+    result = FakeDirector([response]).analyze_document(source, content_type="novel")
+
+    assert [item["speaker_name"] for item in result["segments"]] == ["旁白", "中年妇人"]
+    assert all(item["name"] != "老板娘亲切地" for item in result["characters"])
+
+
 def test_ai_analysis_falls_back_after_two_incomplete_results():
     invalid = _valid_response()
     invalid["segments"] = [invalid["segments"][1]]
@@ -501,6 +643,10 @@ def test_director_prompt_requires_evidence_grounded_biography_and_voice_directio
     assert "voice_hint 是声音导演建议" in prompt
     assert "音高、共鸣位置、气息、吐字方式和基础情绪" in prompt
     assert "根据角色内容选择" in prompt
+    assert "句内短引用" in prompt
+    assert "烤乌贼饼" in prompt
+    assert "人物对白、心理活动、句内引用或普通叙述" in prompt
+    assert "相邻句、人物表和说话动作" in prompt
 
 
 def test_quoted_speaker_inference_does_not_treat_low_voice_as_a_name():

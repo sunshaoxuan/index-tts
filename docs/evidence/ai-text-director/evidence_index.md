@@ -48,3 +48,12 @@
 | 第 103 行角色可以跨页修改 | `segmentState.ts`、Node 类型剥离测试、`39-segment-role-edit-saved-reloaded.png` | 高 | 白夜行真实第 6 页 |
 | 角色修改同步 ID 与名称并持久化 | `/api/projects/20260825-104455-白夜行01-869866` 返回 `narrator / 旁白`、保存刷新复查 | 高 | 本次修正第 103 行 |
 | 角色列表可见且可选择 | `40-segment-role-select-options.png`、7 个真实角色选项、`select-popup-open=true` | 高 | 桌面浏览器视口 |
+| 句内招牌名称不再独立分句 | `test_ai_analysis_keeps_short_quoted_sign_name_inside_narrator_sentence`、`_merge_inline_quoted_narration` | 高 | 当前启发式覆盖 24 字以内短引用 |
+| 无标点短对白仍保持人物分轨 | `test_ai_analysis_keeps_short_unpunctuated_dialogue_as_character_speech` | 高 | 依赖左侧明确说话动作 |
+| 同句多个引号逐对区分 | `test_ai_analysis_pairs_multiple_quotes_and_distinguishes_sign_from_dialogue`、白夜行旧工程只读重组覆盖检查 | 高 | 旧工程只读检查未写回文件 |
+| 常用引号样式使用相同短引用规则 | `test_ai_analysis_keeps_common_inline_quote_styles` 四组参数 | 高 | 覆盖中文单引号、两类直角引号和 ASCII 双引号；中文双引号由真实原句覆盖 |
+| 预拆短对白继承已知角色 | `test_pre_split_unpunctuated_dialogue_inherits_profile_alias_speaker` | 高 | 上下文需有说话动作和可匹配角色身份 |
+| 人物小传别名阻止方式状语伪角色 | `test_embedded_dialogue_uses_profile_alias_without_creating_adverb_role` | 高 | 当前身份词表覆盖常见职业与关系称呼 |
+| 白夜行最终真实分析符合短引用规则 | 任务 `30f055efd138422984cbf81496ed5b49`、`41-inline-quoted-reference.png` | 高 | 5 个文本块，安全回退 0 |
+| 招牌引用和人物对白同时正确 | `42-inline-sign-and-dialogue.png`、项目 API 第 22 与 24 行 | 高 | 招牌为旁白，多谢为 role_002 |
+| 老板娘两条对白复用已有角色 | 项目 API 第 20、24 行与最终 7 条角色表 | 高 | AI 角色名为中年妇人，小传含店铺老板娘 |
