@@ -48,6 +48,8 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
     requests_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "state.json"
     stop_path = runtime_dir / "stop.request"
+    release_path = runtime_dir / "release.request"
+    release_response_path = runtime_dir / "release-response.json"
     runtime = VoiceDesignRuntime()
     started_at = time.time()
     _write_json(state_path, _state_payload(runtime, started_at))
@@ -58,6 +60,29 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
             stop_path.unlink(missing_ok=True)
             _write_json(state_path, _state_payload(runtime, started_at, phase="stopped"))
             return 0
+
+        if release_path.exists():
+            request_id = "unknown"
+            try:
+                envelope = json.loads(release_path.read_text(encoding="utf-8"))
+                request_id = str(envelope["request_id"])
+                _write_json(state_path, _state_payload(runtime, started_at, phase="releasing", release_request_id=request_id))
+                released = runtime.release()
+                completed_at = time.time()
+                _write_json(
+                    release_response_path,
+                    {"protocol": PROTOCOL_VERSION, "request_id": request_id, "released": released, "completed_at": completed_at},
+                )
+                _write_json(state_path, _state_payload(runtime, started_at, last_release_id=request_id, last_release_at=completed_at))
+            except Exception as exc:
+                _write_json(
+                    release_response_path,
+                    {"protocol": PROTOCOL_VERSION, "request_id": request_id, "error": str(exc), "completed_at": time.time()},
+                )
+                _write_json(state_path, _state_payload(runtime, started_at, last_release_id=request_id, last_release_error=str(exc)))
+            finally:
+                release_path.unlink(missing_ok=True)
+            continue
 
         request_files = sorted(requests_dir.glob("*.json"), key=lambda item: item.stat().st_mtime_ns)
         if not request_files:

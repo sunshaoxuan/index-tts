@@ -7,17 +7,64 @@ import threading
 from pathlib import Path
 from typing import Any
 
-import torch
+from voice_design_daemon_client import release_voice_design_model
 
-from indextts.infer_v2_5 import IndexTTS2
-from novel_project import NovelProjectStore, pronunciation_rows
-from text_director import render_directed_audio
+
+MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024**3
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def available_memory_bytes() -> int | None:
+    if os.name == "nt":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_ulong),
+                ("memory_load", ctypes.c_ulong),
+                ("total_physical", ctypes.c_ulonglong),
+                ("available_physical", ctypes.c_ulonglong),
+                ("total_page_file", ctypes.c_ulonglong),
+                ("available_page_file", ctypes.c_ulonglong),
+                ("total_virtual", ctypes.c_ulonglong),
+                ("available_virtual", ctypes.c_ulonglong),
+                ("available_extended_virtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.available_physical)
+        return None
+    try:
+        return int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _load_render_dependencies() -> tuple[Any, Any, Any, Any, Any]:
+    import torch
+    from indextts.infer_v2_5 import IndexTTS2
+    from novel_project import NovelProjectStore, pronunciation_rows
+    from text_director import render_directed_audio
+
+    return torch, IndexTTS2, NovelProjectStore, pronunciation_rows, render_directed_audio
+
+
+def prepare_render_environment(root: Path, status_path: Path) -> tuple[Any, Any, Any, Any, Any]:
+    write_json(status_path, {"phase": "preparing", "fraction": 0.005, "message": "正在释放音色设计模型，为完整渲染准备内存"})
+    release_voice_design_model(root)
+    available = available_memory_bytes()
+    if available is not None and available < MIN_AVAILABLE_MEMORY_BYTES:
+        available_gib = available / 1024**3
+        raise RuntimeError(f"完整渲染可用内存不足：当前 {available_gib:.1f} GiB，至少需要 2.0 GiB，请先释放主机内存后重试")
+    write_json(status_path, {"phase": "importing", "fraction": 0.01, "message": "正在加载 PyTorch CUDA 运行库"})
+    return _load_render_dependencies()
 
 
 def main() -> int:
@@ -30,6 +77,7 @@ def main() -> int:
     root = Path(request["root"]).resolve()
     status_path = Path(args.status).resolve()
     result_path = Path(args.result).resolve()
+    torch, IndexTTS2, NovelProjectStore, pronunciation_rows, render_directed_audio = prepare_render_environment(root, status_path)
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
     model_dir = root / "checkpoints"

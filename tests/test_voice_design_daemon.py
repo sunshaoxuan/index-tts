@@ -5,7 +5,7 @@ from pathlib import Path
 
 import voice_design_daemon_client as daemon_client
 from voice_design_daemon import _within
-from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
+from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state, release_voice_design_model
 
 
 def test_process_alive_recognizes_the_current_process():
@@ -87,3 +87,37 @@ def test_daemon_rejects_paths_outside_the_repository(tmp_path):
         assert "超出工程目录" in str(error)
     else:
         raise AssertionError("outside path was accepted")
+
+
+def test_release_voice_design_model_returns_without_request_for_cold_runtime(tmp_path):
+    assert release_voice_design_model(tmp_path) == {"runtime_available": False, "released": False}
+
+
+def test_release_voice_design_model_waits_for_matching_response(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime-output" / "voice-design-runtime"
+    runtime_dir.mkdir(parents=True)
+    response_path = runtime_dir / "release-response.json"
+    states = iter(
+        [
+            {"protocol": 1, "pid": 321, "phase": "ready", "model_loaded": True},
+            {"protocol": 1, "pid": 321, "phase": "ready", "model_loaded": False},
+        ]
+    )
+    monkeypatch.setattr(daemon_client, "read_runtime_state", lambda _runtime_dir: next(states))
+    monkeypatch.setattr(daemon_client.time, "sleep", lambda _seconds: None)
+
+    original_replace = daemon_client.os.replace
+
+    def replace_and_respond(source, destination):
+        original_replace(source, destination)
+        request = json.loads(Path(destination).read_text(encoding="utf-8"))
+        response_path.write_text(
+            json.dumps({"protocol": 1, "request_id": request["request_id"], "released": True, "completed_at": 12.5}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(daemon_client.os, "replace", replace_and_respond)
+    result = release_voice_design_model(tmp_path, timeout_seconds=1)
+
+    assert result == {"runtime_available": True, "released": True, "pid": 321, "completed_at": 12.5}
+    assert not (runtime_dir / "release.request.tmp").exists()

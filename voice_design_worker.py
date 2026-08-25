@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import time
@@ -62,6 +63,22 @@ class VoiceDesignRuntime:
         self.model: Any | None = None
         self.model_dir: Path | None = None
         self.torch: Any | None = None
+
+    def release(self) -> bool:
+        had_model = self.model is not None
+        torch = self.torch
+        self.model = None
+        self.model_dir = None
+        self.torch = None
+        gc.collect()
+        if torch is not None:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+            except Exception:
+                pass
+        return had_model
 
     def get_model(self, payload: dict[str, Any], status_path: Path) -> tuple[Any, Any, bool]:
         requested_model_dir = Path(payload["model_dir"]).resolve()

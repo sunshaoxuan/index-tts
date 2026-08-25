@@ -119,3 +119,42 @@ def enqueue_voice_design_request(
     temporary.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, request_path)
     return request_id, request_path
+
+
+def release_voice_design_model(root: Path, timeout_seconds: float = 30) -> dict[str, Any]:
+    runtime_dir = root.resolve() / "runtime-output" / "voice-design-runtime"
+    state = read_runtime_state(runtime_dir)
+    if state is None:
+        return {"runtime_available": False, "released": False}
+    if not state.get("model_loaded"):
+        return {"runtime_available": True, "released": False, "pid": state.get("pid")}
+
+    request_id = uuid.uuid4().hex
+    request_path = runtime_dir / "release.request"
+    temporary = runtime_dir / "release.request.tmp"
+    response_path = runtime_dir / "release-response.json"
+    temporary.write_text(
+        json.dumps({"protocol": PROTOCOL_VERSION, "request_id": request_id, "requested_at": time.time()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary, request_path)
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        current = read_runtime_state(runtime_dir)
+        if current is None:
+            raise RuntimeError("VoiceDesign Runtime 在释放模型时退出")
+        try:
+            response = json.loads(response_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            response = None
+        if response and response.get("request_id") == request_id:
+            if response.get("error"):
+                raise RuntimeError(f"VoiceDesign 模型释放失败：{response['error']}")
+            return {
+                "runtime_available": True,
+                "released": bool(response.get("released")),
+                "pid": current.get("pid"),
+                "completed_at": response.get("completed_at"),
+            }
+        time.sleep(0.1)
+    raise TimeoutError(f"VoiceDesign 模型在 {timeout_seconds:g} 秒内没有释放")

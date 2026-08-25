@@ -1,6 +1,7 @@
 import json
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 
@@ -8,6 +9,34 @@ import voice_design_worker as worker
 from novel_project import NovelProjectStore
 from product_voice_worker import quarantine_cross_role_voices, resolve_or_reuse_guidance
 from text_director import guidance_role_signature
+
+
+def test_voice_design_runtime_release_drops_model_and_cuda_cache():
+    calls = []
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def empty_cache():
+            calls.append("empty_cache")
+
+        @staticmethod
+        def ipc_collect():
+            calls.append("ipc_collect")
+
+    runtime = worker.VoiceDesignRuntime()
+    runtime.model = object()
+    runtime.model_dir = Path("voice-model")
+    runtime.torch = type("FakeTorch", (), {"cuda": FakeCuda})
+
+    assert runtime.release() is True
+    assert runtime.model is None
+    assert runtime.model_dir is None
+    assert runtime.torch is None
+    assert calls == ["empty_cache", "ipc_collect"]
 
 
 def test_voice_design_worker_generates_each_role(tmp_path, monkeypatch):
