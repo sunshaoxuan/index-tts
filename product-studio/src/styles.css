@@ -1,0 +1,43 @@
+:root { --cream:#ffedd7; --walnut:#100904; --bark:#382416; --cork:#40372e; --drift:#6c5f51; --ember:#dc5000; }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--cream); background: var(--walnut); font-family: Inter, Söhne, "Neue Haas Grotesk", system-ui, sans-serif; font-feature-settings: "ss01" on; }
+body, button, input, textarea, .ant-select { letter-spacing: normal; }
+.studio-shell { min-height: 100vh; background: var(--walnut); }
+.studio-header { position: sticky; top: 0; z-index: 20; height: 76px; padding: 0 24px; background: rgba(16,9,4,.88); border-bottom: 1px dashed var(--cork); backdrop-filter: blur(16px); }
+.studio-header h4 { margin: 0 !important; color: var(--cream) !important; font-weight: 500 !important; text-transform: uppercase; }
+.brand-mark { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: var(--walnut); font-weight: 500; background: var(--cream); }
+.studio-content { width: 100%; padding: 24px; margin: 0 0 68px; }
+.ant-card { box-shadow: none !important; border: 1px dashed var(--cork) !important; background: transparent !important; }
+.ant-card-head { border-bottom: 1px dashed var(--cork) !important; }
+.hero-card { min-height: 38vh; margin-bottom: 18px; display: grid; align-items: end; background: radial-gradient(circle at 82% 18%, #382416 0, transparent 32%) !important; }
+.hero-card h1 { max-width: 920px; margin: 18px 0 !important; color: var(--cream) !important; font-size: clamp(41px, 5vw, 72px) !important; line-height: .9 !important; font-weight: 500 !important; text-transform: uppercase; }
+.hero-card p { max-width: 860px; color: var(--cream); font-size: 24px; line-height: 1.26; font-weight: 400; }
+.eyebrow { color: var(--ember) !important; font-weight: 500; text-transform: uppercase; }
+.project-bar { margin-bottom: 18px; }
+.job-progress { margin-top: 18px; padding-top: 18px; border-top: 1px dashed var(--cork); }
+.project-select { width: min(620px, 100%); display: grid; gap: 8px; text-transform: uppercase; }
+.project-select .ant-select { width: 100%; }
+.ant-btn { text-transform: uppercase; font-weight: 500; box-shadow: none !important; }
+.ant-btn-default { border-color: var(--cream); color: var(--cream); background: transparent; border-radius: 23px; }
+.ant-btn-default:hover { color: var(--cream) !important; border-color: var(--drift) !important; background: var(--bark) !important; }
+.ant-btn-primary { background: var(--bark) !important; color: var(--cream) !important; border-color: var(--bark) !important; border-radius: 36px !important; }
+.ant-btn-primary:hover { background: #4a3020 !important; }
+.ant-btn-dangerous { color: #e7a078 !important; }
+.ant-tabs-tab, .ant-card-head-title, .ant-table-thead { text-transform: uppercase; font-weight: 500; }
+.studio-table { margin-top: 18px; border-top: 1px dashed var(--cork); }
+.studio-table .ant-table-thead > tr > th { background: var(--walnut); color: var(--cream); font-weight: 500; }
+.studio-table .ant-select, .studio-table .ant-input-number, .cell-control { width: 100%; }
+.studio-table .ant-table-cell { vertical-align: top; border-bottom-style: dashed !important; }
+.ant-input, .ant-input-number, .ant-select-selector, textarea.ant-input { border-radius: 0 !important; background: transparent !important; }
+.ant-input, textarea.ant-input { color: var(--cream) !important; }
+.ant-select-dropdown, .ant-modal-content { color: var(--cream); background: var(--bark) !important; box-shadow: none !important; border: 1px dashed var(--cork); }
+.ant-select-item-option-selected { background: var(--cork) !important; }
+.ant-alert { color: var(--cream); background: rgba(56,36,22,.35) !important; border: 1px dashed var(--cork) !important; }
+.ant-progress-inner { background: var(--cork) !important; }
+.source-grid { display: grid; grid-template-columns: minmax(180px, .35fr) minmax(280px, 1fr); gap: 24px; margin-bottom: 31px; }
+.source-grid > div, .modal-fields > div { display: grid; gap: 9px; }
+.source-grid .ant-select, .modal-fields, .modal-fields .ant-select { width: 100%; }
+.source-text { margin: 9px 0 12px; min-height: 360px !important; line-height: 1.65; }
+.ant-tag { border-radius: 9999px; background: transparent; text-transform: uppercase; }
+audio { width: min(720px, 100%); filter: sepia(.5) saturate(.7); }
+@media (max-width: 800px) { .studio-header { padding: 0 16px; } .studio-header .ant-tag { display: none; } .studio-content { padding: 12px; } .hero-card { min-height: 46vh; } .hero-card h1 { font-size: 41px !important; } .hero-card p { font-size: 18px; } .source-grid { grid-template-columns: 1fr; } }

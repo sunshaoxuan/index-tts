@@ -106,7 +106,6 @@ uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/
 > - `--all-extras`: Añade automáticamente *todas* las funciones adicionales
 >   enumeradas a continuación. Puedes quitar este indicador si quieres
 >   personalizar tu instalación.
-> - `--extra webui`: Añade compatibilidad con la WebUI (recomendado).
 > - `--extra deepspeed`: Añade compatibilidad con DeepSpeed (puede acelerar la
 >   inferencia en algunos sistemas).
 
@@ -171,26 +170,14 @@ uv run tools/gpu_check.py
 
 ## 💻 Uso
 
-### 🌐 Demo web
+### 🌐 Product Studio para Windows
 
-```bash
-# IndexTTS-2.5 (default)
-uv run webui.py
-
-# IndexTTS-2
-uv run webui.py --version 2 --model_dir ./checkpoints_2
+```powershell
+.\scripts\start_indextts25_windows.ps1
 ```
 
-Abre tu navegador y visita `http://127.0.0.1:7860` para ver la demo.
-
-Puedes ajustar la configuración para habilitar la inferencia en BF16
-(IndexTTS-2.5) / FP16 (IndexTTS-2) (menor uso de VRAM), la aceleración con
-DeepSpeed, núcleos CUDA compilados para mayor velocidad, etc. Todas las
-opciones disponibles se pueden ver con:
-
-```bash
-uv run webui.py -h
-```
+Abre `http://127.0.0.1:7864`. El producto usa React 19, Ant Design 6,
+Node.js 24 y procesos Python independientes para IA y audio.
 
 > [!IMPORTANT]
 > La inferencia en **FP16/BF16** (media precisión) es más rápida y usa menos

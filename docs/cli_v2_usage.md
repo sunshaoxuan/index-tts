@@ -16,7 +16,7 @@
 
 以后可能会提供，但暂不包括:
 
-- WebUI 子命令, WebUI 仍使用 `uv run webui.py`。
+- 产品工作台子命令，产品页面由 `scripts/start_indextts25_windows.ps1` 启动。
 - `batch` 的 `--continue-on-error`。
 - `batch` 的并发执行。
 - GPT 采样细节参数, 例如 `top_p`, `top_k`, `temperature` 等。

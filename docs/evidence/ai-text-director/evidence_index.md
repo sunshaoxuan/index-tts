@@ -2,40 +2,18 @@
 
 | 结论 | 证据 | 置信度 | 限制 |
 |---|---|---|---|
-| AI 分析支持小说、新闻、故事和自动识别 | `text_director.py` 的 `CONTENT_TYPES` 与导演提示词 | 高 | 浏览器样本使用小说 |
-| 原文覆盖校验和引号恢复有效 | `tests/test_text_director.py`，真实页面显示原文覆盖 100% | 高 | 实质改写仍会拒绝 |
-| 旁白、人物和孩子可独立分轨 | `01-ai-analysis.png`，最终 JSON 和 CSV | 高 | 未命名说话者依赖可识别归属文字 |
-| 宽表可读且支持横向滚动 | `03-ui-feedback-and-tables.png`，DOM 测量为 1180 px 和 1660 px，`overflow-x:auto` | 高 | 当前验收视口约 1265 px |
-| 长任务有阶段反馈和真实取消 | `06-safe-render-cancel.png`，浏览器即时状态与后台进程检查 | 高 | 完整音频在当前分句结束后停止 |
-| 2797 字长文本可完成分轨 | `07-long-text-success.png`，2 个文本块、108 条分句、100% 原文覆盖 | 高 | 总处理时间受模型冷启动和文本长度影响 |
-| 文本模型获得完整 GPU | Ollama `ps` 显示 `qwen3:8b` 为 100% GPU，日志显示 37/37 层卸载到 GPU | 高 | 只在文本分析阶段释放 IndexTTS |
-| 覆盖失败不会终止整篇任务 | `08-coverage-recovery.png`，真实压力文本从 1 块细分至 4 块，3 块安全分段 | 高 | 安全分段局部语义标注需要人工复核 |
-| 系统可生成合适角色音色 | `04-ai-role-voices.png`，Qwen3-TTS VoiceDesign 生成 4 条角色参考音频 | 高 | 冷启动和模型恢复耗时较长 |
-| IndexTTS 生成完整音频和角色轨道 | `05-complete-audio-delivery.png`，`outputs/director/20260824-195528-雨夜的旧书店` | 高 | 当前为短篇真实样本 |
-| ZIP 内容完整 | Python `ZipFile.testzip()` 返回空值，ZIP 包含 14 个交付条目 | 高 | 无 |
-| 浏览器控制台正常 | 最终 `tab.dev.logs` 返回空列表 | 高 | 仅覆盖最终验收操作路径 |
-| 小说工程保存和重开 | `tests/test_novel_project.py`，真实工程 `20260825-081331-小说工程验收测试-f30069` | 高 | 工程目录由本地文件系统管理 |
-| 固定音色跨工程复用 | 12 条历史音色迁移，笹垣润三与内心独白共同引用 `legacy-8f240489d87fa222` | 高 | 旧版音色的原始设计条件未保存并已明确标记 |
-| 角色误判可选择修改 | `10-novel-project-delivery.png`，第 3 句改为内心独白，第 7 句改为旁白 | 高 | 需要制作者最终审听 |
-| 全篇纠音实际生效 | 最终 manifest 同时记录 `重庆银行` 和 `重 庆 银行` | 高 | 规则为文字级替换，需要按模型分词习惯配置 |
-| 章节交付和缓存恢复 | 2 个章节 WAV，第二次生成复用 7/7 分句缓存 | 高 | 首次生成仍受模型速度和 GPU 资源影响 |
-| 有限控制项使用中文枚举 | `text_director.py` 的预设映射与拒绝测试，真实 7863 页面 | 高 | VoiceDesign 音色能力另有高级自然语言入口 |
-| VoiceDesign 原生提示未被截断 | 旁白高级提示保存、重开和 `build_voice_design_jobs` 单元测试 | 高 | 自定义提示的声学效果仍由生成模型决定 |
-| 旧工程自动迁移 | 真实工程 4 条角色和 7 条分句重开结果 | 高 | 音色自由文本保留为高级提示 |
-| 枚举导演可完成真实音频 | `outputs/novel-projects/20260825-081331-小说工程验收测试-f30069/renders/20260825-115135-024800-第一章-雨夜` | 高 | 首次生成 0 条缓存，第二次复用 7 条 |
-| Windows 中文路径输出安全 | `scripts/start_indextts25_windows.ps1` 的 `PYTHONUTF8=1` 和回归测试 | 高 | 绕过正式启动器时调用方也需提供 UTF-8 环境 |
-| 自动测试通过 | `204 passed, 22 deselected, 30 subtests passed` | 高 | 跳过项为项目 GPU 标记测试 |
-
-## 截图
-
-1. `01-ai-analysis.png` 显示体裁、4 条角色轨道、7 条分句和 100% 原文覆盖。
-2. `02-audio-output.png` 显示人工音色修改、完整音频波形、ZIP、JSON 和成功状态。
-3. `03-ui-feedback-and-tables.png` 显示任务状态卡、单行表格和横向滚动布局。
-4. `04-ai-role-voices.png` 显示 4 条 AI 角色音色、试听下拉框和音频波形。
-5. `05-complete-audio-delivery.png` 显示 16.2 秒完整音频、ZIP、JSON 和成功状态。
-6. `06-safe-render-cancel.png` 显示一致的取消状态，交付区没有残留的生成中文案。
-7. `07-long-text-success.png` 显示 2797 字长文本、2 个文本块、4 条角色轨道、108 条分句和 100% 原文覆盖。
-8. `08-coverage-recovery.png` 显示覆盖失败自动细分、安全分段块计数和最终 100% 原文覆盖。
-9. `09-novel-project.png` 显示小说工程、固定音色库、角色选择器、中文表达节奏和全篇纠音表。
-10. `10-novel-project-delivery.png` 显示 2 章节、4 角色、7 分句、30 秒完整音频和 7/7 缓存复用交付结果。
-11. 本轮在浏览器验收会话中生成全页截图，显示中文预设选择器、迁移后的角色表与分句表、31 秒完整音频和 7/7 缓存复用。截图已人工检查，仓库内持久文件为 `evidence_missing`。
+| 产品架构为 React、Ant Design、Node 和 Python Worker | `product-studio`、三个 `product_*_worker.py`、`/api/health` | 高 | 无 |
+| 旧 Gradio 产品架构已移除 | Git 删除清单、`pyproject.toml`、`uv.lock` | 高 | 模型推理模块中的历史注释不属于 UI 架构 |
+| ORYZO AI 设计已应用 | `product-studio/src/styles.css`、`11-react-oryzo-product-studio.png` | 高 | Halyard 使用 Inter 系统替代字体 |
+| 移动端没有文字遮盖 | `12-react-oryzo-mobile.png`、390 x 844 浏览器验收 | 高 | 验收设备为浏览器视口模拟 |
+| 有限字段为原生枚举 | 角色节奏和分句态度的真实展开 DOM、Node 枚举 API | 高 | 高级音色提示按模型能力保留自由文本 |
+| 旧工程有限值可迁移 | Node 测试 `migrates legacy natural language controls` | 高 | 使用确定性关键词映射 |
+| 保存失败不会继续启动任务 | `App.tsx` 的布尔保存门 | 高 | 前端构建验证 |
+| GPU 任务互斥且失败进入终态 | Node 测试 `allows one worker at a time` | 高 | 单进程 Node 服务范围 |
+| 完整音频 Worker 可交付 | 任务 `c14b50175d924af585526f0824e54207` 结果 | 高 | 本次使用 7 条已有缓存 |
+| 浏览器无 Console 问题 | Browser 日志查询为空数组 | 高 | 本次页面会话 |
+| 新架构 Ollama 全文分析 | 任务 `42d0815f89f24bec8bc7252c88b7228a` | 高 | 本次触发无损安全分段 |
+| 全新 VoiceDesign 与音色幂等 | 任务 `ec91393b612a41cd9541f25f9a40977a`，二次签名复用结果 | 高 | 共 2 个角色 |
+| 新音色完整渲染 | 任务 `ba7bd3615a474f31bff154d80bd03e7d` | 高 | 5 条分句的短篇工程 |
+| 真实交付在产品页面可见 | `13-react-real-delivery.png` | 高 | 页面显示音频播放器和两个下载入口 |
+| 产品端口固定且自动清理占用 | `scripts/start_indextts25_windows.ps1`、正式重启日志 | 高 | Windows 专用启动器 |

@@ -510,7 +510,7 @@ class IndexTTS:
             print(">> wav file saved to:", output_path)
             return output_path
         else:
-            # 返回以符合Gradio的格式要求
+            # 返回生成的音频采样率和波形
             wav_data = wav.type(torch.int16)
             wav_data = wav_data.numpy().T
             return (sampling_rate, wav_data)
@@ -677,7 +677,7 @@ class IndexTTS:
             print(">> wav file saved to:", output_path)
             return output_path
         else:
-            # 返回以符合Gradio的格式要求
+            # 返回生成的音频采样率和波形
             wav_data = wav.type(torch.int16)
             wav_data = wav_data.numpy().T
             return (sampling_rate, wav_data)

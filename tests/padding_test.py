@@ -27,7 +27,7 @@ if __name__ == "__main__":
     if not os.path.exists(cfg_path):
         raise SystemExit(
             f"Model config not found: {cfg_path}. "
-            "Please download the model first (e.g. run webui.py or see README)."
+            "Please download the model first and see README."
         )
 
     audio_prompt = ensure_test_sample_available()

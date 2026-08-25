@@ -100,7 +100,6 @@ uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/
 > **可选功能：**
 >
 > - `--all-extras`：自动安装下方列出的全部可选功能。可去除此选项自定义安装。
-> - `--extra webui`：安装 WebUI 支持（推荐）。
 > - `--extra deepspeed`：安装 DeepSpeed 加速（部分环境可加速推理）。
 
 > [!IMPORTANT]
@@ -158,24 +157,14 @@ uv run tools/gpu_check.py
 
 ## 💻 使用说明
 
-### 🌐 Web 演示
+### 🌐 Windows 产品工作台
 
-```bash
-# IndexTTS-2.5（默认）
-uv run webui.py
-
-# IndexTTS-2
-uv run webui.py --version 2 --model_dir ./checkpoints_2
+```powershell
+.\scripts\start_indextts25_windows.ps1
 ```
 
-浏览器访问 `http://127.0.0.1:7860` 查看演示。
-
-可通过命令行参数开启 BF16（IndexTTS-2.5）/ FP16（IndexTTS-2）推理（降低显存占用）、
-DeepSpeed 加速、CUDA 内核编译加速等。运行以下命令查看所有可用选项：
-
-```bash
-uv run webui.py -h
-```
+浏览器访问 `http://127.0.0.1:7864`。产品界面采用 React 19 和 Ant Design 6，
+Node.js 24 提供 API，Python Worker 负责 AI 分析、音色设计和音频合成。
 
 > [!IMPORTANT]
 > 使用 **FP16/BF16**（半精度）推理非常有益：推理更快、显存占用更低，质量损失极小。

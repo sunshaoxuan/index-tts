@@ -101,7 +101,6 @@ uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/
 >
 > - `--all-extras`: يضيف تلقائيًا *كل* ميزة إضافية مدرجة أدناه. يمكنك إزالة
 >   هذا الخيار إذا أردت تخصيص خيارات التثبيت.
-> - `--extra webui`: يضيف دعم واجهة الويب WebUI (موصى به).
 > - `--extra deepspeed`: يضيف دعم DeepSpeed (قد يسرّع الاستدلال على بعض
 >   الأنظمة).
 
@@ -163,25 +162,14 @@ uv run tools/gpu_check.py
 
 ## 💻 الاستخدام
 
-### 🌐 عرض الويب
+### 🌐 استوديو المنتج على Windows
 
-```bash
-# IndexTTS-2.5 (default)
-uv run webui.py
-
-# IndexTTS-2
-uv run webui.py --version 2 --model_dir ./checkpoints_2
+```powershell
+.\scripts\start_indextts25_windows.ps1
 ```
 
-افتح متصفحك وزر `http://127.0.0.1:7860` لمشاهدة العرض.
-
-يمكنك ضبط الإعدادات لتفعيل استدلال BF16 (IndexTTS-2.5) / FP16 (IndexTTS-2)
-(استهلاك أقل لذاكرة VRAM)، وتسريع DeepSpeed، ونوى CUDA المجمّعة للسرعة،
-وما إلى ذلك. يمكن الاطلاع على جميع الخيارات المتاحة عبر:
-
-```bash
-uv run webui.py -h
-```
+افتح `http://127.0.0.1:7864`. يعتمد المنتج على React 19 وAnt Design 6
+وNode.js 24 وعمليات Python مستقلة للذكاء الاصطناعي والصوت.
 
 > [!IMPORTANT]
 > استدلال **FP16/BF16** (نصف الدقة) أسرع ويستهلك ذاكرة VRAM أقل، مع فقدان

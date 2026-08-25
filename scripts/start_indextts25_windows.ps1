@@ -1,94 +1,50 @@
 [CmdletBinding()]
 param(
-    [ValidateRange(1, 65535)]
-    [int]$Port = 7860,
-
     [string]$HostAddress = "127.0.0.1",
-
-    [ValidateNotNullOrEmpty()]
-    [string]$AiBaseUrl = "http://127.0.0.1:11434",
-
-    [ValidateNotNullOrEmpty()]
-    [string]$AiModel = "qwen3:8b",
-
-    [ValidateRange(30, 1800)]
-    [int]$AiTimeout = 300,
-
-    [ValidateRange(1000, 6000)]
-    [int]$AiChunkChars = 1400,
-
-    [string]$VoiceDesignPython = "",
-
-    [string]$VoiceDesignModel = ""
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
+[int]$Port = 7864
+$existingListener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($existingListener) {
+    Write-Host "Stopping process $($existingListener.OwningProcess) on dedicated port $Port."
+    Stop-Process -Id $existingListener.OwningProcess -Force -ErrorAction Stop
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $projectRoot ".venv\Scripts\python.exe"
-$modelDir = Join-Path $projectRoot "checkpoints"
-if ([string]::IsNullOrWhiteSpace($VoiceDesignPython)) {
-    $VoiceDesignPython = Join-Path $projectRoot ".venv-voice-design\Scripts\python.exe"
-}
-if ([string]::IsNullOrWhiteSpace($VoiceDesignModel)) {
-    $VoiceDesignModel = Join-Path $modelDir "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-}
-
-if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "Python virtual environment was not found at $python. Run uv sync first."
-}
-
-$requiredModelFiles = @(
-    "config.yaml",
-    "gpt.pth",
-    "s2mel.pth",
-    "codec.pth",
-    "multilingual_zh_ja_yue_char_del.tiktoken",
-    "qwen0.6bemo4-merge\config.json",
-    "qwen0.6bemo4-merge\model.safetensors"
-)
-foreach ($file in $requiredModelFiles) {
-    $path = Join-Path $modelDir $file
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "IndexTTS 2.5 model file was not found: $path"
+$studioRoot = Join-Path $projectRoot "product-studio"
+$bundledNode = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+$bundledPnpm = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback\pnpm.cmd"
+$nodeCandidates = @(
+    $env:INDEXTTS_NODE,
+    (Get-Command node -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    $bundledNode
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+$node = $nodeCandidates | Select-Object -First 1
+if (-not $node) { throw "Node.js 24 LTS was not found. Install Node.js 24 LTS or set INDEXTTS_NODE." }
+$major = [int]((& $node --version).TrimStart("v").Split(".")[0])
+if ($major -lt 24) { throw "Node.js 24 LTS or newer is required. Current: $(& $node --version)" }
+$pnpmCandidates = @(
+    $env:INDEXTTS_PNPM,
+    (Get-Command pnpm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    $bundledPnpm
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+$pnpm = $pnpmCandidates | Select-Object -First 1
+if (-not $SkipBuild) {
+    if (-not $pnpm) { throw "pnpm was not found. Install pnpm or set INDEXTTS_PNPM." }
+    $env:PATH = "$(Split-Path -Parent $node);$env:PATH"
+    Push-Location $studioRoot
+    try {
+        & $pnpm install --frozen-lockfile
+        if ($LASTEXITCODE -ne 0) { throw "Frontend dependency installation failed." }
+        & $pnpm build
+        if ($LASTEXITCODE -ne 0) { throw "Frontend production build failed." }
     }
+    finally { Pop-Location }
 }
-
-$normalizedAiBaseUrl = $AiBaseUrl.TrimEnd("/")
-try {
-    $aiTags = Invoke-RestMethod -Uri "$normalizedAiBaseUrl/api/tags" -TimeoutSec 10
-}
-catch {
-    throw "Local AI service is unavailable at $normalizedAiBaseUrl. Start Ollama before IndexTTS. $($_.Exception.Message)"
-}
-$availableAiModels = @($aiTags.models | ForEach-Object { $_.name })
-if ($AiModel -notin $availableAiModels) {
-    throw "AI model $AiModel is unavailable. Available models: $($availableAiModels -join ', ')"
-}
-
-if (-not (Test-Path -LiteralPath $VoiceDesignPython -PathType Leaf)) {
-    throw "Voice Design Python was not found at $VoiceDesignPython. Run scripts/setup_voice_design_windows.ps1 first."
-}
-& $VoiceDesignPython -c "import importlib.util, sys; missing = [name for name in ('qwen_tts', 'soundfile', 'torch') if importlib.util.find_spec(name) is None]; print('Missing Voice Design modules: ' + ', '.join(missing)) if missing else None; sys.exit(1 if missing else 0)"
-if ($LASTEXITCODE -ne 0) {
-    throw "Voice Design dependencies failed to import from $VoiceDesignPython."
-}
-foreach ($file in @("config.json", "model.safetensors")) {
-    $path = Join-Path $VoiceDesignModel $file
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Voice Design model file was not found: $path"
-    }
-}
-
+$env:HOST = $HostAddress
+$env:PORT = [string]$Port
 $env:PYTHONUTF8 = "1"
-Set-Location -LiteralPath $projectRoot
-& $python "production_webui.py" `
-    "--model-dir" $modelDir `
-    "--host" $HostAddress `
-    "--port" $Port `
-    "--ai-base-url" $normalizedAiBaseUrl `
-    "--ai-model" $AiModel `
-    "--ai-timeout" $AiTimeout `
-    "--ai-chunk-chars" $AiChunkChars `
-    "--voice-design-python" $VoiceDesignPython `
-    "--voice-design-model" $VoiceDesignModel
+Set-Location -LiteralPath $studioRoot
+& $node "server/index.mjs"
 exit $LASTEXITCODE

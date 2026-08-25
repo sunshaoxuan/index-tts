@@ -1,5 +1,5 @@
 """
-Preset management utilities for the IndexTTS WebUI.
+Preset management utilities for IndexTTS applications.
 
 A preset stores a reusable configuration including the voice reference audio,
 emotion control method/settings, and advanced generation parameters.

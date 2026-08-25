@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import test from 'node:test';
+import { buildApp } from './index.mjs';
+
+async function fixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'index-voice-product-'));
+  const dir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  await mkdir(path.join(root, 'product-studio', 'dist'), { recursive: true });
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(root, 'product-studio', 'dist', 'index.html'), '<div>ok</div>');
+  const project = { project_id: 'demo', title: '测试', content_type: 'novel', source_text: '第一章\n原文', roles: [['narrator', '旁白', 'narrator', '', '中性清晰', 'voice.wav', '自然叙述', '否']], segments: [[1, '正文', 'narrator', '旁白', 'ZH', '原文', '原文', '中性叙述', '平静', 0.5, '自然', 300]], pronunciations: [] };
+  await writeFile(path.join(dir, 'project.json'), JSON.stringify(project));
+  return { root, project };
+}
+
+test('serves presets and project data', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  assert.equal((await app.inject('/api/health')).statusCode, 200);
+  const presetResponse = await app.inject('/api/presets');
+  assert.ok(presetResponse.json().emotions.includes('平静'));
+  assert.equal((await app.inject('/api/projects/demo')).json().title, '测试');
+  await app.close();
+});
+
+test('rejects unknown finite presets', async () => {
+  const { root, project } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  project.segments[0][8] = '随便发挥';
+  const response = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /情绪预设无效/);
+  await app.close();
+});
+
+test('creates a versioned project and saves chapter and pronunciation data', async () => {
+  const { root, project } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const created = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '新闻播报', content_type: 'news' } });
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.json().content_type, 'news');
+  project.pronunciations = [{ source: '重庆银行', replacement: '重 庆 银行', note: '固定读法', enabled: true }];
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().chapters[0].title, '第一章');
+  assert.equal(saved.json().pronunciations[0].replacement, '重 庆 银行');
+  await app.close();
+});
+
+test('migrates legacy natural language controls to supported presets', async () => {
+  const { root, project } = await fixture();
+  project.roles[0][6] = '沉稳舒缓，重音清晰，短语间自然停连';
+  project.segments[0][7] = '温和亲切地交流';
+  project.segments[0][8] = 'neutral';
+  project.segments[0][10] = '放慢并增加停连';
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  const app = await buildApp({ repoRoot: root });
+  const migrated = (await app.inject('/api/projects/demo')).json();
+  assert.equal(migrated.roles[0][6], '沉稳舒缓');
+  assert.equal(migrated.segments[0][7], '温和交流');
+  assert.equal(migrated.segments[0][8], '平静');
+  assert.equal(migrated.segments[0][10], '舒缓');
+  await app.close();
+});
+
+test('allows one worker at a time and records a failed worker as error', async () => {
+  const { root } = await fixture();
+  let child;
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    return child;
+  } });
+  const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze' });
+  assert.equal(started.statusCode, 202);
+  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render' });
+  assert.equal(rejected.statusCode, 409);
+  child.stderr.write('fixture worker failed');
+  child.stderr.end();
+  child.stdout.end();
+  child.emit('close', 17);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const status = await app.inject(`/api/jobs/${started.json().jobId}`);
+  assert.equal(status.json().phase, 'error');
+  assert.match(status.json().message, /fixture worker failed/);
+  const restarted = await app.inject({ method: 'POST', url: '/api/projects/demo/render' });
+  assert.equal(restarted.statusCode, 202);
+  child.emit('close', 0);
+  await app.close();
+});

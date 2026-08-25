@@ -71,8 +71,8 @@ this repository:
 git clone https://github.com/index-tts/index-tts.git && cd index-tts
 ```
 
-Example audio files are downloaded on demand from HuggingFace/ModelScope the
-first time the WebUI starts, so Git LFS is no longer required.
+Example audio files are downloaded on demand from HuggingFace or ModelScope the
+first time the product or inference path needs them, so Git LFS is no longer required.
 
 ### 2. Install Dependencies
 
@@ -104,7 +104,6 @@ uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/
 >
 > - `--all-extras`: Automatically adds *every* extra feature listed below. You can
 >   remove this flag if you want to customize your installation choices.
-> - `--extra webui`: Adds WebUI support (recommended).
 > - `--extra deepspeed`: Adds DeepSpeed support (may speed up inference on some
 >   systems).
 
@@ -167,25 +166,14 @@ uv run tools/gpu_check.py
 
 ## 💻 Usage
 
-### 🌐 Web Demo
+### 🌐 Product Studio on Windows
 
-```bash
-# IndexTTS-2.5 (default)
-uv run webui.py
-
-# IndexTTS-2
-uv run webui.py --version 2 --model_dir ./checkpoints_2
+```powershell
+.\scripts\start_indextts25_windows.ps1
 ```
 
-Open your browser and visit `http://127.0.0.1:7860` to see the demo.
-
-You can adjust the settings to enable BF16 (IndexTTS-2.5) / FP16 (IndexTTS-2)
-inference (lower VRAM usage), DeepSpeed acceleration, compiled CUDA kernels for
-speed, etc. All available options can be seen via:
-
-```bash
-uv run webui.py -h
-```
+Open `http://127.0.0.1:7864`. The product UI uses React 19 and Ant Design 6,
+with a Node.js 24 API and isolated Python AI/audio workers.
 
 > [!IMPORTANT]
 > **FP16/BF16** (half-precision) inference is faster and uses less VRAM, with
@@ -216,8 +204,8 @@ PYTHONPATH="$PYTHONPATH:." uv run indextts/infer_v2_5.py \
   --lang EN
 ```
 
-The default `--prompt_wav` lives in `examples/`, which is populated the first
-time the WebUI starts. To fetch it without the WebUI:
+The default `--prompt_wav` lives in `examples/`, which is populated on demand.
+To fetch it explicitly:
 
 ```bash
 uv run python -c "from indextts.utils.examples_downloader import ensure_examples_available; ensure_examples_available()"
