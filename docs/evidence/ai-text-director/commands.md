@@ -52,6 +52,9 @@ Invoke-RestMethod http://127.0.0.1:7864/api/health
 19. 检查全局导演上下文只应用与当前角色相关的要求，旁白指令不出现重复名称。
 20. 在 390 x 844 视口检查编辑窗口只有纵向滚动，窗口和页面 `scrollWidth` 不超过各自 `clientWidth`。
 21. 选择“沉稳舒缓 · 沉稳舒缓，重音清晰，短语间自然停连”，在 1280 x 720、820 x 900、390 x 844 三档视口测量节奏 Select 与下次生成处理矩形，确认不相交并保存截图 34、35、36。
+22. 运行角色音色任务，记录 `routing_guidance` 阶段和 `document.guidance_routing`，逐项核对 `source_text`、目标角色 ID、名称、指令和理由。
+23. 使用“笹垣说话更疲惫。经营烤乌贼饼摊位的女性声音更温和。”执行只读 AI 路由，确认分别分配到 role_001 与 role_002。
+24. 对明确女性和男性的生成音色读取 `median_pitch_hz`、`expected_gender`、`gender_verified`，确认非旁白元数据不含旁白导演条件。
 
 ## 最终静态与端口检查
 

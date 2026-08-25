@@ -29,6 +29,9 @@ from text_director import (
     migrate_rhythm_preset,
     render_directed_audio,
     is_speech_attribution,
+    infer_voice_gender,
+    guidance_role_signature,
+    validate_guidance_assignments,
     split_document,
     split_exact_sentences,
     tables_to_script,
@@ -381,10 +384,13 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
         "segments": [_segment(1, "测试。", "测试。")],
     }
     role_rows = [["narrator", "旁白", "narrator", "成熟", "五十岁女声，略带沙哑", "voice_05.wav", "自然叙述", "是"]]
-    jobs = build_voice_design_jobs(document, role_rows, {"content_type": "story", "guidance": "悬疑故事，人物对白克制"})
+    guidance = "悬疑故事，人物对白克制"
+    routing = {"guidance": guidance, "role_signature": guidance_role_signature(role_rows), "assignments": [{"instruction": "悬疑故事", "target_role_ids": ["narrator"]}]}
+    jobs = build_voice_design_jobs(document, role_rows, {"content_type": "story", "guidance": guidance, "guidance_routing": routing})
     assert "五十岁女声，略带沙哑" in jobs[0]["instruct"]
     assert "作品体裁：故事体" in jobs[0]["instruct"]
-    assert "全局导演上下文：悬疑故事，人物对白克制；只采用其中与当前角色直接相关的要求" in jobs[0]["instruct"]
+    assert "本角色有效导演上下文：悬疑故事" in jobs[0]["instruct"]
+    assert "人物对白克制" not in jobs[0]["instruct"]
     assert "人物小传：成熟" in jobs[0]["instruct"]
     assert "声音导演：五十岁女声，略带沙哑" in jobs[0]["instruct"]
     assert jobs[0]["instruct"].startswith("为旁白设计")
@@ -401,6 +407,80 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
         invalid_segments[0][index] = value
         with pytest.raises(DirectorError, match=message):
             tables_to_script(role_rows, invalid_segments)
+
+
+def test_ai_routed_guidance_excludes_narrator_voice_from_characters_and_enforces_gender():
+    document = {
+        "characters": [_character(), _character("role_002", "老板娘", "character")],
+        "segments": [_segment(1, "好，来了。", "好，来了。", "role_002", "老板娘", "character")],
+    }
+    roles = [
+        ["narrator", "旁白", "narrator", "全篇叙事", "成熟男声", "voice_05.wav", "沉稳舒缓", "是"],
+        ["role_002", "老板娘", "character", "五十岁左右的胖女人", "中年女性音色，语调温和", "voice_06.wav", "自然叙述", "是"],
+    ]
+    guidance = "旁白缓慢而深沉，老年男性音色。作品整体保持克制。"
+    routing = {
+        "guidance": guidance,
+        "role_signature": guidance_role_signature(roles),
+        "assignments": [
+            {"instruction": "旁白缓慢而深沉；老年男性音色", "target_role_ids": ["narrator"]},
+            {"instruction": "作品整体保持克制", "target_role_ids": ["narrator", "role_002"]},
+        ],
+    }
+    jobs = build_voice_design_jobs(document, roles, {"content_type": "novel", "guidance": guidance, "guidance_routing": routing})
+    narrator, owner = jobs
+
+    assert "老年男性音色" in narrator["instruct"]
+    assert "作品整体保持克制" in narrator["instruct"]
+    assert narrator["expected_gender"] == "male"
+    assert "老年男性音色" not in owner["instruct"]
+    assert "本角色有效导演上下文：作品整体保持克制" in owner["instruct"]
+    assert "声音性别硬约束：女性" in owner["instruct"]
+    assert owner["expected_gender"] == "female"
+    assert infer_voice_gender("中年女性音色", "", "") == "female"
+
+
+def test_ai_guidance_router_resolves_inherited_and_global_targets(monkeypatch):
+    roles = [
+        ["narrator", "旁白", "narrator", "全篇叙事", "成熟声线", "voice_05.wav", "沉稳舒缓", "是"],
+        ["role_001", "笹垣润三", "character", "负责调查的刑警", "中年男性音色", "voice_04.wav", "自然叙述", "是"],
+    ]
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": json.dumps({"assignments": [
+                {"clause_index": 1, "scope": "roles", "target_role_ids": ["narrator"], "instruction": "旁白缓慢而深沉", "reason": "明确点名旁白"},
+                {"clause_index": 2, "scope": "roles", "target_role_ids": ["narrator"], "instruction": "旁白使用老年男性音色", "reason": "承接上一片段的旁白目标"},
+                {"clause_index": 3, "scope": "global", "target_role_ids": [], "instruction": "作品整体保持克制", "reason": "作品级要求"},
+            ]}, ensure_ascii=False)}}
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "body": json, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr("text_director.requests.post", fake_post)
+    routing = OllamaTextDirector(DirectorConfig()).resolve_guidance("旁白缓慢而深沉，老年男性音色。作品整体保持克制。", roles)
+
+    assert captured["body"]["keep_alive"] == 0
+    assert captured["body"]["format"]["properties"]["assignments"]
+    assert routing["role_signature"] == guidance_role_signature(roles)
+    assert routing["assignments"][0]["target_role_names"] == ["旁白"]
+    assert routing["assignments"][1]["target_role_ids"] == ["narrator"]
+    assert routing["assignments"][2]["target_role_ids"] == ["narrator", "role_001"]
+
+
+def test_guidance_router_validator_rejects_global_scope_for_an_explicit_role():
+    roster = [
+        {"role_id": "narrator", "name": "旁白", "kind": "narrator", "profile": "叙事", "voice_hint": "稳定"},
+        {"role_id": "role_001", "name": "笹垣润三", "kind": "character", "profile": "刑警", "voice_hint": "男声"},
+    ]
+    raw = {"assignments": [{"clause_index": 1, "scope": "global", "target_role_ids": [], "instruction": "旁白缓慢", "reason": "错误地扩大范围"}]}
+    with pytest.raises(DirectorValidationError, match="不能分配为 global"):
+        validate_guidance_assignments(raw, ["旁白缓慢"], roster)
 
 
 def test_director_prompt_requires_evidence_grounded_biography_and_voice_direction():

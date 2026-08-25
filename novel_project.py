@@ -232,6 +232,9 @@ class NovelProjectStore:
             "text": str(job.get("text", "")),
             "model": str(model),
             "seed": int(seed),
+            "expected_gender": str(job.get("expected_gender", "unspecified")),
+            "median_pitch_hz": job.get("median_pitch_hz"),
+            "gender_verified": bool(job.get("gender_verified", False)),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         self._write(metadata_path, metadata)
@@ -243,6 +246,13 @@ class NovelProjectStore:
         if not metadata_path.is_file():
             return None
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("quarantined"):
+            return None
+        expected_gender = str(job.get("expected_gender") or "unspecified")
+        if expected_gender in {"female", "male"} and (
+            str(metadata.get("expected_gender")) != expected_gender or not metadata.get("gender_verified")
+        ):
+            return None
         if Path(str(metadata.get("audio_path", ""))).is_file():
             return metadata
         return None
@@ -252,7 +262,7 @@ class NovelProjectStore:
         for path in sorted(self.voice_library_root.glob("*.json")):
             try:
                 metadata = json.loads(path.read_text(encoding="utf-8"))
-                if Path(str(metadata.get("audio_path", ""))).is_file():
+                if not metadata.get("quarantined") and Path(str(metadata.get("audio_path", ""))).is_file():
                     voices.append(metadata)
             except (OSError, json.JSONDecodeError):
                 continue

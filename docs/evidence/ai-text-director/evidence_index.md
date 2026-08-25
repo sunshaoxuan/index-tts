@@ -41,3 +41,7 @@
 | 移动端人物编辑没有横向溢出 | `33-mobile-role-biography-editor.png`、窗口与页面宽度测量 | 高 | 390 x 844 模拟视口 |
 | 低声说不会把低声当人物名 | 任务 `b8965e4b87954f5db7bfa7e2a1e40b1c`、`test_quoted_speaker_inference...` | 高 | 当前确定性规则覆盖常见动作和语气词 |
 | 角色节奏长标签不覆盖重新生成控件 | `34-role-editor-controls-no-overlap.png`、`35-narrow-role-editor-controls-no-overlap.png`、`36-mobile-role-editor-controls-no-overlap.png`、三档矩形检测 | 高 | 覆盖 1280、820、390 像素视口与真实最长节奏标签 |
+| 导演补充由 AI 语义路由到目标轨道 | 任务 `76d05463c67e46278898257b542d3695`、工程 `document.guidance_routing`、截图 37 和 38 | 高 | 本地模型为 qwen3:8b；生成前每次重算 |
+| AI 路由能处理姓名和人物小传指代 | 只读真实调用“笹垣说话更疲惫”“经营烤乌贼饼摊位的女性声音更温和” | 高 | 分别分配到 role_001 和 role_002 |
+| 明确点名角色不能扩散成全局 | 首次真实错误结果、`validate_guidance_assignments`、自动重试后的正确结果 | 高 | 确定性规则用于验证 AI 输出范围 |
+| 女性角色拒绝明显男声音色 | 原老板娘 89.5 Hz、原死者妻子 76.7 Hz；新音色 165.5 Hz 和 155.9 Hz；Worker 重试测试 | 高 | 基频用于明显错配防线，不能描述全部性别表现差异 |

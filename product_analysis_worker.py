@@ -34,13 +34,15 @@ def main() -> int:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
     roles, segments = document_to_tables(document, [path.name for path in (root / "examples").glob("voice_*.wav")])
+    write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
+    document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
     store.save(
         project["project_id"], title=project["title"], content_type=document["content_type"],
         source_text=project["source_text"], guidance=project.get("guidance", ""), document=document,
         roles=roles, segments=segments, pronunciations=pronunciation_rows(project.get("pronunciations")),
         voice_files=project.get("voice_files") or [],
     )
-    result = {"document": document, "roles": roles, "segments": segments}
+    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"]}
     write_json(Path(args.result).resolve(), result)
     write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": "AI 文本导演完成"})
     return 0

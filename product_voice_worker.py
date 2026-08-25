@@ -10,13 +10,39 @@ from pathlib import Path
 from typing import Any
 
 from novel_project import NovelProjectStore, pronunciation_rows
-from text_director import apply_generated_voices, build_voice_design_jobs
+from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def quarantine_cross_role_voices(store: NovelProjectStore, routing: dict[str, Any]) -> set[str]:
+    assignments = routing.get("assignments") if isinstance(routing, dict) else []
+    quarantined: set[str] = set()
+    for metadata_path in store.voice_library_root.glob("voice-*.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            role_id = str(metadata.get("role_id") or "")
+            instruct = str(metadata.get("instruct") or "")
+            forbidden = [
+                str(item.get("source_text") or "").strip()
+                for item in assignments or []
+                if isinstance(item, dict) and role_id not in item.get("target_role_ids", [])
+            ]
+            matched = [fragment for fragment in forbidden if fragment and fragment in instruct]
+            if not matched:
+                continue
+            metadata["quarantined"] = True
+            metadata["quarantine_reason"] = f"包含分配给其他轨道的导演补充：{'；'.join(matched)}"
+            metadata["quarantined_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            write_json(metadata_path, metadata)
+            quarantined.add(str(metadata.get("voice_id") or metadata_path.stem))
+        except (OSError, ValueError, TypeError):
+            continue
+    return quarantined
 
 
 def main() -> int:
@@ -30,6 +56,20 @@ def main() -> int:
     status = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
+    write_json(status, {"phase": "routing_guidance", "fraction": 0.01, "message": "正在用 AI 分配导演补充的角色影响范围"})
+    director = OllamaTextDirector(DirectorConfig())
+    document = dict(project["document"])
+    document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), project["roles"])
+    quarantined = quarantine_cross_role_voices(store, document["guidance_routing"])
+    roles = [list(row) for row in project["roles"]]
+    for row in roles:
+        if str(row[5]) in quarantined:
+            row[7] = "是"
+    project = store.save(
+        project["project_id"], title=project["title"], content_type=project["content_type"], source_text=project["source_text"],
+        guidance=project.get("guidance", ""), document=document, roles=roles, segments=project["segments"],
+        pronunciations=pronunciation_rows(project.get("pronunciations")), voice_files=project.get("voice_files") or [],
+    )
     jobs = build_voice_design_jobs(project["document"], project["roles"], project)
     output_dir = store.project_dir(project["project_id"]) / "voices"
     model_dir = root / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
@@ -79,8 +119,13 @@ def main() -> int:
             write_json(status, {"phase": "registering", "fraction": 0.97, "message": "正在注册永久音色并更新工程"})
     for item in generated:
         job = jobs_by_role[item["role_id"]]
-        metadata = store.register_voice(item["path"], job, model=str(model_dir), seed=42)
-        registered.append({"role_id": item["role_id"], "name": item["name"], "path": metadata["audio_path"], "voice_id": metadata["voice_id"]})
+        verified_job = {
+            **job,
+            "median_pitch_hz": item.get("median_pitch_hz"),
+            "gender_verified": str(item.get("expected_gender")) not in {"female", "male"} or item.get("median_pitch_hz") is not None,
+        }
+        metadata = store.register_voice(item["path"], verified_job, model=str(model_dir), seed=42)
+        registered.append({"role_id": item["role_id"], "name": item["name"], "path": metadata["audio_path"], "voice_id": metadata["voice_id"], "expected_gender": metadata["expected_gender"], "median_pitch_hz": metadata["median_pitch_hz"]})
     roles = apply_generated_voices(project["roles"], registered)
     store.save(
         project["project_id"], title=project["title"], content_type=project["content_type"], source_text=project["source_text"],

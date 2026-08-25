@@ -166,6 +166,29 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
     },
 }
 
+GUIDANCE_ROUTING_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["assignments"],
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["clause_index", "scope", "target_role_ids", "instruction", "reason"],
+                "properties": {
+                    "clause_index": {"type": "integer", "minimum": 1},
+                    "scope": {"type": "string", "enum": ["global", "roles"]},
+                    "target_role_ids": {"type": "array", "items": {"type": "string"}},
+                    "instruction": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
 
 class DirectorError(RuntimeError):
     pass
@@ -215,6 +238,75 @@ def normalize_source_text(text: str) -> str:
 
 def coverage_key(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def split_guidance_clauses(guidance: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[，,。；;！？!?\n]+", str(guidance or "")) if item.strip()]
+
+
+def guidance_role_roster(role_table: Any) -> list[dict[str, str]]:
+    return [
+        {"role_id": str(row[0]), "name": str(row[1]), "kind": str(row[2]), "profile": str(row[3]), "voice_hint": str(row[4])}
+        for row in _table_rows(role_table)
+        if len(row) >= 5
+    ]
+
+
+def guidance_role_signature(role_table: Any) -> str:
+    return hashlib.sha256(json.dumps(guidance_role_roster(role_table), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def validate_guidance_assignments(raw: Any, clauses: list[str], roster: list[dict[str, str]]) -> list[dict[str, Any]]:
+    raw_assignments = raw.get("assignments") if isinstance(raw, dict) else None
+    if not isinstance(raw_assignments, list):
+        raise DirectorValidationError("导演补充语义分配缺少 assignments。")
+    role_ids = [item["role_id"] for item in roster]
+    role_by_id = {item["role_id"]: item for item in roster}
+    kind_labels = {"narrator": "旁白", "anchor": "主播", "reporter": "记者", "interviewee": "采访对象"}
+    by_index: dict[int, dict[str, Any]] = {}
+    for item in raw_assignments:
+        if not isinstance(item, dict):
+            raise DirectorValidationError("导演补充语义分配项格式无效。")
+        clause_index = int(item.get("clause_index") or 0)
+        if clause_index < 1 or clause_index > len(clauses) or clause_index in by_index:
+            raise DirectorValidationError("导演补充语义分配的 clause_index 重复或越界。")
+        source_text = clauses[clause_index - 1]
+        scope = str(item.get("scope") or "")
+        targets = list(dict.fromkeys(str(value) for value in (item.get("target_role_ids") or [])))
+        explicit_targets = {
+            role["role_id"]
+            for role in roster
+            if role["name"] in source_text or (kind_labels.get(role["kind"], "") and kind_labels[role["kind"]] in source_text)
+        }
+        if scope == "global":
+            if explicit_targets:
+                names = "、".join(role_by_id[target]["name"] for target in explicit_targets)
+                raise DirectorValidationError(f"导演补充第 {clause_index} 项明确指向 {names}，不能分配为 global。")
+            targets = list(role_ids)
+        elif scope != "roles" or not targets:
+            raise DirectorValidationError(f"导演补充第 {clause_index} 项缺少有效作用域。")
+        unknown = [target for target in targets if target not in role_ids]
+        if unknown:
+            raise DirectorValidationError(f"导演补充第 {clause_index} 项包含未知角色：{'、'.join(unknown)}")
+        missing_explicit = explicit_targets.difference(targets)
+        if missing_explicit:
+            names = "、".join(role_by_id[target]["name"] for target in missing_explicit)
+            raise DirectorValidationError(f"导演补充第 {clause_index} 项漏掉明确点名角色：{names}")
+        instruction = str(item.get("instruction") or "").strip()
+        if not instruction:
+            raise DirectorValidationError(f"导演补充第 {clause_index} 项缺少可执行指令。")
+        by_index[clause_index] = {
+            "clause_index": clause_index,
+            "source_text": source_text,
+            "scope": scope,
+            "target_role_ids": targets,
+            "target_role_names": [role_by_id[target]["name"] for target in targets],
+            "instruction": instruction,
+            "reason": str(item.get("reason") or "").strip(),
+        }
+    if sorted(by_index) != list(range(1, len(clauses) + 1)):
+        raise DirectorValidationError("导演补充语义分配未完整覆盖全部输入片段。")
+    return [by_index[index] for index in sorted(by_index)]
 
 
 def canonical_coverage_key(text: str) -> str:
@@ -551,7 +643,7 @@ class OllamaTextDirector:
 7. 每条 segment 标注 ZH、EN、JA、ES、AR 之一。混合语言按主要朗读语言拆句。
 8. 人物必须使用稳定 ID。优先复用已有角色；旁白固定使用 narrator。
 9. {type_instruction}
-10. 用户导演补充：{guidance.strip() or '无'}
+10. 用户导演补充：{guidance.strip() or '无'}。先进行语义拆分：作品级要求应用于全部轨道；点名角色、角色类型、主角、配角、身份描述或上下文指代的要求只应用于目标角色。把角色专属声音要求合并进目标角色的 voice_hint，把角色专属表演要求应用于该角色的 segments，禁止复制给无关角色。
 11. 每个角色的 profile 是人物小传，使用 50 到 180 个中文字符，根据原文概括身份、年龄阶段、人物关系、性格、经历和叙事作用。只写原文有依据的信息；原文未说明的维度明确写“原文未说明”，禁止只复制姓名。
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
 13. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
@@ -567,6 +659,79 @@ SOURCE
 JSON Schema：{schema_text}
 只输出符合 Schema 的 JSON，不输出说明文字。
 """.strip()
+
+    def resolve_guidance(self, guidance: str, role_table: Any) -> dict[str, Any]:
+        guidance = str(guidance or "").strip()
+        roster = guidance_role_roster(role_table)
+        role_ids = [item["role_id"] for item in roster]
+        clauses = split_guidance_clauses(guidance)
+        role_signature = guidance_role_signature(role_table)
+        if not clauses:
+            return {"guidance": guidance, "model": self.config.model, "role_signature": role_signature, "assignments": [], "resolved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        prompt = f"""
+你是有声作品导演补充的语义路由器。结合完整角色表，判断每个原子补充影响全部轨道，或只影响一个或多个具体角色。
+
+规则：
+1. “旁白”只指 kind=narrator 的轨道。“主播”“记者”“采访对象”按 kind 分配。
+2. 人名、身份、小传描述、主角、女主、男主、配角、反派、关系称谓和上下文指代，都要结合角色表做语义匹配。
+3. 连续片段可以继承前一片段的目标。例如“旁白缓慢而深沉，老年男性音色”两个片段都分配给旁白。
+4. 作品氛围、整体节奏等没有角色目标的要求 scope=global，target_role_ids 包含全部角色 ID。
+5. scope=roles 时必须给出准确 target_role_ids。不要把角色专属条件复制给无关角色。
+6. clause_index 必须逐项覆盖 1 到 {len(clauses)}，每个编号恰好出现一次。instruction 保留原意并写成可直接用于该目标的简短导演指令。
+
+角色表：
+{json.dumps(roster, ensure_ascii=False, separators=(',', ':'))}
+
+原子补充：
+{json.dumps([{"clause_index": index + 1, "source_text": clause} for index, clause in enumerate(clauses)], ensure_ascii=False, separators=(',', ':'))}
+""".strip()
+        body = {
+            "model": self.config.model,
+            "stream": False,
+            "think": False,
+            "keep_alive": 0,
+            "format": GUIDANCE_ROUTING_SCHEMA,
+            "messages": [
+                {"role": "system", "content": "你只输出严格符合 JSON Schema 的导演补充语义分配。"},
+                {"role": "user", "content": prompt},
+            ],
+            "options": {"temperature": 0, "seed": 42, "num_ctx": 4096},
+        }
+        last_error: Exception | None = None
+        prior_content = ""
+        for attempt in range(2):
+            current_body = deepcopy(body)
+            if attempt:
+                current_body["messages"].extend(
+                    [
+                        {"role": "assistant", "content": prior_content},
+                        {"role": "user", "content": f"上一次分配未通过程序校验：{last_error}。请重新输出完整 assignments，明确点名某个轨道的片段绝对不能使用 global。"},
+                    ]
+                )
+            try:
+                response = requests.post(f"{self.base_url}/api/chat", json=current_body, timeout=self.config.timeout_seconds)
+                response.raise_for_status()
+            except requests.Timeout as exc:
+                raise DirectorTimeout(f"本地 AI 在 {self.config.timeout_seconds} 秒内未完成导演补充语义分配") from exc
+            except requests.RequestException as exc:
+                raise DirectorServiceError(f"导演补充语义分配调用失败：{exc}") from exc
+            payload = response.json()
+            content = payload.get("message", {}).get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise DirectorServiceError("导演补充语义分配返回空结果。")
+            prior_content = content
+            try:
+                assignments = validate_guidance_assignments(json.loads(content), clauses, roster)
+                return {
+                    "guidance": guidance,
+                    "model": self.config.model,
+                    "role_signature": role_signature,
+                    "assignments": assignments,
+                    "resolved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }
+            except (DirectorValidationError, json.JSONDecodeError) as exc:
+                last_error = exc
+        raise DirectorValidationError(f"AI 连续两次未生成可验证的导演补充语义分配：{last_error}")
 
     def _chat(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
         body = {
@@ -1064,6 +1229,18 @@ VOICE_DESIGN_TEXT = {
 }
 QWEN_LANGUAGE_NAMES = {"ZH": "Chinese", "EN": "English", "JA": "Japanese", "ES": "Spanish", "AR": "Auto"}
 
+VOICE_GENDER_TERMS = {
+    "female": ("女性", "女声", "女人", "妇人", "妻子", "母亲", "奶奶", "姐姐", "妹妹", "女儿", "少女", "女孩"),
+    "male": ("男性", "男声", "男人", "丈夫", "父亲", "爷爷", "哥哥", "弟弟", "儿子", "少年", "男孩"),
+}
+def infer_voice_gender(voice_hint: str, profile: str = "", name: str = "") -> str:
+    for source in (voice_hint, profile, name):
+        female = any(term in source for term in VOICE_GENDER_TERMS["female"])
+        male = any(term in source for term in VOICE_GENDER_TERMS["male"])
+        if female != male:
+            return "female" if female else "male"
+    return "unspecified"
+
 
 def build_voice_design_jobs(
     document: dict[str, Any],
@@ -1080,6 +1257,14 @@ def build_voice_design_jobs(
     content_type = str(context.get("content_type") or document.get("content_type") or "novel")
     content_label = {"novel": "小说", "news": "新闻", "story": "故事体"}.get(content_type, "小说")
     guidance = str(context.get("guidance") or "").strip().rstrip("。！？!?；;")
+    guidance_routing = context.get("guidance_routing") or document.get("guidance_routing") or {}
+    if guidance:
+        if str(guidance_routing.get("guidance") or "").strip().rstrip("。！？!?；;") != guidance:
+            raise DirectorError("导演补充尚未经过当前版本的 AI 语义分配。")
+        if str(guidance_routing.get("role_signature") or "") != guidance_role_signature(rows):
+            raise DirectorError("角色表已变化，需要重新执行导演补充 AI 语义分配。")
+    guidance_assignments = guidance_routing.get("assignments") if isinstance(guidance_routing, dict) else []
+    guidance_assignments = guidance_assignments if isinstance(guidance_assignments, list) else []
     for row_number, row in enumerate(rows, start=1):
         if len(row) < len(ROLE_HEADERS):
             raise DirectorError(f"角色表第 {row_number} 行字段不足。")
@@ -1111,11 +1296,23 @@ def build_voice_design_jobs(
             "character": "人物",
         }[kind]
         role_title = name if name == kind_text else f"{kind_text}{name}"
+        effective_guidance = "；".join(
+            str(item.get("instruction") or "").strip().rstrip("。！？!?；;")
+            for item in guidance_assignments
+            if isinstance(item, dict) and role_id in item.get("target_role_ids", []) and str(item.get("instruction") or "").strip()
+        )
+        expected_gender = infer_voice_gender(f"{voice_hint} {effective_guidance}", profile, name)
+        gender_constraint = {
+            "female": "声音性别硬约束：女性；男性或中性偏男性嗓音不合格。",
+            "male": "声音性别硬约束：男性；女性或中性偏女性嗓音不合格。",
+            "unspecified": "",
+        }[expected_gender]
         instruct = (
             f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
-            f"全局导演上下文：{guidance or '遵循作品体裁并保持角色跨章节一致'}；只采用其中与当前角色直接相关的要求。"
+            f"本角色有效导演上下文：{effective_guidance or '遵循作品体裁并保持角色跨章节一致'}。"
             f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
             f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
+            f"{gender_constraint}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
         )
@@ -1126,6 +1323,7 @@ def build_voice_design_jobs(
                 "language": QWEN_LANGUAGE_NAMES.get(language, "Auto"),
                 "text": VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
                 "instruct": instruct,
+                "expected_gender": expected_gender,
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
                 "seed": 42,
             }

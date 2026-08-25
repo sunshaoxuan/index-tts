@@ -80,6 +80,35 @@ def test_voice_registration_is_idempotent_and_keeps_generation_conditions(tmp_pa
     assert voice_signature(job, model="voice-model", seed=42) != voice_signature(job, model="voice-model", seed=43)
 
 
+def test_explicit_gender_voice_cache_requires_verification_metadata(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    generated = tmp_path / "generated.wav"
+    _write_wav(generated)
+    job = {"role_id": "role_002", "name": "老板娘", "language": "Chinese", "text": "这是我的声音。", "instruct": "中年女性音色。声音性别硬约束：女性。", "expected_gender": "female"}
+
+    unverified = store.register_voice(generated, job, model="voice-model", seed=42)
+    assert unverified["gender_verified"] is False
+    assert store.find_voice(job, model="voice-model", seed=42) is None
+
+    verified_job = {**job, "gender_verified": True, "median_pitch_hz": 188.0}
+    verified = store.register_voice(generated, verified_job, model="voice-model", seed=42)
+    assert verified["voice_id"] == unverified["voice_id"]
+    assert store.find_voice(job, model="voice-model", seed=42)["median_pitch_hz"] == 188.0
+
+
+def test_quarantined_voice_is_not_reused_or_listed(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    generated = tmp_path / "generated.wav"
+    _write_wav(generated)
+    job = {"role_id": "role_002", "name": "老板娘", "language": "Chinese", "text": "测试", "instruct": "旁白缓慢，女性音色"}
+    metadata = store.register_voice(generated, job, model="voice-model")
+    metadata["quarantined"] = True
+    Path(store.voice_library_root / f"{metadata['voice_id']}.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    assert store.find_voice(job, model="voice-model") is None
+    assert store.list_voices() == []
+
+
 def test_legacy_voice_import_preserves_existing_audio_with_stable_id(tmp_path):
     store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
     legacy = tmp_path / "old-role.wav"

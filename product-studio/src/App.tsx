@@ -22,6 +22,17 @@ function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
 }
 
+function inferVoiceGender(voiceHint: string, profile: string, name: string) {
+  const femaleTerms = ['女性', '女声', '女人', '妇人', '妻子', '母亲', '奶奶', '姐姐', '妹妹', '女儿', '少女', '女孩'];
+  const maleTerms = ['男性', '男声', '男人', '丈夫', '父亲', '爷爷', '哥哥', '弟弟', '儿子', '少年', '男孩'];
+  for (const source of [voiceHint, profile, name]) {
+    const female = femaleTerms.some(term => source.includes(term));
+    const male = maleTerms.some(term => source.includes(term));
+    if (female !== male) return female ? 'female' : 'male';
+  }
+  return 'unspecified';
+}
+
 function StudioAudio({ src }: { src: string }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -300,7 +311,14 @@ function Studio() {
   const rhythmPrompt = roleDraft && presets ? (presets.rhythmPrompts[roleDraft[6]] || roleDraft[6]) : '';
   const roleKindLabel = roleDraft && presets ? (presets.roleKindLabels[roleDraft[2]] || roleDraft[2]) : '';
   const roleVoiceTitle = roleDraft ? (roleKindLabel === roleDraft[1] ? roleDraft[1] : `${roleKindLabel}${roleDraft[1]}`) : '';
-  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。全局导演上下文：${trimSentence(project.guidance) || '遵循作品体裁并保持角色跨章节一致'}；只采用其中与当前角色直接相关的要求。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
+  const guidanceRouting = (project?.document?.guidance_routing ?? {}) as { guidance?: string; model?: string; assignments?: Array<{ clause_index: number; source_text: string; target_role_ids: string[]; target_role_names: string[]; instruction: string; reason: string }> };
+  const routingCurrent = Boolean(project && trimSentence(guidanceRouting.guidance || '') === trimSentence(project.guidance));
+  const roleGuidanceAssignments = roleDraft && routingCurrent ? (guidanceRouting.assignments || []).filter(item => item.target_role_ids.includes(roleDraft[0])) : [];
+  const effectiveGuidance = roleGuidanceAssignments.map(item => trimSentence(item.instruction)).filter(Boolean).join('；');
+  const expectedGender = roleDraft ? inferVoiceGender(`${voiceConditionPrompt} ${effectiveGuidance}`, roleDraft[3], roleDraft[1]) : 'unspecified';
+  const genderLabel = expectedGender === 'female' ? '女性' : expectedGender === 'male' ? '男性' : '未指定';
+  const genderConstraint = expectedGender === 'female' ? '声音性别硬约束：女性；男性或中性偏男性嗓音不合格。' : expectedGender === 'male' ? '声音性别硬约束：男性；女性或中性偏女性嗓音不合格。' : '';
+  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。本角色有效导演上下文：${effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。${genderConstraint}表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
 
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
@@ -394,7 +412,7 @@ function Studio() {
           </section>
           <aside className="voice-instruction-preview">
             <div className="editor-section-heading"><span>03 / Preview</span><strong>AI 会参考什么</strong><Text>下列内容会组合成声音生成指令。修改人物小传、声音导演或节奏后，请打开重新生成。</Text></div>
-            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>全局导演上下文</dt><dd>{project.guidance || '遵循作品体裁并保持角色跨章节一致'}<br />仅采用其中与当前角色直接相关的要求。</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
+            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>原始导演补充</dt><dd>{project.guidance || '未填写'}</dd></div><div><dt>AI 语义分配</dt><dd>{routingCurrent ? `${guidanceRouting.model || '本地 AI'} 已把补充分配到明确轨道` : project.guidance ? '等待 AI 语义分配；未分配内容不会进入任何音色指令' : '没有需要分配的导演补充'}</dd></div><div><dt>本角色有效补充</dt><dd>{effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}{roleGuidanceAssignments.map(item => <small key={item.clause_index}><br />“{item.source_text}” → {item.target_role_names.join('、')}：{item.reason}</small>)}</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>声音性别硬约束</dt><dd>{genderLabel}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
             <Text strong>最终 VoiceDesign 指令预览</Text><p className="instruction-copy">{finalVoiceInstruction}</p>
             <div className="preview-current-voice"><Text strong>当前稳定音色</Text><VoicePreview voiceId={roleDraft[5]} /></div>
           </aside>
