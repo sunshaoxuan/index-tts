@@ -124,6 +124,34 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
 
   app.get('/api/health', async () => ({ status: 'ok', runtime: process.version, architecture: 'react-antd-node-python' }));
   app.get('/api/presets', async () => presets);
+  app.get('/api/voices/:voiceId/audio', async (request, reply) => {
+    try {
+      const voiceId = safeProjectId(request.params.voiceId);
+      const stem = voiceId.replace(/\.wav$/i, '');
+      const candidates = [];
+      if (/^(voice-|legacy-)[\w-]+$/i.test(stem)) candidates.push(path.join(repoRoot, 'outputs', 'voice-library', `${stem}.wav`));
+      if (/^voice_\d+\.wav$/i.test(voiceId)) candidates.push(path.join(repoRoot, 'examples', voiceId));
+      let file;
+      for (const candidate of candidates) {
+        try { await access(candidate); file = candidate; break; } catch {}
+      }
+      if (!file) return reply.code(404).send({ error: '音色音频不存在' });
+      const info = await stat(file);
+      const range = String(request.headers.range || '').match(/^bytes=(\d+)-(\d*)$/);
+      reply.type('audio/wav').header('Accept-Ranges', 'bytes');
+      if (range) {
+        const start = Number(range[1]);
+        const end = range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= info.size) {
+          return reply.code(416).header('Content-Range', `bytes */${info.size}`).send();
+        }
+        reply.code(206).header('Content-Range', `bytes ${start}-${end}/${info.size}`).header('Content-Length', end - start + 1);
+        return reply.send(createReadStream(file, { start, end }));
+      }
+      reply.header('Content-Length', info.size);
+      return reply.send(createReadStream(file));
+    } catch { return reply.code(404).send({ error: '音色音频不存在' }); }
+  });
   app.get('/api/projects', async () => {
     const entries = await readdir(projectRoot, { withFileTypes: true });
     const projects = [];

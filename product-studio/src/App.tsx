@@ -13,16 +13,17 @@ import type { Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 
+function formatAudioTime(value: number) {
+  const safe = Number.isFinite(value) && value > 0 ? value : 0;
+  return `${Math.floor(safe / 60)}:${String(Math.floor(safe % 60)).padStart(2, '0')}`;
+}
+
 function StudioAudio({ src }: { src: string }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
-  const format = (value: number) => {
-    const safe = Number.isFinite(value) && value > 0 ? value : 0;
-    return `${Math.floor(safe / 60)}:${String(Math.floor(safe % 60)).padStart(2, '0')}`;
-  };
   const toggle = async () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -31,9 +32,31 @@ function StudioAudio({ src }: { src: string }) {
   return <div className="studio-audio">
     <audio ref={audioRef} src={src} preload="metadata" onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
     <button type="button" onClick={toggle} aria-label={playing ? '暂停音频' : '播放音频'}>{playing ? <PauseOutlined /> : <CaretRightOutlined />}</button>
-    <span>{format(current)}</span>
-    <input aria-label="音频进度" type="range" min={0} max={safeDuration} step={0.1} value={Math.min(current, safeDuration)} onChange={(event) => { const value = Number(event.target.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} />
-    <span>{format(safeDuration)}</span>
+    <span>{formatAudioTime(current)}</span>
+    <input aria-label="音频进度" type="range" min={0} max={safeDuration} step={0.1} value={Math.min(current, safeDuration)} onInput={(event) => { const value = Number(event.currentTarget.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} />
+    <span>{formatAudioTime(safeDuration)}</span>
+  </div>;
+}
+
+function VoicePreview({ voiceId }: { voiceId: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  if (!voiceId) return <span className="voice-unassigned">未分配音色</span>;
+  const toggle = async () => {
+    const audio = audioRef.current;
+    if (!audio || failed) return;
+    try { if (audio.paused) await audio.play(); else audio.pause(); }
+    catch { setFailed(true); }
+  };
+  return <div className={`voice-preview${failed ? ' voice-preview-failed' : ''}`}>
+    <audio ref={audioRef} src={`/api/voices/${encodeURIComponent(voiceId)}/audio`} preload="metadata" onLoadedMetadata={(event) => { setFailed(false); setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0); }} onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setCurrent(0); }} onError={() => { setPlaying(false); setFailed(true); }} />
+    <button type="button" disabled={failed} onClick={toggle} aria-label={failed ? `音色 ${voiceId} 不可用` : playing ? `暂停音色 ${voiceId}` : `播放音色 ${voiceId}`}>{playing ? <PauseOutlined /> : <CaretRightOutlined />}</button>
+    <div className="voice-preview-body"><strong title={voiceId}>{voiceId}</strong><input aria-label={`音色 ${voiceId} 进度`} disabled={failed || !safeDuration} type="range" min={0} max={safeDuration} step={0.05} value={Math.min(current, safeDuration)} onInput={(event) => { const value = Number(event.currentTarget.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} /></div>
+    <span>{failed ? '不可用' : `${formatAudioTime(current)} / ${formatAudioTime(safeDuration)}`}</span>
   </div>;
 }
 
@@ -93,6 +116,33 @@ function Studio() {
       window.removeEventListener('scroll', updateHeroDepth);
       window.removeEventListener('resize', updateHeroDepth);
       document.body.classList.remove('workbench-active');
+    };
+  }, []);
+
+  useEffect(() => {
+    const containSelectWheel = (event: WheelEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined;
+      const dropdown = target?.closest('.ant-select-dropdown');
+      if (!dropdown) return;
+      const holder = dropdown.querySelector<HTMLElement>('.ant-select-dropdown-list-holder, .rc-virtual-list-holder');
+      if (!holder) return;
+      const atTop = holder.scrollTop <= 0;
+      const atBottom = holder.scrollTop >= holder.scrollHeight - holder.clientHeight - 1;
+      if ((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) event.preventDefault();
+      event.stopPropagation();
+    };
+    const syncSelectPageLock = () => {
+      const open = Boolean(document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)'));
+      document.documentElement.classList.toggle('select-popup-open', open);
+    };
+    const observer = new MutationObserver(syncSelectPageLock);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    document.addEventListener('wheel', containSelectWheel, { passive: false });
+    syncSelectPageLock();
+    return () => {
+      document.removeEventListener('wheel', containSelectWheel);
+      observer.disconnect();
+      document.documentElement.classList.remove('select-popup-open');
     };
   }, []);
 
@@ -201,7 +251,7 @@ function Studio() {
           {!predefined && <Input disabled={jobRunning} value={v} placeholder="输入 VoiceDesign 原生提示" onChange={(e) => setRole(i, 4, e.target.value)} />}
         </Space>;
       } },
-      { title: '音色 ID', dataIndex: 5, width: 210, render: (v) => <Tag icon={<SoundOutlined />}>{v}</Tag> },
+      { title: '音色 ID 与试听', dataIndex: 5, width: 300, render: (v) => <VoicePreview voiceId={v} /> },
       { title: '角色节奏', dataIndex: 6, width: 160, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.rhythms.map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 6, x)} /> },
       { title: '重新生成', dataIndex: 7, width: 120, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={['是', '否'].map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 7, x)} /> },
       { title: '操作', key: 'actions', width: 90, render: (_v, row) => <Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm> },
@@ -279,7 +329,7 @@ function Studio() {
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1600, y: 520 }} /></Card> },
+          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1700, y: 520 }} /></Card> },
           { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="角色、语言、态度、情绪和节奏均为下拉选择。强度与停顿使用受限数值。" /><Table className="studio-table" rowKey={(row) => String(row[0])} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1900, y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><StudioAudio src={render.audio!} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card></div> },

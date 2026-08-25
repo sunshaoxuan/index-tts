@@ -49,6 +49,10 @@ Workspace、Voices、Director、Delivery 菜单控制 Ant Design Tabs 的 `activ
 
 运行中任务使用固定前景进度面板。面板采用 Bark Brown 高不透明表面、Warm Cream 边界和 10px 高进度轨道，在 0% 时显示最小活动填充，同时明确显示工程版本锁定状态。
 
+角色表通过 `/api/voices/:voiceId/audio` 提供行内音色试听。`voice_*.wav` 解析到 `examples`，`voice-*` 与 `legacy-*` 解析到永久音色库。接口限制文件名模式并支持 `Accept-Ranges`、206 和 `Content-Range`，用于拖动定位。
+
+Ant Design Select 的弹层和虚拟列表使用 `overscroll-behavior-y: contain`。Ant Design 6 的列表容器采用 `overflow: hidden` 和自定义 wheel 处理，页面同时观察弹层生命周期：菜单打开时为 `html` 添加 `select-popup-open` 并暂停底层页面滚动，关闭时立即恢复。边界 wheel 处理继续作为兼容保护。
+
 ## 旧架构处置
 
 旧 Gradio 产品页面和对应 UI 测试已经删除。Windows 产品启动入口只启动 Node 服务。Python 不再渲染产品页面。

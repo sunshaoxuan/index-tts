@@ -11,8 +11,10 @@ async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'index-voice-product-'));
   const dir = path.join(root, 'outputs', 'novel-projects', 'demo');
   await mkdir(path.join(root, 'product-studio', 'dist'), { recursive: true });
+  await mkdir(path.join(root, 'examples'), { recursive: true });
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(root, 'product-studio', 'dist', 'index.html'), '<div>ok</div>');
+  await writeFile(path.join(root, 'examples', 'voice_05.wav'), Buffer.from('RIFFfake'));
   const project = { project_id: 'demo', title: '测试', content_type: 'novel', source_text: '第一章\n原文', roles: [['narrator', '旁白', 'narrator', '', '中性清晰', 'voice.wav', '自然叙述', '否']], segments: [[1, '正文', 'narrator', '旁白', 'ZH', '原文', '原文', '中性叙述', '平静', 0.5, '自然', 300]], pronunciations: [] };
   await writeFile(path.join(dir, 'project.json'), JSON.stringify(project));
   return { root, project };
@@ -43,6 +45,24 @@ test('serves the latest audio with stable media headers', async () => {
   assert.equal(audio.headers['content-length'], '8');
   assert.equal(audio.headers['accept-ranges'], 'bytes');
   assert.deepEqual(audio.rawPayload, Buffer.from('RIFFfake'));
+  await app.close();
+});
+
+test('serves a role voice preview with seekable range responses', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const full = await app.inject('/api/voices/voice_05.wav/audio');
+  assert.equal(full.statusCode, 200);
+  assert.match(full.headers['content-type'], /^audio\/wav/);
+  assert.equal(full.headers['content-length'], '8');
+  assert.equal(full.headers['accept-ranges'], 'bytes');
+  const partial = await app.inject({ method: 'GET', url: '/api/voices/voice_05.wav/audio', headers: { range: 'bytes=4-7' } });
+  assert.equal(partial.statusCode, 206);
+  assert.equal(partial.headers['content-range'], 'bytes 4-7/8');
+  assert.equal(partial.headers['content-length'], '4');
+  assert.deepEqual(partial.rawPayload, Buffer.from('fake'));
+  const missing = await app.inject('/api/voices/missing.wav/audio');
+  assert.equal(missing.statusCode, 404);
   await app.close();
 });
 

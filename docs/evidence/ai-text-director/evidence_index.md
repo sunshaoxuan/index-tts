@@ -17,6 +17,10 @@
 | 角色表在任务期间只读 | `24-locked-role-table.png`、浏览器 disabled 计数 | 高 | 任务终态自动恢复 |
 | 移动端进度面板完整可见 | `25-mobile-foreground-progress.png`、390 x 844 几何测量 | 高 | 无横向溢出 |
 | 服务端保证任务版本唯一 | Node 409 回归测试、生产任务 `47947e1a0d284c9a88b88b550a02d0b0` | 高 | 锁定粒度为活动工程 projectId |
+| 角色音色可行内播放和拖动 | `26-inline-voice-player.png`、浏览器播放暂停和 4.2 秒定位 | 高 | 使用实际 `voice_05.wav` |
+| 音色接口支持进度定位 | Node Range 206 测试、`/api/voices/:voiceId/audio` | 高 | 限制演示和永久音色 ID 模式 |
+| 下拉菜单滚动不带动页面 | `27-contained-select-scroll.png`、顶部和底部滚动边界测量 | 高 | 菜单关闭后恢复页面滚动 |
+| 移动端音色播放器可通过表内滚动访问 | `28-mobile-inline-voice-player.png`、390 x 844 浏览器测量 | 高 | 页面无横向溢出 |
 | 有限字段为原生枚举 | 角色节奏和分句态度的真实展开 DOM、Node 枚举 API | 高 | 高级音色提示按模型能力保留自由文本 |
 | 旧工程有限值可迁移 | Node 测试 `migrates legacy natural language controls` | 高 | 使用确定性关键词映射 |
 | 保存失败不会继续启动任务 | `App.tsx` 的布尔保存门 | 高 | 前端构建验证 |
