@@ -510,8 +510,8 @@ class OllamaTextDirector:
                         "id": "narrator",
                         "name": "旁白",
                         "kind": "narrator",
-                        "profile": "无损安全分段旁白",
-                        "voice_hint": "稳定自然",
+                        "profile": "全篇叙事视角，负责环境、动作、心理活动与说话归属；不对应具体人物，声音需要在章节之间保持稳定。",
+                        "voice_hint": "成熟中性的叙事声线，音高适中，共鸣稳定，吐字清楚，情绪克制并保留讲述感。",
                     }
                 ],
                 "segments": segments,
@@ -552,6 +552,9 @@ class OllamaTextDirector:
 8. 人物必须使用稳定 ID。优先复用已有角色；旁白固定使用 narrator。
 9. {type_instruction}
 10. 用户导演补充：{guidance.strip() or '无'}
+11. 每个角色的 profile 是人物小传，使用 50 到 180 个中文字符，根据原文概括身份、年龄阶段、人物关系、性格、经历和叙事作用。只写原文有依据的信息；原文未说明的维度明确写“原文未说明”，禁止只复制姓名。
+12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
+13. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
 
 已有角色表：{roster or '[]'}
 上一文本块结尾，仅用于人物连续性，不要重复输出：{previous_context or '无'}
@@ -643,13 +646,14 @@ JSON Schema：{schema_text}
         character_ids = {character["id"] for character in characters}
         for segment in segments:
             if segment["speaker_id"] not in character_ids:
+                inferred_name = segment["speaker_name"]
                 inferred = self._normalize_character(
                     {
                         "id": segment["speaker_id"],
-                        "name": segment["speaker_name"],
+                        "name": inferred_name,
                         "kind": segment["speaker_kind"],
-                        "profile": "由分句引用补全",
-                        "voice_hint": "根据角色内容选择",
+                        "profile": f"{inferred_name}是原文中已识别的独立说话人物。当前片段未充分说明年龄、身份、人物关系和经历，需结合后续全文补充。",
+                        "voice_hint": "身份信息尚少，先采用中性清晰、自然交流的声音；补充年龄感、声线和性格后再重新生成。",
                     }
                 )
                 characters.append(inferred)
@@ -720,8 +724,8 @@ JSON Schema：{schema_text}
                             "id": f"inferred-{len(speakers) + 1}",
                             "name": inferred_name,
                             "kind": "character",
-                            "profile": "由说话归属文字识别",
-                            "voice_hint": "根据角色内容选择",
+                            "profile": f"{inferred_name}是由对白归属识别出的说话人物。当前片段未充分说明年龄、身份、人物关系和经历，需结合全文补充。",
+                            "voice_hint": "身份信息尚少，先采用中性清晰、自然交流的声音；补充年龄感、声线和性格后再重新生成。",
                         }
                         characters.append(matched)
                         speakers.append(matched)
@@ -762,6 +766,7 @@ JSON Schema：{schema_text}
         patterns = (
             r"(?:传来|响起|听见|听到)([\u4e00-\u9fff]{1,6})的(?:喊声|声音|叫声|低语)",
             r"([\u4e00-\u9fff]{1,6})在[^，。！？；：]{0,16}(?:说|问|答|回应|喊|叫|道)[：:]$",
+            r"(?:^|[。！？；])([\u4e00-\u9fff]{2,4}?)(?:握|抬|看|走|站|坐|转|伸|点|摇|皱|拿|放|推|拉)[^，。！？；：]{0,16}，(?:冷冷|轻声|低声|大声|焦急|平静|愤怒)?(?:地)?(?:说|问|答|回应|喊|叫|道)[：:]$",
             r"([\u4e00-\u9fff]{1,6})(?:冷冷|轻声|大声|焦急|平静|愤怒)?(?:地)?(?:说|问|答|回应|喊|叫|道)[：:]$",
         )
         for pattern in patterns:
@@ -854,6 +859,15 @@ JSON Schema：{schema_text}
                 global_characters.append(created)
                 role_by_key[key] = created
                 existing = created
+            else:
+                for field in ("profile", "voice_hint"):
+                    current = str(existing.get(field, "")).strip()
+                    candidate = str(character.get(field, "")).strip()
+                    weak_tokens = ("由分句引用补全", "由说话归属文字识别", "根据角色内容选择", "原文未说明")
+                    current_score = len(current) - sum(30 for token in weak_tokens if token in current)
+                    candidate_score = len(candidate) - sum(30 for token in weak_tokens if token in candidate)
+                    if candidate and candidate != existing.get("name") and candidate_score > current_score:
+                        existing[field] = candidate
             local_to_global[character["id"]] = existing["id"]
 
         for segment in result["segments"]:
@@ -864,12 +878,13 @@ JSON Schema：{schema_text}
             )
             role = role_by_key.get(role_key)
             if role is None:
+                role_name = merged["speaker_name"]
                 role = {
                     "id": "narrator" if merged["speaker_kind"] == "narrator" else f"role_{len(global_characters) + 1:03d}",
-                    "name": merged["speaker_name"],
+                    "name": role_name,
                     "kind": merged["speaker_kind"],
-                    "profile": "由分句引用补全",
-                    "voice_hint": "根据角色内容选择",
+                    "profile": f"{role_name}是原文中已识别的独立说话人物。当前片段未充分说明年龄、身份、人物关系和经历，需结合后续全文补充。",
+                    "voice_hint": "身份信息尚少，先采用中性清晰、自然交流的声音；补充年龄感、声线和性格后再重新生成。",
                 }
                 global_characters.append(role)
                 role_by_key[role_key] = role
@@ -1050,20 +1065,28 @@ VOICE_DESIGN_TEXT = {
 QWEN_LANGUAGE_NAMES = {"ZH": "Chinese", "EN": "English", "JA": "Japanese", "ES": "Spanish", "AR": "Auto"}
 
 
-def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[dict[str, Any]]:
+def build_voice_design_jobs(
+    document: dict[str, Any],
+    role_table: Any,
+    project_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     rows = _table_rows(role_table)
     characters = {str(item.get("id")): item for item in document.get("characters", [])}
     role_languages: dict[str, str] = {}
     for segment in document.get("segments", []):
         role_languages.setdefault(str(segment.get("speaker_id")), str(segment.get("language", "ZH")).upper())
     jobs: list[dict[str, str]] = []
+    context = project_context or {}
+    content_type = str(context.get("content_type") or document.get("content_type") or "novel")
+    content_label = {"novel": "小说", "news": "新闻", "story": "故事体"}.get(content_type, "小说")
+    guidance = str(context.get("guidance") or "").strip().rstrip("。！？!?；;")
     for row_number, row in enumerate(rows, start=1):
         if len(row) < len(ROLE_HEADERS):
             raise DirectorError(f"角色表第 {row_number} 行字段不足。")
         role_id = str(row[0]).strip()
         name = str(row[1]).strip()
         kind = str(row[2]).strip()
-        profile = str(row[3]).strip()
+        profile = str(row[3]).strip().rstrip("。！？!?；;")
         voice_condition = str(row[4]).strip()
         rhythm_preset = str(row[6]).strip()
         if not role_id or not name or kind not in ROLE_KINDS:
@@ -1075,9 +1098,10 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
             voice_hint = voice_condition
         else:
             voice_hint = str(character.get("voice_hint", "")).strip()
+        voice_hint = voice_hint.rstrip("。！？!?；;")
         if rhythm_preset not in RHYTHM_PRESETS:
             raise DirectorError(f"角色表第 {row_number} 行包含未知角色节奏预设：{rhythm_preset}")
-        rhythm_prompt = RHYTHM_PRESETS[rhythm_preset]
+        rhythm_prompt = RHYTHM_PRESETS[rhythm_preset].rstrip("。！？!?；;")
         language = role_languages.get(role_id, "ZH")
         kind_text = {
             "narrator": "旁白",
@@ -1086,9 +1110,12 @@ def build_voice_design_jobs(document: dict[str, Any], role_table: Any) -> list[d
             "interviewee": "采访对象",
             "character": "人物",
         }[kind]
+        role_title = name if name == kind_text else f"{kind_text}{name}"
         instruct = (
-            f"为{kind_text}{name}设计可长期复用的独特声音。角色说明：{profile or '自然可信'}。"
-            f"音色提示：{voice_hint or '与人物身份和内容体裁相符'}。"
+            f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
+            f"全局导演上下文：{guidance or '遵循作品体裁并保持角色跨章节一致'}；只采用其中与当前角色直接相关的要求。"
+            f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
+            f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
         )

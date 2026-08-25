@@ -16,10 +16,14 @@ export interface ProjectPayload {
 
 export interface Presets {
   voiceStyles: string[];
+  voiceStylePrompts: Record<string, string>;
   rhythms: string[];
+  rhythmPrompts: Record<string, string>;
   attitudes: string[];
   emotions: string[];
   paces: string[];
   roleKinds: string[];
+  roleKindLabels: Record<string, string>;
+  contentTypeLabels: Record<string, string>;
   languages: string[];
 }

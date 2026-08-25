@@ -15,7 +15,7 @@ async function fixture() {
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(root, 'product-studio', 'dist', 'index.html'), '<div>ok</div>');
   await writeFile(path.join(root, 'examples', 'voice_05.wav'), Buffer.from('RIFFfake'));
-  const project = { project_id: 'demo', title: '测试', content_type: 'novel', source_text: '第一章\n原文', roles: [['narrator', '旁白', 'narrator', '', '中性清晰', 'voice.wav', '自然叙述', '否']], segments: [[1, '正文', 'narrator', '旁白', 'ZH', '原文', '原文', '中性叙述', '平静', 0.5, '自然', 300]], pronunciations: [] };
+  const project = { project_id: 'demo', title: '测试', content_type: 'novel', source_text: '第一章\n原文', roles: [['narrator', '旁白', 'narrator', '全篇叙事视角，负责环境、动作、心理活动与说话归属，声音需要保持稳定。', '中性清晰', 'voice.wav', '自然叙述', '否']], segments: [[1, '正文', 'narrator', '旁白', 'ZH', '原文', '原文', '中性叙述', '平静', 0.5, '自然', 300]], pronunciations: [] };
   await writeFile(path.join(dir, 'project.json'), JSON.stringify(project));
   return { root, project };
 }
@@ -26,6 +26,8 @@ test('serves presets and project data', async () => {
   assert.equal((await app.inject('/api/health')).statusCode, 200);
   const presetResponse = await app.inject('/api/presets');
   assert.ok(presetResponse.json().emotions.includes('平静'));
+  assert.equal(presetResponse.json().voiceStylePrompts['低沉厚实'], '低沉厚实，声音有支撑，气息稳定');
+  assert.equal(presetResponse.json().rhythmPrompts['沉稳舒缓'], '沉稳舒缓，重音清晰，短语间自然停连');
   assert.equal((await app.inject('/api/projects/demo')).json().title, '测试');
   await app.close();
 });
@@ -103,6 +105,17 @@ test('migrates legacy natural language controls to supported presets', async () 
   assert.equal(migrated.segments[0][7], '温和交流');
   assert.equal(migrated.segments[0][8], '平静');
   assert.equal(migrated.segments[0][10], '舒缓');
+  await app.close();
+});
+
+test('replaces name-only character metadata with actionable biography and voice defaults', async () => {
+  const { root, project } = await fixture();
+  project.roles.push(['role_001', '笹垣润三', 'character', '笹垣润三', '笹垣润三', 'voice_04.wav', '自然叙述', '否']);
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  const app = await buildApp({ repoRoot: root });
+  const migrated = (await app.inject('/api/projects/demo')).json();
+  assert.match(migrated.roles[1][3], /文本证据尚不足.*人物关系/);
+  assert.equal(migrated.roles[1][4], '中性清晰');
   await app.close();
 });
 

@@ -30,7 +30,7 @@ def main() -> int:
     status = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
-    jobs = build_voice_design_jobs(project["document"], project["roles"])
+    jobs = build_voice_design_jobs(project["document"], project["roles"], project)
     output_dir = store.project_dir(project["project_id"]) / "voices"
     model_dir = root / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
     voice_python = root / ".venv-voice-design" / "Scripts" / "python.exe"

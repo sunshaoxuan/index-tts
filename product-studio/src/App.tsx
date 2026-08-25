@@ -4,7 +4,7 @@ import {
   Popconfirm, Progress, Select, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretRightOutlined, DeleteOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
+  AudioOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from './api';
@@ -16,6 +16,10 @@ const { Title, Text, Paragraph } = Typography;
 function formatAudioTime(value: number) {
   const safe = Number.isFinite(value) && value > 0 ? value : 0;
   return `${Math.floor(safe / 60)}:${String(Math.floor(safe % 60)).padStart(2, '0')}`;
+}
+
+function trimSentence(value: string) {
+  return value.trim().replace(/[。！？!?；;]+$/u, '');
 }
 
 function StudioAudio({ src }: { src: string }) {
@@ -74,6 +78,8 @@ function Studio() {
   const [newTitle, setNewTitle] = useState('');
   const [newContentType, setNewContentType] = useState('novel');
   const [activeTab, setActiveTab] = useState('source');
+  const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
+  const [roleDraft, setRoleDraft] = useState<RoleRow>();
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
@@ -185,15 +191,6 @@ function Studio() {
     };
   }, []);
 
-  const setRole = (index: number, column: number, value: string | number) => {
-    if (jobRunning) return;
-    setProject((current) => {
-      if (!current) return current;
-      const roles = current.roles.map((row, i) => i === index ? row.map((cell, c) => c === column ? value : cell) as RoleRow : row);
-      setDirty(true); return { ...current, roles };
-    });
-  };
-
   const setSegment = (index: number, column: number, value: string | number) => {
     if (jobRunning) return;
     setProject((current) => {
@@ -231,7 +228,28 @@ function Studio() {
     if (!project || jobRunning) return;
     let suffix = project.roles.length + 1;
     while (project.roles.some(row => row[0] === `role-${suffix}`)) suffix += 1;
-    patchProject('roles', [...project.roles, [`role-${suffix}`, '新角色', 'character', '', '中性清晰', '', '自然叙述', '是']]);
+    const newRole: RoleRow = [`role-${suffix}`, '新角色', 'character', '新补充的独立说话人物。请根据原文补充身份、年龄阶段、人物关系、性格、经历和叙事作用。', '中性清晰', '', '自然叙述', '是'];
+    patchProject('roles', [...project.roles, newRole]);
+    setRoleEditorIndex(project.roles.length);
+    setRoleDraft([...newRole]);
+  };
+
+  const openRoleEditor = (index: number) => {
+    if (!project) return;
+    setRoleEditorIndex(index);
+    setRoleDraft([...project.roles[index]]);
+  };
+
+  const updateRoleDraft = (column: number, value: string) => setRoleDraft(current => current?.map((cell, index) => index === column ? value : cell) as RoleRow);
+
+  const applyRoleDraft = () => {
+    if (!project || roleEditorIndex === undefined || !roleDraft || jobRunning) return;
+    if (!roleDraft[1].trim()) { message.error('请填写角色名称'); return; }
+    if (roleDraft[3].trim().length < 20) { message.error('人物小传至少填写 20 个字符，并说明身份、关系或性格'); return; }
+    if (!roleDraft[4].trim()) { message.error('请选择音色预设或填写声音导演提示'); return; }
+    patchProject('roles', project.roles.map((row, index) => index === roleEditorIndex ? roleDraft : row));
+    setRoleEditorIndex(undefined); setRoleDraft(undefined);
+    message.success('人物小传与声音方案已应用，请保存工程后生成音色');
   };
 
   const removeRole = (roleId: string) => {
@@ -265,23 +283,24 @@ function Studio() {
   const roleColumns = useMemo<ColumnsType<RoleRow>>(() => {
     if (!presets) return [];
     return [
-      { title: '轨道 ID', dataIndex: 0, width: 150, fixed: 'left', render: (v) => <Text code>{v}</Text> },
-      { title: '角色', dataIndex: 1, width: 130, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={(e) => setRole(i, 1, e.target.value)} /> },
-      { title: '类型', dataIndex: 2, width: 135, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={(x) => setRole(i, 2, x)} /> },
-      { title: '角色说明', dataIndex: 3, width: 240, render: (v, _r, i) => <Input disabled={jobRunning} value={v} onChange={(e) => setRole(i, 3, e.target.value)} /> },
-      { title: '音色预设或高级提示', dataIndex: 4, width: 300, render: (v, _r, i) => {
-        const predefined = presets.voiceStyles.includes(v);
-        return <Space direction="vertical" size={4} className="cell-control">
-          <Select disabled={jobRunning} value={predefined ? v : '__custom__'} options={[...presets.voiceStyles.map(value => ({ value, label: value })), { value: '__custom__', label: '高级自定义提示' }]} onChange={(x) => setRole(i, 4, x === '__custom__' ? '' : x)} />
-          {!predefined && <Input disabled={jobRunning} value={v} placeholder="输入 VoiceDesign 原生提示" onChange={(e) => setRole(i, 4, e.target.value)} />}
-        </Space>;
+      { title: '轨道 ID', dataIndex: 0, width: 125, fixed: 'left', render: (v) => <Text code>{v}</Text> },
+      { title: '角色', width: 150, render: (_v, row) => <div className="role-identity"><strong>{row[1]}</strong><Tag>{presets.roleKindLabels[row[2]] || row[2]}</Tag></div> },
+      { title: '人物小传', dataIndex: 3, width: 330, render: (v, row) => {
+        const incomplete = String(v).trim().length < 40 || String(v).trim() === row[1] || /请.*补充|证据尚不足/.test(String(v));
+        return <div className="role-biography"><Tag>{incomplete ? '待补充' : '已建立'}</Tag><Paragraph ellipsis={{ rows: 3 }} title={v}>{v}</Paragraph></div>;
       } },
-      { title: '音色 ID 与试听', dataIndex: 5, width: 300, render: (v) => <VoicePreview voiceId={v} /> },
-      { title: '角色节奏', dataIndex: 6, width: 160, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={presets.rhythms.map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 6, x)} /> },
-      { title: '重新生成', dataIndex: 7, width: 120, render: (v, _r, i) => <Select disabled={jobRunning} value={v} options={['是', '否'].map(value => ({ value, label: value }))} onChange={(x) => setRole(i, 7, x)} /> },
-      { title: '操作', key: 'actions', width: 90, render: (_v, row) => <Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm> },
+      { title: '声音导演方案', width: 250, render: (_v, row) => <div className="voice-plan-summary"><strong>{presets.voiceStyles.includes(row[4]) ? `预设 · ${row[4]}` : '高级自定义'}</strong><Text>{row[4]}</Text><Text>节奏 · {row[6]}</Text><Tag>{row[7] === '是' ? '保存后重新生成' : '保持当前音色'}</Tag></div> },
+      { title: '音色 ID 与试听', dataIndex: 5, width: 270, render: (v) => <VoicePreview voiceId={v} /> },
+      { title: '操作', key: 'actions', width: 190, render: (_v, row, index) => <Space><Button disabled={jobRunning} icon={<EditOutlined />} onClick={() => openRoleEditor(index)}>编辑人物与音色</Button><Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm></Space> },
     ];
   }, [presets, project, jobRunning]);
+
+  const roleVoiceMode = roleDraft && presets?.voiceStyles.includes(roleDraft[4]) ? 'preset' : 'custom';
+  const voiceConditionPrompt = roleDraft && presets ? (presets.voiceStylePrompts[roleDraft[4]] || roleDraft[4] || '尚未填写声音导演提示') : '';
+  const rhythmPrompt = roleDraft && presets ? (presets.rhythmPrompts[roleDraft[6]] || roleDraft[6]) : '';
+  const roleKindLabel = roleDraft && presets ? (presets.roleKindLabels[roleDraft[2]] || roleDraft[2]) : '';
+  const roleVoiceTitle = roleDraft ? (roleKindLabel === roleDraft[1] ? roleDraft[1] : `${roleKindLabel}${roleDraft[1]}`) : '';
+  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。全局导演上下文：${trimSentence(project.guidance) || '遵循作品体裁并保持角色跨章节一致'}；只采用其中与当前角色直接相关的要求。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
 
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
@@ -354,13 +373,33 @@ function Studio() {
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="枚举字段可直接在单元格中选择。高级音色提示仅在选择高级模式时显示。" /><Table className="studio-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1700, y: 520 }} /></Card> },
+          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="AI 全文分析会为每个角色建立人物小传和声音导演建议。点击“编辑人物与音色”可查看生成依据、调整方案并预览最终 VoiceDesign 指令。" /><Table className="studio-table role-table" rowKey={(row) => row[0]} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1315, y: 560 }} /></Card> },
           { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message="角色、语言、态度、情绪和节奏均为下拉选择。强度与停顿使用受限数值。" /><Table className="studio-table" rowKey={(row) => String(row[0])} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1900, y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付">{render.available ? <Space direction="vertical" size="large"><StudioAudio src={render.audio!} /><Space><Button icon={<AudioOutlined />} href={render.package}>下载分轨包</Button><Button href={render.manifest}>下载导演清单</Button></Space></Space> : <Empty description="该工程还没有交付文件" />}</Card></div> },
         ]} /></div>
       </>}
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
+      <Modal className="role-editor-modal" width={920} title={roleDraft ? `${roleDraft[1]} · 人物与音色导演` : '人物与音色导演'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); }}>
+        {roleDraft && presets && project && <div className="role-editor-grid">
+          <section className="role-editor-fields">
+            <div className="editor-section-heading"><span>01 / Character</span><strong>人物身份与小传</strong><Text>人物小传来自 AI 全文分析，也是音色选择的主要人物依据。信息必须来自原文，未知内容可以明确标注。</Text></div>
+            <div className="editor-two-column"><label><Text strong>角色名称</Text><Input disabled={jobRunning} value={roleDraft[1]} onChange={event => updateRoleDraft(1, event.target.value)} /></label><label><Text strong>角色类型</Text><Select disabled={jobRunning} value={roleDraft[2]} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={value => updateRoleDraft(2, value)} /></label></div>
+            <label><Text strong>人物小传</Text><Input.TextArea disabled={jobRunning} rows={6} value={roleDraft[3]} onChange={event => updateRoleDraft(3, event.target.value)} placeholder="例如：四十岁左右的刑警，观察敏锐、行事克制，与中冢长期共事。原文未说明家庭背景。负责推动案件调查。" /><small>{roleDraft[3].length} 字符。建议包含身份、年龄阶段、人物关系、性格、经历和叙事作用。</small></label>
+
+            <div className="editor-section-heading"><span>02 / Voice</span><strong>声音导演方案</strong><Text>预设适合快速选择。高级自定义直接交给 VoiceDesign，建议描述年龄感、声线、音高、共鸣、气息、吐字和情绪底色。</Text></div>
+            <label><Text strong>音色生成方式</Text><Select disabled={jobRunning} value={roleVoiceMode} options={[{ value: 'preset', label: '使用可靠音色预设' }, { value: 'custom', label: '高级自定义声音导演' }]} onChange={value => updateRoleDraft(4, value === 'preset' ? '中性清晰' : '')} /></label>
+            {roleVoiceMode === 'preset' ? <label><Text strong>音色预设</Text><Select disabled={jobRunning} value={roleDraft[4]} options={presets.voiceStyles.map(value => ({ value, label: `${value} · ${presets.voiceStylePrompts[value]}` }))} onChange={value => updateRoleDraft(4, value)} /></label> : <label><Text strong>高级声音导演提示</Text><Input.TextArea disabled={jobRunning} rows={4} value={roleDraft[4]} onChange={event => updateRoleDraft(4, event.target.value)} placeholder="例如：四十岁男性的中低音，胸腔共鸣明显，气息稳定，吐字略慢且边界清楚，基础情绪冷静克制。" /><small>这里写声音特征，人物经历放在上方人物小传中。</small></label>}
+            <div className="editor-two-column"><label><Text strong>角色表达节奏</Text><Select disabled={jobRunning} value={roleDraft[6]} options={presets.rhythms.map(value => ({ value, label: `${value} · ${presets.rhythmPrompts[value]}` }))} onChange={value => updateRoleDraft(6, value)} /></label><label className="regenerate-control"><Text strong>下次生成处理</Text><div><Switch disabled={jobRunning} checked={roleDraft[7] === '是'} onChange={checked => updateRoleDraft(7, checked ? '是' : '否')} /><Text>{roleDraft[7] === '是' ? '重新生成并建立新签名' : '保持当前稳定音色'}</Text></div></label></div>
+          </section>
+          <aside className="voice-instruction-preview">
+            <div className="editor-section-heading"><span>03 / Preview</span><strong>AI 会参考什么</strong><Text>下列内容会组合成声音生成指令。修改人物小传、声音导演或节奏后，请打开重新生成。</Text></div>
+            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>全局导演上下文</dt><dd>{project.guidance || '遵循作品体裁并保持角色跨章节一致'}<br />仅采用其中与当前角色直接相关的要求。</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
+            <Text strong>最终 VoiceDesign 指令预览</Text><p className="instruction-copy">{finalVoiceInstruction}</p>
+            <div className="preview-current-voice"><Text strong>当前稳定音色</Text><VoicePreview voiceId={roleDraft[5]} /></div>
+          </aside>
+        </div>}
+      </Modal>
       </section>
     </Content>
   </Layout>;

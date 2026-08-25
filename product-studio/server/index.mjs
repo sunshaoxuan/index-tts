@@ -12,13 +12,32 @@ const defaultRepoRoot = path.resolve(here, '..', '..');
 
 export const presets = {
   voiceStyles: ['中性清晰', '低沉厚实', '温和亲切', '清亮年轻', '冷静克制', '紧张警觉', '悲伤低落', '威严有力', '沙哑沧桑', '轻快活泼'],
+  voiceStylePrompts: {
+    中性清晰: '中性、清晰、自然，吐字准确', 低沉厚实: '低沉厚实，声音有支撑，气息稳定', 温和亲切: '温和亲切，声线柔和，交流感自然',
+    清亮年轻: '清亮年轻，声音通透，富有朝气', 冷静克制: '冷静克制，情绪内收，表达理性', 紧张警觉: '紧张警觉，声音收紧，保持清晰',
+    悲伤低落: '悲伤低落，声音低回，情绪含蓄', 威严有力: '威严有力，声音坚实，表达明确', 沙哑沧桑: '略带沙哑和沧桑感，气息自然',
+    轻快活泼: '轻快活泼，声音明亮，富有活力',
+  },
   rhythms: ['自然叙述', '沉稳舒缓', '紧凑清晰', '轻快活泼', '克制停连', '低声内敛', '威严有力'],
+  rhythmPrompts: {
+    自然叙述: '自然表达，按语义停连', 沉稳舒缓: '沉稳舒缓，重音清晰，短语间自然停连', 紧凑清晰: '紧凑表达，声母清晰，保持自然换气',
+    轻快活泼: '轻快灵动，声母清楚，短句间自然换气', 克制停连: '克制表达，短语边界清楚，停连分明', 低声内敛: '低声内敛，韵母轻收，短语间自然停连',
+    威严有力: '坚定有力，重音明确，停顿干脆',
+  },
   attitudes: ['中性叙述', '沉稳叙述', '温和交流', '紧张警觉', '克制低沉', '悲伤压抑', '喜悦明快', '愤怒强烈', '恐惧迟疑', '威严命令'],
   emotions: ['喜悦', '愤怒', '悲伤', '恐惧', '厌恶', '低落', '惊喜', '平静'],
   paces: ['自然', '舒缓', '紧凑', '轻快', '克制', '低声', '强调'],
   roleKinds: ['narrator', 'character', 'anchor', 'reporter', 'interviewee'],
+  roleKindLabels: { narrator: '旁白', character: '人物', anchor: '新闻主播', reporter: '记者', interviewee: '采访对象' },
+  contentTypeLabels: { novel: '小说', news: '新闻', story: '故事体' },
   languages: ['ZH', 'EN', 'JA', 'ES', 'AR'],
 };
+
+function defaultRoleProfile(name, kind) {
+  if (kind === 'narrator') return '全篇叙事视角，负责环境、动作、心理活动与说话归属；不对应具体人物，声音需要在章节之间保持稳定。';
+  const label = presets.roleKindLabels[kind] || '人物';
+  return `${name}是原文中已识别的${label}。当前文本证据尚不足以确定年龄、身份、人物关系、性格和经历，请结合全文补充后再生成音色。`;
+}
 
 function safeProjectId(value) {
   const id = String(value || '');
@@ -54,6 +73,12 @@ function normalizeProject(payload) {
   copy.pronunciations = Array.isArray(copy.pronunciations) ? copy.pronunciations.map(row => ({ source: String(row.source ?? row[0] ?? ''), replacement: String(row.replacement ?? row[1] ?? ''), note: String(row.note ?? row[2] ?? ''), enabled: row.enabled ?? !['否', 'false', '0'].includes(String(row[3]).toLowerCase()) })) : [];
   copy.roles = Array.isArray(copy.roles) ? copy.roles.map(row => {
     const updated = [...row];
+    const name = String(updated[1] || '').trim();
+    const kind = String(updated[2] || 'character');
+    const profile = String(updated[3] || '').trim();
+    const voiceCondition = String(updated[4] || '').trim();
+    if (!profile || profile === name || ['由分句引用补全', '由说话归属文字识别'].includes(profile)) updated[3] = defaultRoleProfile(name || '未命名角色', kind);
+    if (!voiceCondition || voiceCondition === name || voiceCondition === '根据角色内容选择') updated[4] = '中性清晰';
     updated[6] = closestPreset(updated[6], presets.rhythms, [[/沉稳|舒缓|从容/, '沉稳舒缓'], [/紧凑|清晰|利落/, '紧凑清晰'], [/轻快|活泼/, '轻快活泼'], [/克制|停连/, '克制停连'], [/低声|内敛/, '低声内敛'], [/威严|有力/, '威严有力']], '自然叙述');
     updated[7] = ['是', 'true', '1'].includes(String(updated[7]).toLowerCase()) ? '是' : '否';
     return updated;
@@ -78,6 +103,7 @@ function validateProject(payload, id) {
     if (roleIds.has(row[0])) throw new Error(`角色轨道重复 ${row[0]}`);
     roleIds.add(row[0]);
     if (!presets.roleKinds.includes(row[2])) throw new Error(`角色 ${row[1]} 的类型无效`);
+    if (!String(row[3]).trim()) throw new Error(`角色 ${row[1]} 缺少人物小传`);
     if (!String(row[4]).trim()) throw new Error(`角色 ${row[1]} 缺少音色预设或高级提示`);
     if (!presets.rhythms.includes(row[6])) throw new Error(`角色 ${row[1]} 的节奏预设无效`);
     if (!['是', '否'].includes(row[7])) throw new Error(`角色 ${row[1]} 的重新生成选项无效`);

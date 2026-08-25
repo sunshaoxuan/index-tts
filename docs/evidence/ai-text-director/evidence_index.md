@@ -35,3 +35,8 @@
 | 浏览器刷新恢复同一活动作业 | `/api/active-job`、任务 `e0f20b083101444db5a7aae8665c0d32`、`29-refreshed-active-job-lock.png` | 高 | 正常浏览器刷新场景 |
 | 移动端刷新保持进度与只读锁 | 任务 `26d53ff6946e492c843047cae3f83ca6`、`30-mobile-refreshed-active-job-lock.png` | 高 | 390 x 844 模拟视口 |
 | 服务恢复区分存活与失联 Worker | Node 测试 `restores a running worker after the server is rebuilt`、`marks a restored job as failed when its worker no longer exists` | 高 | PID 存活探测，无法识别极少数 PID 重用场景 |
+| 角色编辑清楚区分人物与声音依据 | `31-role-biography-voice-editor.png`、`App.tsx` 最终指令预览 | 高 | 小传质量仍取决于原文证据和 AI 结果 |
+| 旧姓名占位不会继续送入 VoiceDesign | Node 测试 `replaces name-only character metadata`、白夜行真实 DOM | 高 | 读取时迁移，保存工程后持久化 |
+| VoiceDesign 使用可见的完整依据 | `build_voice_design_jobs`、Python 指令契约测试、编辑窗口六类依据 | 高 | 浏览器预览由同值映射同步维护，测试校验关键字段 |
+| 移动端人物编辑没有横向溢出 | `33-mobile-role-biography-editor.png`、窗口与页面宽度测量 | 高 | 390 x 844 模拟视口 |
+| 低声说不会把低声当人物名 | 任务 `b8965e4b87954f5db7bfa7e2a1e40b1c`、`test_quoted_speaker_inference...` | 高 | 当前确定性规则覆盖常见动作和语气词 |

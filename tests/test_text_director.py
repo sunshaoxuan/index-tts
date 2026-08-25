@@ -381,8 +381,14 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
         "segments": [_segment(1, "测试。", "测试。")],
     }
     role_rows = [["narrator", "旁白", "narrator", "成熟", "五十岁女声，略带沙哑", "voice_05.wav", "自然叙述", "是"]]
-    jobs = build_voice_design_jobs(document, role_rows)
+    jobs = build_voice_design_jobs(document, role_rows, {"content_type": "story", "guidance": "悬疑故事，人物对白克制"})
     assert "五十岁女声，略带沙哑" in jobs[0]["instruct"]
+    assert "作品体裁：故事体" in jobs[0]["instruct"]
+    assert "全局导演上下文：悬疑故事，人物对白克制；只采用其中与当前角色直接相关的要求" in jobs[0]["instruct"]
+    assert "人物小传：成熟" in jobs[0]["instruct"]
+    assert "声音导演：五十岁女声，略带沙哑" in jobs[0]["instruct"]
+    assert jobs[0]["instruct"].startswith("为旁白设计")
+    assert "旁白旁白" not in jobs[0]["instruct"]
 
     invalid_roles = [list(role_rows[0])]
     invalid_roles[0][6] = "随便慢一点"
@@ -395,6 +401,31 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
         invalid_segments[0][index] = value
         with pytest.raises(DirectorError, match=message):
             tables_to_script(role_rows, invalid_segments)
+
+
+def test_director_prompt_requires_evidence_grounded_biography_and_voice_direction():
+    director = OllamaTextDirector(DirectorConfig())
+    prompt = director._build_prompt(
+        chunk="笹垣是负责案件调查的刑警。",
+        chunk_index=1,
+        chunk_count=1,
+        requested_type="novel",
+        existing_characters=[],
+        previous_context="",
+        guidance="旁白克制",
+    )
+    assert "profile 是人物小传" in prompt
+    assert "身份、年龄阶段、人物关系、性格、经历和叙事作用" in prompt
+    assert "只写原文有依据的信息" in prompt
+    assert "禁止只复制姓名" in prompt
+    assert "voice_hint 是声音导演建议" in prompt
+    assert "音高、共鸣位置、气息、吐字方式和基础情绪" in prompt
+    assert "根据角色内容选择" in prompt
+
+
+def test_quoted_speaker_inference_does_not_treat_low_voice_as_a_name():
+    assert OllamaTextDirector._infer_quoted_speaker("林澈握紧信封，低声说：") == "林澈"
+    assert OllamaTextDirector._infer_quoted_speaker("中冢抬起头，冷冷地问：") == "中冢"
 
 
 def test_role_voice_matching_prefers_semantic_chinese_voices():
