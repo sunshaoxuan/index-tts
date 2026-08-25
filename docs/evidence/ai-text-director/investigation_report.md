@@ -33,6 +33,8 @@ Index Voice Studio 产品页面已经迁移到 React 19、Ant Design 6、Node.js
 
 Ant Design 6 下拉菜单采用自定义虚拟滚动，单独的 CSS overscroll 在顶部边界仍会带动页面。当前使用弹层生命周期页面锁和 wheel 边界保护。菜单打开时 `html` 为 `overflow: hidden`，菜单关闭后恢复 `visible`。
 
+角色音色任务运行中刷新页面时，原进度和锁定状态曾消失。根因是 React 只把作业保存在组件内存中，Node 也只保存进程内 `activeJob`。正常刷新不会终止 Node 或 Python Worker，后台仍可能继续运行，页面失去了重新发现任务的入口。当前 Node 持久保存活动作业 ID、类型、工程和 Worker PID，提供 `/api/active-job`；React 首次加载时恢复任务所属工程、相同作业进度与锁定，并继续使用原作业 ID 轮询。服务恢复时检查 Worker PID，失联任务写入 error 并释放锁。
+
 ## 运行证据
 
 1. 正式启动脚本在 7864 提供 HTTP 200，运行时为 Node v24.19.0。
@@ -42,7 +44,7 @@ Ant Design 6 下拉菜单采用自定义虚拟滚动，单独的 CSS overscroll 
 5. IndexTTS 使用新音色生成 5 条分句、1 个章节、2 个角色轨、完整 WAV 和 ZIP。
 6. 桌面和 390 像素移动端截图均未见文字遮盖。
 7. 浏览器 Console 为 0 error、0 warning。
-8. 产品端口固定为 7864，最终正式启动器终止原监听 PID 24612 并在相同端口启动 PID 25196；7861、7862、7863 无监听。
+8. 产品端口固定为 7864，本轮正式启动器终止原监听 PID 25196 并在相同端口启动 PID 37500；7861、7862、7863 无监听。
 9. 摄影首屏清晰、中间过渡和工作区完整模糊三个状态均完成截图检查，工作区、卡片和表格计算背景为透明。
 10. Workspace、Voices、Director、Delivery 四个菜单均切换实际标签并滚动到工程区域。
 11. 最新桌面端工作区的工程控制区从 103px 开始，顶部导航位于视口外，重叠判定为 false。
@@ -61,6 +63,9 @@ Ant Design 6 下拉菜单采用自定义虚拟滚动，单独的 CSS overscroll 
 24. 下拉菜单打开时页面保持 `scrollY 913`：列表从 `scrollTop 96` 到 0、继续越过顶部、滚到 96、继续越过底部，页面位置全部不变。关闭菜单后 `html` 恢复 `overflow: visible`。
 25. 最新 Browser Console 0 error、0 warning。
 26. 390 x 844 移动端角色表宽 1625px、可视宽 286px，在表内横向滚动到 900px 后播放器完整可见，页面无横向溢出。
+27. 真实白夜行音色任务 `e0f20b083101444db5a7aae8665c0d32` 刷新前由 `/api/active-job` 返回 10.36%、Worker PID 32660；刷新后页面自动回到同一工程并恢复 10% 的 `旁白 1/7`，工程选择和任务按钮保持禁用。
+28. 桌面刷新恢复截图为 `29-refreshed-active-job-lock.png`。390 x 844 移动端任务 `26d53ff6946e492c843047cae3f83ca6` 刷新后恢复 10% 的 `旁白 1/1`，工程选择和音色按钮禁用，文档宽度 375px 小于视口 390px；截图为 `30-mobile-refreshed-active-job-lock.png`。
+29. Node 9 项测试覆盖活动任务发现、终态清理、服务重建后存活 Worker 恢复、同工程 409、失联 Worker 错误终态。最终 Browser Console 0 error、0 warning。
 
 ## 质量观察
 

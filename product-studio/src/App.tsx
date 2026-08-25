@@ -69,7 +69,7 @@ function Studio() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [render, setRender] = useState<{ available: boolean; audio?: string; package?: string; manifest?: string }>({ available: false });
-  const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; phase: string; fraction: number; message: string }>();
+  const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newContentType, setNewContentType] = useState('novel');
@@ -79,8 +79,12 @@ function Studio() {
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
 
   useEffect(() => {
-    Promise.all([api.presets(), api.projects()]).then(([p, list]) => {
-      setPresets(p); setProjects(list); if (list[0]) setProjectId(list[0].value);
+    Promise.all([api.presets(), api.projects(), api.activeJob()]).then(([p, list, active]) => {
+      setPresets(p); setProjects(list);
+      if (active.available && active.jobId && active.kind && active.projectId) {
+        setProjectId(active.projectId);
+        setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
+      } else if (list[0]) setProjectId(list[0].value);
     }).catch((error) => message.error(error.message));
   }, [message]);
 
@@ -90,6 +94,41 @@ function Studio() {
       setProject(data); setRender(latest); setDirty(false);
     }).catch((error) => message.error(error.message));
   }, [projectId, message]);
+
+  useEffect(() => {
+    if (!job || ['complete', 'error'].includes(job.phase)) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const stopPolling = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+    const poll = async () => {
+      try {
+        const status = await api.job(job.id);
+        if (cancelled) return;
+        setJob(current => current?.id === job.id ? { ...current, ...status } : current);
+        if (status.phase === 'complete' || status.phase === 'error') {
+          stopPolling();
+          if (status.phase === 'complete') {
+            const [updated, latest] = await Promise.all([api.project(job.projectId), api.latestRender(job.projectId)]);
+            if (!cancelled) {
+              setProject(updated); setRender(latest); setDirty(false); message.success(status.message);
+            }
+          } else message.error(status.message);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          stopPolling();
+          setJob(current => current?.id === job.id ? { ...current, phase: 'error', fraction: 1, message: (error as Error).message } : current);
+          message.error((error as Error).message);
+        }
+      }
+    };
+    void poll();
+    timer = window.setInterval(poll, 1000);
+    return () => { cancelled = true; stopPolling(); };
+  }, [job?.id, message]);
 
   useEffect(() => {
     let frame = 0;
@@ -215,21 +254,7 @@ function Studio() {
     let started: { jobId: string };
     try { started = await api[kind](project.project_id); }
     catch (error) { message.error((error as Error).message); return; }
-    setJob({ id: started.jobId, kind, phase: 'queued', fraction: 0, message: '任务已进入队列' });
-    const timer = window.setInterval(async () => {
-      try {
-        const status = await api.job(started.jobId);
-        setJob({ id: started.jobId, kind, ...status });
-        if (status.phase === 'complete' || status.phase === 'error') {
-          window.clearInterval(timer);
-          if (status.phase === 'complete') {
-            setProject(await api.project(project.project_id));
-            setRender(await api.latestRender(project.project_id));
-            message.success(status.message);
-          } else message.error(status.message);
-        }
-      } catch (error) { window.clearInterval(timer); message.error((error as Error).message); }
-    }, 1000);
+    setJob({ id: started.jobId, kind, projectId: project.project_id, phase: 'queued', fraction: 0, message: '任务已进入队列' });
   };
 
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];

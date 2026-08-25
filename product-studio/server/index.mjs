@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -118,11 +118,51 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
+  const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
   await mkdir(jobRoot, { recursive: true });
+  const clearActiveJob = async (jobId) => {
+    if (activeJob?.jobId === jobId) activeJob = undefined;
+    try {
+      const stored = JSON.parse(await readFile(activeJobFile, 'utf8'));
+      if (stored.jobId === jobId) await unlink(activeJobFile);
+    } catch {}
+  };
+  try {
+    const stored = JSON.parse(await readFile(activeJobFile, 'utf8'));
+    const statusFile = path.join(jobRoot, safeProjectId(stored.jobId), 'status.json');
+    const status = JSON.parse(await readFile(statusFile, 'utf8'));
+    if (['complete', 'error'].includes(status.phase)) await unlink(activeJobFile);
+    else {
+      let processAlive = false;
+      if (Number.isSafeInteger(stored.pid) && stored.pid > 0) {
+        try { process.kill(stored.pid, 0); processAlive = true; } catch {}
+      }
+      if (processAlive) activeJob = stored;
+      else {
+        await writeFile(statusFile, JSON.stringify({ phase: 'error', fraction: 1, message: '服务恢复时未发现原 Worker 进程，任务已经终止，请重新启动' }), 'utf8');
+        await unlink(activeJobFile);
+      }
+    }
+  } catch {}
   await app.register(fastifyStatic, { root: distRoot, wildcard: false });
 
   app.get('/api/health', async () => ({ status: 'ok', runtime: process.version, architecture: 'react-antd-node-python' }));
+  app.get('/api/active-job', async () => {
+    if (!activeJob) return { available: false };
+    try {
+      const status = JSON.parse(await readFile(path.join(jobRoot, activeJob.jobId, 'status.json'), 'utf8'));
+      if (['complete', 'error'].includes(status.phase)) {
+        await clearActiveJob(activeJob.jobId);
+        return { available: false };
+      }
+      return { available: true, ...activeJob, ...status };
+    } catch {
+      const failed = activeJob;
+      await clearActiveJob(failed.jobId);
+      return { available: false };
+    }
+  });
   app.get('/api/presets', async () => presets);
   app.get('/api/voices/:voiceId/audio', async (request, reply) => {
     try {
@@ -224,11 +264,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       const input = path.join(dir, 'input.json');
       const status = path.join(dir, 'status.json');
       const result = path.join(dir, 'result.json');
-      const worker = kind === 'analysis' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
+      const worker = kind === 'analyze' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
       const payload = { root: repoRoot, project_id: id };
-      if (kind === 'analysis') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
+      if (kind === 'analyze') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
       await writeFile(input, JSON.stringify(payload), 'utf8');
       await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
+      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
       const python = path.join(repoRoot, '.venv', 'Scripts', 'python.exe');
       const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
       const child = launchWorker
@@ -236,6 +277,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
         : spawn(python, workerArgs, {
           cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
         });
+      activeJob.pid = Number.isSafeInteger(child.pid) ? child.pid : undefined;
+      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
       const log = path.join(dir, 'worker.log');
       const chunks = [];
       child.stdout.on('data', chunk => chunks.push(chunk));
@@ -252,24 +295,25 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
             await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail }), 'utf8');
           }
         } finally {
-          if (activeJob?.jobId === jobId) activeJob = undefined;
+          await clearActiveJob(jobId);
         }
       });
       child.on('error', async error => {
         try {
           await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${error.message}` }), 'utf8');
         } finally {
-          if (activeJob?.jobId === jobId) activeJob = undefined;
+          await clearActiveJob(jobId);
         }
       });
       return { jobId, kind };
     } catch (error) {
-      if (activeJob?.jobId === jobId) activeJob = undefined;
+      try { await writeFile(path.join(jobRoot, jobId, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务启动失败：${error.message}` }), 'utf8'); } catch {}
+      await clearActiveJob(jobId);
       throw error;
     }
   }
   app.post('/api/projects/:id/analyze', async (request, reply) => {
-    try { return reply.code(202).send(await startJob(request.params.id, 'analysis')); }
+    try { return reply.code(202).send(await startJob(request.params.id, 'analyze')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/render', async (request, reply) => {
@@ -284,7 +328,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     try {
       const id = safeProjectId(request.params.id);
       const status = JSON.parse(await readFile(path.join(jobRoot, id, 'status.json'), 'utf8'));
-      if (['complete', 'error'].includes(status.phase) && activeJob?.jobId === id) activeJob = undefined;
+      if (['complete', 'error'].includes(status.phase) && activeJob?.jobId === id) await clearActiveJob(id);
       let result;
       try { result = JSON.parse(await readFile(path.join(jobRoot, id, 'result.json'), 'utf8')); } catch {}
       return { jobId: id, ...status, result };

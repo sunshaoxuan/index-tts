@@ -32,3 +32,6 @@
 | 新音色完整渲染 | 任务 `ba7bd3615a474f31bff154d80bd03e7d` | 高 | 5 条分句的短篇工程 |
 | 真实交付在产品页面可见 | `13-react-real-delivery.png` | 高 | 页面显示音频播放器和两个下载入口 |
 | 产品端口固定且自动清理占用 | `scripts/start_indextts25_windows.ps1`、正式重启日志 | 高 | Windows 专用启动器 |
+| 浏览器刷新恢复同一活动作业 | `/api/active-job`、任务 `e0f20b083101444db5a7aae8665c0d32`、`29-refreshed-active-job-lock.png` | 高 | 正常浏览器刷新场景 |
+| 移动端刷新保持进度与只读锁 | 任务 `26d53ff6946e492c843047cae3f83ca6`、`30-mobile-refreshed-active-job-lock.png` | 高 | 390 x 844 模拟视口 |
+| 服务恢复区分存活与失联 Worker | Node 测试 `restores a running worker after the server is rebuilt`、`marks a restored job as failed when its worker no longer exists` | 高 | PID 存活探测，无法识别极少数 PID 重用场景 |

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -117,6 +117,16 @@ test('allows one worker at a time and records a failed worker as error', async (
   } });
   const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} });
   assert.equal(started.statusCode, 202);
+  const active = await app.inject('/api/active-job');
+  assert.deepEqual(active.json(), {
+    available: true,
+    jobId: started.json().jobId,
+    kind: 'analyze',
+    projectId: 'demo',
+    phase: 'queued',
+    fraction: 0,
+    message: '任务已进入队列',
+  });
   const lockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(lockedSave.statusCode, 409);
   assert.match(lockedSave.json().error, /工程版本已被任务.*锁定/);
@@ -130,10 +140,55 @@ test('allows one worker at a time and records a failed worker as error', async (
   const status = await app.inject(`/api/jobs/${started.json().jobId}`);
   assert.equal(status.json().phase, 'error');
   assert.match(status.json().message, /fixture worker failed/);
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
   const unlockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(unlockedSave.statusCode, 200);
   const restarted = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(restarted.statusCode, 202);
   child.emit('close', 0);
+  await app.close();
+});
+
+test('restores a running worker after the server is rebuilt', async () => {
+  const { root, project } = await fixture();
+  const jobId = 'restoredjob';
+  const jobDir = path.join(root, 'runtime-output', 'product-jobs', jobId);
+  await mkdir(jobDir, { recursive: true });
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'voice_design', fraction: 0.25, message: '正在生成角色音色' }));
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', 'active-job.json'), JSON.stringify({ jobId, kind: 'voice', projectId: 'demo', pid: process.pid }));
+
+  const app = await buildApp({ repoRoot: root });
+  const active = await app.inject('/api/active-job');
+  assert.deepEqual(active.json(), {
+    available: true,
+    jobId,
+    kind: 'voice',
+    projectId: 'demo',
+    pid: process.pid,
+    phase: 'voice_design',
+    fraction: 0.25,
+    message: '正在生成角色音色',
+  });
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project })).statusCode, 409);
+
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '角色音色生成完成' }));
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project })).statusCode, 200);
+  await app.close();
+});
+
+test('marks a restored job as failed when its worker no longer exists', async () => {
+  const { root } = await fixture();
+  const jobId = 'orphanedjob';
+  const jobDir = path.join(root, 'runtime-output', 'product-jobs', jobId);
+  await mkdir(jobDir, { recursive: true });
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'voice_design', fraction: 0.05, message: '正在加载模型' }));
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', 'active-job.json'), JSON.stringify({ jobId, kind: 'voice', projectId: 'demo', pid: 2147483647 }));
+
+  const app = await buildApp({ repoRoot: root });
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  const status = JSON.parse(await readFile(path.join(jobDir, 'status.json'), 'utf8'));
+  assert.equal(status.phase, 'error');
+  assert.match(status.message, /未发现原 Worker 进程/);
   await app.close();
 });

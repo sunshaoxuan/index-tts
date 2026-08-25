@@ -11,6 +11,7 @@ const emptyPost: RequestInit = { method: 'POST', body: JSON.stringify({}) };
 
 export const api = {
   presets: () => request<Presets>('/api/presets'),
+  activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
   projects: () => request<Array<{ label: string; value: string }>>('/api/projects'),
   createProject: (title: string, contentType: string) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType }) }),
   project: (id: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}`),
