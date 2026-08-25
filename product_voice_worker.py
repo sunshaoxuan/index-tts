@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from novel_project import NovelProjectStore, pronunciation_rows
-from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs
+from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs, guidance_role_signature
 from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
 
 
@@ -45,6 +45,22 @@ def quarantine_cross_role_voices(store: NovelProjectStore, routing: dict[str, An
     return quarantined
 
 
+def resolve_or_reuse_guidance(project: dict[str, Any], director: OllamaTextDirector) -> tuple[dict[str, Any], bool]:
+    guidance = str(project.get("guidance") or "").strip()
+    document = project.get("document") if isinstance(project.get("document"), dict) else {}
+    existing = document.get("guidance_routing") if isinstance(document, dict) else None
+    expected_signature = guidance_role_signature(project.get("roles") or [])
+    if (
+        isinstance(existing, dict)
+        and str(existing.get("guidance") or "").strip() == guidance
+        and str(existing.get("model") or "") == director.config.model
+        and str(existing.get("role_signature") or "") == expected_signature
+        and isinstance(existing.get("assignments"), list)
+    ):
+        return existing, True
+    return director.resolve_guidance(guidance, project.get("roles") or []), False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -56,10 +72,12 @@ def main() -> int:
     status = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
-    write_json(status, {"phase": "routing_guidance", "fraction": 0.01, "message": "正在用 AI 分配导演补充的角色影响范围"})
     director = OllamaTextDirector(DirectorConfig())
     document = dict(project["document"])
-    document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), project["roles"])
+    cached_routing = resolve_or_reuse_guidance(project, director)
+    document["guidance_routing"], routing_reused = cached_routing
+    routing_message = "正在复用已有导演补充分配" if routing_reused else "正在用 AI 分配导演补充的角色影响范围"
+    write_json(status, {"phase": "routing_guidance", "fraction": 0.01, "message": routing_message})
     quarantined = quarantine_cross_role_voices(store, document["guidance_routing"])
     roles = [list(row) for row in project["roles"]]
     for row in roles:

@@ -6,7 +6,8 @@ import numpy as np
 
 import voice_design_worker as worker
 from novel_project import NovelProjectStore
-from product_voice_worker import quarantine_cross_role_voices
+from product_voice_worker import quarantine_cross_role_voices, resolve_or_reuse_guidance
+from text_director import guidance_role_signature
 
 
 def test_voice_design_worker_generates_each_role(tmp_path, monkeypatch):
@@ -123,3 +124,58 @@ def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):
     saved = json.loads((store.voice_library_root / f"{metadata['voice_id']}.json").read_text(encoding="utf-8"))
     assert saved["quarantined"] is True
     assert "其他轨道" in saved["quarantine_reason"]
+
+
+def test_voice_job_reuses_current_guidance_routing_without_calling_ollama():
+    roles = [["narrator", "旁白", "narrator", "叙事", "成熟声线", "voice-1", "自然叙述", "是"]]
+    routing = {
+        "guidance": "旁白低沉",
+        "model": "qwen3:8b",
+        "role_signature": guidance_role_signature(roles),
+        "assignments": [{"source_text": "旁白低沉", "target_role_ids": ["narrator"]}],
+    }
+
+    class FailingDirector:
+        config = type("Config", (), {"model": "qwen3:8b"})()
+
+        @staticmethod
+        def resolve_guidance(*_args):
+            raise AssertionError("unchanged guidance routing called Ollama")
+
+    resolved, reused = resolve_or_reuse_guidance(
+        {"guidance": "旁白低沉", "roles": roles, "document": {"guidance_routing": routing}},
+        FailingDirector(),
+    )
+
+    assert reused is True
+    assert resolved is routing
+
+
+def test_voice_job_refreshes_guidance_routing_after_a_role_change():
+    old_roles = [["narrator", "旁白", "narrator", "叙事", "成熟声线", "voice-1", "自然叙述", "是"]]
+    new_roles = [["narrator", "旁白", "narrator", "叙事", "苍老声线", "voice-1", "自然叙述", "是"]]
+    routing = {
+        "guidance": "旁白低沉",
+        "model": "qwen3:8b",
+        "role_signature": guidance_role_signature(old_roles),
+        "assignments": [],
+    }
+    refreshed = {**routing, "role_signature": guidance_role_signature(new_roles)}
+
+    class RecordingDirector:
+        config = type("Config", (), {"model": "qwen3:8b"})()
+        calls = 0
+
+        @classmethod
+        def resolve_guidance(cls, *_args):
+            cls.calls += 1
+            return refreshed
+
+    resolved, reused = resolve_or_reuse_guidance(
+        {"guidance": "旁白低沉", "roles": new_roles, "document": {"guidance_routing": routing}},
+        RecordingDirector(),
+    )
+
+    assert reused is False
+    assert resolved is refreshed
+    assert RecordingDirector.calls == 1

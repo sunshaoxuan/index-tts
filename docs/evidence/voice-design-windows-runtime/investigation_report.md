@@ -21,3 +21,9 @@ Windows 存活探测改为 `OpenProcess`、`GetExitCodeProcess` 和 `STILL_ACTIV
 真实工程 `20260825-104455-白夜行01-869866` 的任务 `df4e88f2bfa44f09a47d2402f1f9ebf6` 完成。新生成旁白和松野秀臣两个音色，保留其余五个音色。常驻模型 PID 23772，状态为 ready，`model_loaded` 为 true。
 
 浏览器页面显示 `Voice Model Hot / 音色模型已驻留`。角色表显示新音色 `voice-60565d448665a82b` 和 `voice-1e35fd32062c7340`。浏览器 Console 中 error 和 warning 均为 0，已完成截图检查。
+
+## 重复显存增长复查
+
+后续连续任务均记录 runtime PID 23772 与 `model_reused: true`。显存阶跃没有对应 VoiceDesign 模型重载。代码调查发现每次点击都会无条件调用 Ollama 重新计算导演补充分配。现已增加 `guidance_routing` 有效性检查，导演补充、路由模型和角色签名一致时复用已有结果。
+
+修复后的无变更任务 `60ace1d6fe0645ce87be9016b05f857a` 在 0.225 秒完成，未调用 Ollama 或 VoiceDesign，PID 和启动时间保持不变。

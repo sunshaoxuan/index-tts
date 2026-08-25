@@ -9,5 +9,7 @@
 | 模型保持驻留 | 页面显示 Hot，state 中 model_loaded 为 true | PID 23772 与浏览器 DOM | 通过 |
 | 代码回归稳定 | 聚焦、Node、非 GPU 测试通过 | `test_results.md` | 通过 |
 | 页面可见行为稳定 | 页面结果、Console、截图检查 | 浏览器验收 | 通过 |
+| 后续任务复用 VoiceDesign | 连续任务保持 PID 23772 且 `model_reused` 为 true | 四个真实任务结果 | 通过 |
+| 输入未变化时跳过 Ollama 路由 | 0.225 秒完成且 Ollama 活动模型数保持 0 | 任务 `60ace1d6fe0645ce87be9016b05f857a` | 通过 |
 
 全部初衷级验收条目通过。

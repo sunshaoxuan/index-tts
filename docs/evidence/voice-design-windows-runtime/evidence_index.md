@@ -9,3 +9,5 @@
 | 实际音色生成完成 | `runtime-output/product-jobs/df4e88f2bfa44f09a47d2402f1f9ebf6/status.json` 与 `result.json` | 高 | 运行输出不纳入 Git |
 | 模型保持驻留 | `runtime-output/voice-design-runtime/state.json` | 高 | 进程停止后状态会变化 |
 | 页面与控制台通过 | 浏览器 DOM、Console 0 error、0 warning、截图检查 | 高 | 截图保存在本次浏览器验收记录中 |
+| 后续 VoiceDesign 复用同一模型 | 连续四个任务均为 PID 23772 与 `model_reused: true` | 高 | PID 会随服务重启变化 |
+| 无变更任务不再调用第二个模型 | 任务 `60ace1d6fe0645ce87be9016b05f857a`，Ollama 前后活动模型数为 0 | 高 | 仅对输入签名完全一致的任务复用 |

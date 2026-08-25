@@ -23,3 +23,9 @@
 ## 浏览器
 
 页面显示热模型状态和两个新音色 ID。Console 0 error，0 warning。截图检查通过。
+
+## 路由复用增量验证
+
+聚焦测试 58 passed。非 GPU 回归 222 passed，22 deselected，30 subtests passed。
+
+真实无变更任务 `60ace1d6fe0645ce87be9016b05f857a` 用 0.225 秒完成。VoiceDesign CPU 增量为 0，Ollama 前后活动模型数为 0。
