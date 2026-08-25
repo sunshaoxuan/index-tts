@@ -40,3 +40,4 @@
 | VoiceDesign 使用可见的完整依据 | `build_voice_design_jobs`、Python 指令契约测试、编辑窗口六类依据 | 高 | 浏览器预览由同值映射同步维护，测试校验关键字段 |
 | 移动端人物编辑没有横向溢出 | `33-mobile-role-biography-editor.png`、窗口与页面宽度测量 | 高 | 390 x 844 模拟视口 |
 | 低声说不会把低声当人物名 | 任务 `b8965e4b87954f5db7bfa7e2a1e40b1c`、`test_quoted_speaker_inference...` | 高 | 当前确定性规则覆盖常见动作和语气词 |
+| 角色节奏长标签不覆盖重新生成控件 | `34-role-editor-controls-no-overlap.png`、`35-narrow-role-editor-controls-no-overlap.png`、`36-mobile-role-editor-controls-no-overlap.png`、三档矩形检测 | 高 | 覆盖 1280、820、390 像素视口与真实最长节奏标签 |

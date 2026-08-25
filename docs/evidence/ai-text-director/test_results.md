@@ -54,3 +54,7 @@
 32. 角色表列边界依次为 125、150、330、250、270、190px，播放器与操作列不相交。
 33. 390 x 844 编辑窗口 `clientWidth=311`、`scrollWidth=311`，页面宽度和滚动宽度均为 390，Console 0 error、0 warning。
 34. 真实任务 `b8965e4b87954f5db7bfa7e2a1e40b1c` 为安全回退 1 块，正确把“低声说”前的角色识别为林澈，并明确标注小传信息不足。
+35. 撤回上一轮未覆盖真实长节奏标签的“角色编辑无覆盖”结论。以“沉稳舒缓 · 沉稳舒缓，重音清晰，短语间自然停连”重新验证，1280、820 和 390 像素宽度下节奏 Select 与下次生成处理矩形均不相交。
+36. 820 x 900 下页面 `scrollWidth=820`；390 x 844 下页面 `scrollWidth=390`。三档截图人工查看无控件覆盖，最新 Browser Console 0 error、0 warning。
+37. 本产品相关 Python 回归 40/40 通过，Node 10/10 通过，TypeScript 与 Vite 生产构建通过，Windows 启动器 3/3 通过，`git diff --check` 通过。
+38. 全仓 `pytest -q` 为 192 passed、6 skipped、16 errors。错误均位于历史 `test_v1.py` 和 `test_v2.py` 模型加载夹具，分别为当前检查点向 V1 传入未知 `emo_condition_module`，以及 V2 从同一 `config.yaml` 读取到空配置；未涉及本次 React、CSS 或产品工作台测试。
