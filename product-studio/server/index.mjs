@@ -61,6 +61,29 @@ export function recommendPitchRange(gender, age) {
   return { min, max, target: Math.round((min + max) / 2) };
 }
 
+const DEFAULT_PORTRAIT_STYLE = 'cinematic_manga';
+const PORTRAIT_STYLE_PROMPTS = Object.freeze({
+  cinematic_manga: '电影感漫画。清晰利落的轮廓线，细腻分层的赛璐璐上色，克制的综合色彩，电影式光影与景深，成熟叙事构图，保留自然面部比例和可连续复用的角色特征。',
+  clean_cel: '清爽赛璐璐漫画。利落线稿，纯净色块，轻柔阴影，明快表情，角色轮廓清晰且辨识度高。',
+  soft_watercolor: '柔光水彩漫画。透明水彩晕染，细微纸张颗粒，柔和边缘，空气感光线，情绪细腻。',
+  noir_ink: '黑白悬疑墨线漫画。高反差黑白，硬朗墨线，密集排线，深沉阴影，紧张而克制的画面气氛。',
+  retro_print: '复古网点印刷漫画。有限色盘，网点层次，轻微套色偏移，纸张质感，具有年代印刷气息。',
+  neon_scifi: '霓虹科幻漫画。冷暖霓虹，锐利边缘光，未来材质，夜景氛围，清晰面部与服装结构。',
+  storybook_gouache: '叙事绘本厚涂漫画。不透明颜料笔触，温暖综合色调，简洁造型，故事书式构图。',
+  oriental_ink: '东方水墨漫画。墨色浓淡，充足留白，含蓄设色，流动笔触，强调人物气韵和神态。',
+  ornate_fantasy: '华丽幻想漫画。精致服饰纹样，柔亮材质，层次丰富的装饰，梦幻环境光，人物主体明确。',
+  urban_sketch: '都市速写漫画。松弛手绘线条，低饱和街景色彩，自然姿态，生活化构图。',
+  pastel_emotion: '柔彩情感漫画。粉彩综合色调，柔软边缘，轻盈高光，克制表情，细腻情绪氛围。',
+  dynamic_action: '动态动作漫画。有力线条，强透视，方向性光影，紧张构图，同时保持清晰面部特征。',
+  compact_chibi: '轻巧 Q 版漫画。适度头身简化，圆润造型，清晰表情，干净色块，保留人物标志特征。',
+  realistic_photo: '真人写实摄影。自然人体比例，真实皮肤与织物质感，摄影棚人像光线，电影级镜头语言，避免插画化和漫画化。',
+});
+
+function normalizePortraitStyle(value) {
+  const style = String(value || '');
+  return Object.hasOwn(PORTRAIT_STYLE_PROMPTS, style) ? style : DEFAULT_PORTRAIT_STYLE;
+}
+
 function normalizeCharacterAsset(role, source = {}) {
   const gender = ['female', 'male', 'unspecified'].includes(source.gender)
     ? source.gender
@@ -75,6 +98,8 @@ function normalizeCharacterAsset(role, source = {}) {
     gender, age, pitch_min_hz: min, pitch_max_hz: max, pitch_target_hz: target,
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
+    portrait_style: normalizePortraitStyle(source.portrait_style),
+    ...(source.portrait_notes ? { portrait_notes: String(source.portrait_notes) } : {}),
     ...(source.profile_updated_by ? { profile_updated_by: String(source.profile_updated_by) } : {}),
   };
 }
@@ -470,15 +495,21 @@ function characterEvidence(sourceText, name) {
   return (evidence || source).slice(0, 30000);
 }
 
-function portraitPrompt({ name, profile, gender, age, portraitPrompt }) {
+function portraitPrompt({ name, profile, gender, age, portraitStyle, portraitPrompt }) {
   const genderLabel = gender === 'female' ? '女性' : gender === 'male' ? '男性' : '性别以人物设定为准';
   const custom = String(portraitPrompt || '').trim();
+  const style = normalizePortraitStyle(portraitStyle);
+  const realistic = style === 'realistic_photo';
   return [
     `为长篇声音作品中的角色“${name}”创作统一角色设定图。`,
     `人物设定：${profile}`,
     `年龄：约 ${age} 岁。性别：${genderLabel}。`,
+    `画面风格：${PORTRAIT_STYLE_PROMPTS[style]}`,
     custom ? `补充视觉要求：${custom}` : '',
-    '单人半身角色肖像，面部清晰，服装、发型、神态和时代背景与人物小传一致。中性摄影棚背景，电影级自然光，写实而有叙事感。画面中不出现文字、水印、界面、边框或其他人物。保持适合后续插图和视频关键帧复用的稳定角色设计。',
+    realistic
+      ? '单人半身真人肖像，面部清晰，服装、发型、神态和时代背景与人物小传一致。中性背景，自然人像光线，保持可用于后续插图和视频关键帧的稳定真人角色设计。'
+      : '单人半身漫画角色肖像，面部清晰，服装、发型、神态和时代背景与人物小传一致。保持统一线条、上色规则和可用于后续插图及视频关键帧的稳定漫画角色设计。',
+    '画面中不出现文字、水印、界面、边框、标志或其他人物。',
   ].filter(Boolean).join('\n');
 }
 
@@ -722,7 +753,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
         profile: String(request.body?.profile || role[3]).trim(),
         gender: String(request.body?.gender || project.character_assets[roleId]?.gender || 'unspecified'),
         age: Math.max(5, Math.min(100, Math.round(Number(request.body?.age) || project.character_assets[roleId]?.age || 35))),
-        portraitPrompt: String(request.body?.portraitPrompt || '').trim(),
+        portraitStyle: normalizePortraitStyle(request.body?.portraitStyle || project.character_assets[roleId]?.portrait_style),
+        portraitPrompt: String(request.body?.portraitPrompt ?? project.character_assets[roleId]?.portrait_notes ?? '').trim(),
       };
       if (draft.profile.length < 20) throw new Error('人物小传至少填写 20 个字符后才能生成形象');
       const prompt = portraitPrompt(draft);
@@ -737,7 +769,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       await mkdir(assetsDir, { recursive: true });
       const filename = `${safeSlug(roleId)}-${Date.now()}${extension}`;
       await writeFile(path.join(assetsDir, filename), bytes);
-      return { portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`, portraitPrompt: prompt, model: settings.image_model };
+      return { portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`, portraitPrompt: prompt, portraitStyle: draft.portraitStyle, model: settings.image_model };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/role-assets/:file', async (request, reply) => {

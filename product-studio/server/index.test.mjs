@@ -119,7 +119,7 @@ test('expands a character profile and generates a locally served portrait throug
   assert.equal(profile.statusCode, 200);
   assert.equal(profile.json().model, 'gemini-pro');
   assert.ok(profile.json().profile.length >= 80);
-  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: profile.json().profile, gender: 'unspecified', age: 40 } });
+  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: profile.json().profile, gender: 'unspecified', age: 40, portraitStyle: 'noir_ink', portraitPrompt: '保留旧式礼帽' } });
   assert.equal(portrait.statusCode, 200);
   assert.equal(portrait.json().model, 'gpt-image');
   const image = await app.inject(portrait.json().portraitUrl);
@@ -129,7 +129,35 @@ test('expands a character profile and generates a locally served portrait throug
   assert.deepEqual(calls.map(call => call.url), ['http://ai.example/v1/chat/completions', 'http://ai.example/v1/images/generations']);
   assert.ok(calls.every(call => call.authorization === 'Bearer secret-key'));
   assert.equal(calls[1].body.model, 'gpt-image');
-  assert.match(calls[1].body.prompt, /稳定角色设计/);
+  assert.match(calls[1].body.prompt, /稳定.*角色设计/);
+  assert.match(calls[1].body.prompt, /黑白悬疑墨线漫画/);
+  assert.match(calls[1].body.prompt, /保留旧式礼帽/);
+  assert.equal(portrait.json().portraitStyle, 'noir_ink');
+  await app.close();
+});
+
+test('defaults portraits to comics and uses realistic rendering only when explicitly selected', async () => {
+  const { root } = await fixture();
+  const prompts = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 9, 10, 11, 12]);
+  const remoteFetch = async (_url, options) => {
+    prompts.push(JSON.parse(options.body).prompt);
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'image-model' } });
+  const payload = { name: '旁白', profile: '负责全文叙事，并具有稳定人物设定和明确的视觉识别特征。', gender: 'unspecified', age: 40 };
+  const comic = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload });
+  const realistic = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { ...payload, portraitStyle: 'realistic_photo' } });
+  assert.equal(comic.statusCode, 200);
+  assert.equal(realistic.statusCode, 200);
+  assert.equal(comic.json().portraitStyle, 'cinematic_manga');
+  assert.equal(realistic.json().portraitStyle, 'realistic_photo');
+  assert.match(prompts[0], /电影感漫画/);
+  assert.match(prompts[0], /单人半身漫画角色肖像/);
+  assert.doesNotMatch(prompts[0], /真人写实摄影/);
+  assert.match(prompts[1], /真人写实摄影/);
+  assert.match(prompts[1], /单人半身真人肖像/);
   await app.close();
 });
 

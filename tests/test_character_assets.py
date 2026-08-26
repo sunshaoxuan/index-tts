@@ -14,14 +14,23 @@ def test_legacy_roles_receive_stable_character_assets():
     assert assets["role_001"]["age"] == 35
     assert assets["role_001"]["pitch_min_hz"] == 85
     assert assets["role_001"]["pitch_target_hz"] == 132
+    assert assets["role_001"]["portrait_style"] == "cinematic_manga"
 
 
 def test_existing_portrait_metadata_survives_normalization():
     roles = [["role_001", "林澈", "character", "人物小传", "中性清晰", "", "自然叙述", "否"]]
-    assets = normalize_character_assets(roles, {"role_001": {"gender": "male", "age": 70, "pitch_min_hz": 75, "pitch_max_hz": 165, "pitch_target_hz": 90, "portrait_url": "/portrait.png"}})
+    assets = normalize_character_assets(roles, {"role_001": {"gender": "male", "age": 70, "pitch_min_hz": 75, "pitch_max_hz": 165, "pitch_target_hz": 90, "portrait_url": "/portrait.png", "portrait_style": "noir_ink", "portrait_notes": "保留旧式礼帽"}})
     assert assets["role_001"]["portrait_url"] == "/portrait.png"
     assert assets["role_001"]["pitch_target_hz"] == 90
+    assert assets["role_001"]["portrait_style"] == "noir_ink"
+    assert assets["role_001"]["portrait_notes"] == "保留旧式礼帽"
 
 
 def test_gender_inference_keeps_unknown_roles_explicit():
     assert infer_character_gender("温和而克制") == "unspecified"
+
+
+def test_unknown_portrait_style_falls_back_to_default_comic_style():
+    roles = [["role_001", "林澈", "character", "人物小传", "中性清晰", "", "自然叙述", "否"]]
+    assets = normalize_character_assets(roles, {"role_001": {"portrait_style": "unknown-commercial-style"}})
+    assert assets["role_001"]["portrait_style"] == "cinematic_manga"

@@ -11,6 +11,8 @@ export interface CharacterAsset {
   pitch_target_hz: number;
   portrait_url?: string;
   portrait_prompt?: string;
+  portrait_style: string;
+  portrait_notes?: string;
   profile_updated_by?: string;
 }
 

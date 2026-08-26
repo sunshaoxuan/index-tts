@@ -1,5 +1,12 @@
 import type { CharacterAsset, CharacterGender, RoleRow } from './types';
 
+const DEFAULT_PORTRAIT_STYLE = 'cinematic_manga';
+const PORTRAIT_STYLE_IDS = new Set([
+  'cinematic_manga', 'clean_cel', 'soft_watercolor', 'noir_ink', 'retro_print', 'neon_scifi',
+  'storybook_gouache', 'oriental_ink', 'ornate_fantasy', 'urban_sketch', 'pastel_emotion',
+  'dynamic_action', 'compact_chibi', 'realistic_photo',
+]);
+
 export interface PitchRecommendation {
   min: number;
   max: number;
@@ -39,6 +46,7 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
   const max = Number.isFinite(input?.pitch_max_hz) ? Number(input?.pitch_max_hz) : recommendation.max;
   const requested = Number(input?.pitch_target_hz);
   const target = Number.isFinite(requested) ? Math.max(min, Math.min(max, Math.round(requested))) : recommendation.target;
+  const requestedPortraitStyle = input?.portrait_style || '';
   return {
     gender,
     age,
@@ -47,6 +55,8 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     pitch_target_hz: target,
     portrait_url: input?.portrait_url,
     portrait_prompt: input?.portrait_prompt,
+    portrait_style: PORTRAIT_STYLE_IDS.has(requestedPortraitStyle) ? requestedPortraitStyle : DEFAULT_PORTRAIT_STYLE,
+    portrait_notes: input?.portrait_notes,
     profile_updated_by: input?.profile_updated_by,
   };
 }

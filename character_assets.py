@@ -3,6 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
+PORTRAIT_STYLE_IDS = {
+    "cinematic_manga", "clean_cel", "soft_watercolor", "noir_ink", "retro_print",
+    "neon_scifi", "storybook_gouache", "oriental_ink", "ornate_fantasy", "urban_sketch",
+    "pastel_emotion", "dynamic_action", "compact_chibi", "realistic_photo",
+}
+
+
 def infer_character_gender(*sources: Any) -> str:
     female_terms = ("女性", "女声", "女人", "妇人", "妻子", "母亲", "奶奶", "姐姐", "妹妹", "女儿", "少女", "女孩")
     male_terms = ("男性", "男声", "男人", "丈夫", "父亲", "爷爷", "哥哥", "弟弟", "儿子", "少年", "男孩")
@@ -42,6 +49,9 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
         minimum = float(source.get("pitch_min_hz") or suggested_min)
         maximum = float(source.get("pitch_max_hz") or suggested_max)
         target = max(minimum, min(maximum, float(source.get("pitch_target_hz") or suggested_target)))
+        portrait_style = str(source.get("portrait_style") or "cinematic_manga")
+        if portrait_style not in PORTRAIT_STYLE_IDS:
+            portrait_style = "cinematic_manga"
         result[role_id] = {
             "gender": gender,
             "age": age,
@@ -50,6 +60,8 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
             "pitch_target_hz": target,
             **({"portrait_url": str(source["portrait_url"])} if source.get("portrait_url") else {}),
             **({"portrait_prompt": str(source["portrait_prompt"])} if source.get("portrait_prompt") else {}),
+            "portrait_style": portrait_style,
+            **({"portrait_notes": str(source["portrait_notes"])} if source.get("portrait_notes") else {}),
             **({"profile_updated_by": str(source["profile_updated_by"])} if source.get("profile_updated_by") else {}),
         }
     return result

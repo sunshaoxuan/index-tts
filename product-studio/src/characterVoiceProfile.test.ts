@@ -20,6 +20,12 @@ test('normalizes legacy roles into editable character assets', () => {
   assert.equal(asset.age, 35);
   assert.ok(asset.pitch_target_hz >= asset.pitch_min_hz);
   assert.ok(asset.pitch_target_hz <= asset.pitch_max_hz);
+  assert.equal(asset.portrait_style, 'cinematic_manga');
+});
+
+test('preserves a supported portrait style and falls back from an unknown style', () => {
+  assert.equal(normalizeCharacterAsset(role, { portrait_style: 'noir_ink', portrait_notes: '保留旧式礼帽' }).portrait_style, 'noir_ink');
+  assert.equal(normalizeCharacterAsset(role, { portrait_style: 'commercial-style-name' }).portrait_style, 'cinematic_manga');
 });
 
 test('changing demographics resets the recommendation and target', () => {
