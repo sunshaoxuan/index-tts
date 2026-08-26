@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 def _windows_process_alive(pid: int) -> bool:
@@ -61,13 +61,51 @@ def read_runtime_state(runtime_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def runtime_state_healthy(state: dict[str, Any], expected_python: Path, expected_model_dir: Path) -> bool:
+    try:
+        required_paths = [expected_model_dir / "config.json", expected_model_dir / "model.safetensors", expected_model_dir / "speech_tokenizer"]
+        return (
+            int(state.get("protocol", 0)) == PROTOCOL_VERSION
+            and state.get("phase") == "ready"
+            and Path(str(state["python_executable"])).resolve() == expected_python.resolve()
+            and Path(str(state["model_dir"])).resolve() == expected_model_dir.resolve()
+            and state.get("qwen_tts_available") is True
+            and state.get("model_files_ready") is True
+            and state.get("runtime_healthy") is True
+            and all(path.exists() for path in required_paths)
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def _retire_existing_runtime(runtime_dir: Path, timeout_seconds: float = 10) -> None:
+    try:
+        raw_state = json.loads((runtime_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not process_alive(raw_state.get("pid")):
+        return
+    temporary = runtime_dir / "stop.request.tmp"
+    stop_path = runtime_dir / "stop.request"
+    temporary.write_text(json.dumps({"requested_at": time.time()}), encoding="utf-8")
+    os.replace(temporary, stop_path)
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not process_alive(raw_state.get("pid")):
+            return
+        time.sleep(0.1)
+    raise TimeoutError("旧 VoiceDesign Runtime 未在期限内停止，请检查 runtime-output/voice-design-runtime/daemon.log")
+
+
 def ensure_voice_design_daemon(root: Path, python: Path, timeout_seconds: float = 45) -> dict[str, Any]:
     root = root.resolve()
     runtime_dir = root / "runtime-output" / "voice-design-runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    expected_model_dir = root / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
     state = read_runtime_state(runtime_dir)
-    if state:
+    if state and runtime_state_healthy(state, python, expected_model_dir):
         return {**state, "reused_process": True, "runtime_dir": str(runtime_dir)}
+    _retire_existing_runtime(runtime_dir)
 
     log_path = runtime_dir / "daemon.log"
     creationflags = (
@@ -89,8 +127,10 @@ def ensure_voice_design_daemon(root: Path, python: Path, timeout_seconds: float 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         state = read_runtime_state(runtime_dir)
-        if state and float(state.get("started_at", 0)) >= launched_at - 1:
+        if state and float(state.get("started_at", 0)) >= launched_at - 1 and runtime_state_healthy(state, python, expected_model_dir):
             return {**state, "reused_process": False, "runtime_dir": str(runtime_dir)}
+        if state and float(state.get("started_at", 0)) >= launched_at - 1 and not state.get("runtime_healthy", True):
+            raise RuntimeError(f"VoiceDesign Runtime 环境检查失败：{state.get('last_error') or state.get('missing_model_paths') or 'qwen_tts 不可用'}")
         if child.poll() is not None:
             raise RuntimeError(f"VoiceDesign Runtime 启动失败，退出码 {child.returncode}，请检查 {log_path}")
         time.sleep(0.1)

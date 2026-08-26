@@ -37,6 +37,8 @@ Node 保存前校验作品体裁、角色类型、角色节奏、重新生成选
 
 三个 Python Worker 共享单任务互斥门，避免 Ollama、Qwen3 TTS 和 IndexTTS 同时抢占 GPU。Worker 异常与启动失败都会写入终态，前端不会永久停在加载阶段。
 
+VoiceDesign daemon 协议状态包含实际 Python 解释器、虚拟环境前缀、`qwen_tts` 包来源和模型关键文件检查结果。产品 Worker 只复用解释器、包和模型状态全部匹配的健康进程；旧协议、环境不匹配或运行时已标记不健康的进程先通过停止请求退出，再由 `.venv-voice-design` 启动。daemon 心跳保留最后请求、最后错误和释放信息，模型文件缺失会在导入 PyTorch 和分配 GPU 前返回明确错误。
+
 完整渲染 Worker 在加载任何重量级 Python 模块前先写入内存准备阶段，并请求 VoiceDesign daemon 释放常驻模型与 CUDA 缓存。daemon 进程继续存活，后续音色任务按需重新加载模型。释放完成后执行主机可用内存门禁，再写入 PyTorch CUDA 导入阶段；内存不足时返回明确终态，避免页面把导入阻塞误显示为队列等待。
 
 任务启动时，Node 在写入 Worker 输入前登记 `activeJob`，其中包含 `jobId`、任务类型和 `projectId`，并持久写入 `runtime-output/product-jobs/active-job.json`。Worker 启动后追加 PID。`GET /api/active-job` 合并活动标记与实时 `status.json`，供刷新后的 React 页面自动选择所属工程、恢复相同进度面板和继续轮询。同一工程在任务存续期间的 PUT 保存返回 409。前端同步禁用工程选择、全文、角色、分句、纠音、新建和保存操作。任务完成或失败后删除活动标记、释放锁并重新载入工程结果。

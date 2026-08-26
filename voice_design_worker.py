@@ -82,6 +82,10 @@ class VoiceDesignRuntime:
 
     def get_model(self, payload: dict[str, Any], status_path: Path) -> tuple[Any, Any, bool]:
         requested_model_dir = Path(payload["model_dir"]).resolve()
+        required_paths = [requested_model_dir / "config.json", requested_model_dir / "model.safetensors", requested_model_dir / "speech_tokenizer"]
+        missing = [str(path) for path in required_paths if not path.exists()]
+        if missing:
+            raise FileNotFoundError("VoiceDesign 模型文件不完整：" + "，".join(missing))
         if self.model is not None:
             if requested_model_dir != self.model_dir:
                 raise ValueError(f"驻留 VoiceDesign 已加载 {self.model_dir}，不能切换到 {requested_model_dir}")

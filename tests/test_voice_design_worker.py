@@ -11,6 +11,12 @@ from product_voice_worker import quarantine_cross_role_voices, resolve_or_reuse_
 from text_director import guidance_role_signature
 
 
+def prepare_model(model_dir: Path) -> None:
+    (model_dir / "speech_tokenizer").mkdir(parents=True)
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"model")
+
+
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     calls = []
 
@@ -55,6 +61,7 @@ def test_voice_design_worker_generates_each_role(tmp_path, monkeypatch):
     result_path = tmp_path / "result.json"
     status_path = tmp_path / "status.json"
     output_dir = tmp_path / "voices"
+    prepare_model(tmp_path / "model")
     input_path.write_text(json.dumps({"jobs": [{"role_id": "narrator", "name": "旁白", "filename": "narrator.wav", "text": "测试", "language": "Chinese", "instruct": "稳定"}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model")}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["worker", "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)])
 
@@ -86,6 +93,7 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     result_path = tmp_path / "result.json"
     status_path = tmp_path / "status.json"
     output_dir = tmp_path / "voices"
+    prepare_model(tmp_path / "model")
     input_path.write_text(json.dumps({"jobs": [{"role_id": "role_002", "name": "老板娘", "filename": "owner.wav", "text": "测试", "language": "Chinese", "instruct": "中年女性音色", "expected_gender": "female"}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model")}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["worker", "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)])
 
@@ -115,6 +123,7 @@ def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_pat
     monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
     runtime = worker.VoiceDesignRuntime()
     model_dir = tmp_path / "model"
+    prepare_model(model_dir)
 
     results = []
     for index in range(2):
@@ -132,6 +141,27 @@ def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_pat
     assert results[0]["model_reused"] is False
     assert results[1]["model_reused"] is True
     assert results[0]["runtime_pid"] == results[1]["runtime_pid"]
+
+
+def test_voice_design_runtime_rejects_missing_model_files_before_import(tmp_path, monkeypatch):
+    imported = []
+    original_import = __import__
+
+    def recording_import(name, *args, **kwargs):
+        if name in {"torch", "qwen_tts"}:
+            imported.append(name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", recording_import)
+    runtime = worker.VoiceDesignRuntime()
+
+    try:
+        runtime.get_model({"model_dir": str(tmp_path / "missing-model")}, tmp_path / "status.json")
+    except FileNotFoundError as error:
+        assert "模型文件不完整" in str(error)
+    else:
+        raise AssertionError("missing model files were accepted")
+    assert imported == []
 
 
 def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():

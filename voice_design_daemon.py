@@ -1,15 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from voice_design_worker import VoiceDesignRuntime, _write_json, generate_voice_design
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+
+
+def _runtime_environment(repo_root: Path) -> dict[str, Any]:
+    spec = importlib.util.find_spec("qwen_tts")
+    model_dir = (repo_root / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign").resolve()
+    required_paths = [model_dir / "config.json", model_dir / "model.safetensors", model_dir / "speech_tokenizer"]
+    missing = [str(path) for path in required_paths if not path.exists()]
+    return {
+        "python_executable": str(Path(sys.executable).resolve()),
+        "python_prefix": str(Path(sys.prefix).resolve()),
+        "qwen_tts_available": spec is not None,
+        "qwen_tts_origin": str(Path(spec.origin).resolve()) if spec and spec.origin else None,
+        "model_dir": str(model_dir),
+        "model_files_ready": not missing,
+        "missing_model_paths": missing,
+        "runtime_healthy": spec is not None and not missing,
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -28,15 +47,23 @@ def _within(path: Path, root: Path) -> Path:
     return resolved
 
 
-def _state_payload(runtime: VoiceDesignRuntime, started_at: float, **extra: Any) -> dict[str, Any]:
+def _state_payload(
+    runtime: VoiceDesignRuntime,
+    started_at: float,
+    environment: dict[str, Any],
+    retained: dict[str, Any],
+    **extra: Any,
+) -> dict[str, Any]:
     return {
         "protocol": PROTOCOL_VERSION,
         "pid": os.getpid(),
         "phase": "ready",
         "model_loaded": runtime.model is not None,
-        "model_dir": str(runtime.model_dir) if runtime.model_dir else None,
+        "loaded_model_dir": str(runtime.model_dir) if runtime.model_dir else None,
         "started_at": started_at,
         "updated_at": time.time(),
+        **environment,
+        **retained,
         **extra,
     }
 
@@ -52,13 +79,15 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
     release_response_path = runtime_dir / "release-response.json"
     runtime = VoiceDesignRuntime()
     started_at = time.time()
-    _write_json(state_path, _state_payload(runtime, started_at))
+    environment = _runtime_environment(repo_root)
+    retained: dict[str, Any] = {}
+    _write_json(state_path, _state_payload(runtime, started_at, environment, retained))
     last_heartbeat = 0.0
 
     while True:
         if stop_path.exists():
             stop_path.unlink(missing_ok=True)
-            _write_json(state_path, _state_payload(runtime, started_at, phase="stopped"))
+            _write_json(state_path, _state_payload(runtime, started_at, environment, retained, phase="stopped"))
             return 0
 
         if release_path.exists():
@@ -66,20 +95,23 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
             try:
                 envelope = json.loads(release_path.read_text(encoding="utf-8"))
                 request_id = str(envelope["request_id"])
-                _write_json(state_path, _state_payload(runtime, started_at, phase="releasing", release_request_id=request_id))
+                _write_json(state_path, _state_payload(runtime, started_at, environment, retained, phase="releasing", release_request_id=request_id))
                 released = runtime.release()
                 completed_at = time.time()
                 _write_json(
                     release_response_path,
                     {"protocol": PROTOCOL_VERSION, "request_id": request_id, "released": released, "completed_at": completed_at},
                 )
-                _write_json(state_path, _state_payload(runtime, started_at, last_release_id=request_id, last_release_at=completed_at))
+                retained.update(last_release_id=request_id, last_release_at=completed_at)
+                retained.pop("last_release_error", None)
+                _write_json(state_path, _state_payload(runtime, started_at, environment, retained))
             except Exception as exc:
                 _write_json(
                     release_response_path,
                     {"protocol": PROTOCOL_VERSION, "request_id": request_id, "error": str(exc), "completed_at": time.time()},
                 )
-                _write_json(state_path, _state_payload(runtime, started_at, last_release_id=request_id, last_release_error=str(exc)))
+                retained.update(last_release_id=request_id, last_release_error=str(exc))
+                _write_json(state_path, _state_payload(runtime, started_at, environment, retained))
             finally:
                 release_path.unlink(missing_ok=True)
             continue
@@ -87,7 +119,7 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
         request_files = sorted(requests_dir.glob("*.json"), key=lambda item: item.stat().st_mtime_ns)
         if not request_files:
             if time.time() - last_heartbeat >= 5:
-                _write_json(state_path, _state_payload(runtime, started_at))
+                _write_json(state_path, _state_payload(runtime, started_at, environment, retained))
                 last_heartbeat = time.time()
             time.sleep(0.1)
             continue
@@ -104,15 +136,22 @@ def serve(runtime_dir: Path, repo_root: Path) -> int:
             result_path = _within(Path(envelope["result"]), repo_root)
             status_path = _within(Path(envelope["status"]), repo_root)
             payload = json.loads(input_path.read_text(encoding="utf-8"))
-            _write_json(state_path, _state_payload(runtime, started_at, phase="busy", request_id=envelope["request_id"]))
+            _write_json(state_path, _state_payload(runtime, started_at, environment, retained, phase="busy", request_id=envelope["request_id"]))
             generate_voice_design(payload, result_path, status_path, runtime)
-            _write_json(state_path, _state_payload(runtime, started_at, last_request_id=envelope["request_id"], last_used_at=time.time()))
+            retained.update(last_request_id=envelope["request_id"], last_used_at=time.time())
+            retained.pop("last_error", None)
+            retained.pop("last_error_type", None)
+            _write_json(state_path, _state_payload(runtime, started_at, environment, retained))
         except Exception as exc:
             try:
                 if status_path is not None:
                     _write_json(status_path, {"phase": "error", "fraction": 1.0, "message": str(exc), "error_type": type(exc).__name__})
             finally:
-                _write_json(state_path, _state_payload(runtime, started_at, phase="ready", last_error=str(exc)))
+                retained.update(last_error=str(exc), last_error_type=type(exc).__name__)
+                if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None) == "qwen_tts":
+                    environment["qwen_tts_available"] = False
+                    environment["runtime_healthy"] = False
+                _write_json(state_path, _state_payload(runtime, started_at, environment, retained, phase="ready"))
         finally:
             processing_file.unlink(missing_ok=True)
 
