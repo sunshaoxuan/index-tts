@@ -610,7 +610,7 @@ def test_voice_design_jobs_include_explicit_character_age_and_pitch_target():
     roles = [["role_001", "林澈", "character", "三十五岁的刑警，性格克制。", "低沉厚实", "voice.wav", "自然叙述", "是"]]
     context = {
         "content_type": "novel",
-        "character_assets": {"role_001": {"gender": "male", "age": 35, "pitch_min_hz": 85, "pitch_max_hz": 180, "pitch_target_hz": 105}},
+        "character_assets": {"role_001": {"gender": "male", "age": 35, "pitch_min_hz": 85, "pitch_max_hz": 180, "pitch_target_hz": 105, "audition_text": "林澈正在检查现场。", "voice_traits": {"weight": 80, "brightness": 20, "resonance": 10}, "voice_generation": {"preset": "custom", "temperature": 1.2, "top_k": 88, "candidate_count": 4, "seed": 99}}},
     }
     job = build_voice_design_jobs(document, roles, context)[0]
     assert job["expected_gender"] == "male"
@@ -619,6 +619,21 @@ def test_voice_design_jobs_include_explicit_character_age_and_pitch_target():
     assert "建议基频区间：85 至 180 Hz" in job["instruct"]
     assert "目标基频中位数约 105 Hz" in job["instruct"]
     assert "年龄听感强约束" in job["instruct"]
+    assert "声音重量非常厚重" in job["instruct"]
+    assert "音色亮度偏暗" in job["instruct"]
+    assert job["text"] == "林澈正在检查现场。"
+    assert job["voice_generation"]["temperature"] == 1.2
+    assert job["voice_generation"]["top_k"] == 88
+    assert job["voice_generation"]["candidate_count"] == 4
+    assert job["seed"] == 99
+
+
+def test_child_voice_design_uses_an_unambiguous_pre_voice_change_constraint():
+    document = {"characters": [_character("role_child", "小宇", "character")], "segments": [_segment(1, "测试。", "测试。", role_id="role_child", name="小宇", kind="character")]}
+    roles = [["role_child", "小宇", "character", "十岁男孩", "清亮年轻", "", "自然叙述", "是"]]
+    job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 230}}})[0]
+    assert "尚未变声的儿童声线" in job["instruct"]
+    assert "成年男性低音" in job["instruct"]
 
 
 def test_voice_design_jobs_preserve_structured_guidance_sources_and_add_mature_timbre_constraints():

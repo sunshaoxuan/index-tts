@@ -26,18 +26,27 @@ def estimate_median_pitch(wav: Any, sample_rate: int) -> float | None:
     return round(float(np.median(voiced)), 2)
 
 
-def gender_pitch_matches(expected_gender: str, median_pitch: float | None) -> bool:
+def gender_pitch_matches(expected_gender: str, median_pitch: float | None, character_age: int | None = None) -> bool:
+    if median_pitch is None:
+        return False
+    if character_age is not None and character_age < 13:
+        return 130 <= median_pitch <= 360
+    if character_age is not None and character_age < 20:
+        if expected_gender == "female":
+            return median_pitch >= 145
+        if expected_gender == "male":
+            return median_pitch <= 260
     if expected_gender == "female":
-        return median_pitch is not None and median_pitch >= 135
+        return median_pitch >= 135
     if expected_gender == "male":
-        return median_pitch is not None and median_pitch <= 210
+        return median_pitch <= 210
     return True
 
 
-def gender_pitch_score(expected_gender: str, median_pitch: float | None, target_pitch: float | None = None) -> float:
+def gender_pitch_score(expected_gender: str, median_pitch: float | None, target_pitch: float | None = None, character_age: int | None = None) -> float:
     if median_pitch is None:
         return float("-inf")
-    if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, median_pitch):
+    if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, median_pitch, character_age):
         return -1_000_000.0 - abs(median_pitch - target_pitch) if target_pitch is not None else -1_000_000.0
     if target_pitch is not None:
         return -abs(median_pitch - target_pitch)
@@ -147,10 +156,11 @@ def generate_voice_design(
         expected_gender = str(job.get("expected_gender") or "unspecified")
         target_pitch = float(job["pitch_target_hz"]) if job.get("pitch_target_hz") is not None else None
         character_age = int(job["character_age"]) if job.get("character_age") is not None else None
-        max_attempts = int(payload.get("gender_max_attempts", 3)) if expected_gender in {"female", "male"} or target_pitch is not None else 1
+        generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
+        max_attempts = max(1, min(6, int(generation.get("candidate_count", payload.get("gender_max_attempts", 3)))))
         best_wav, best_sample_rate, best_pitch, best_score, attempts_used = None, None, None, float("-inf"), 0
         candidate_metrics: list[dict[str, Any]] = []
-        evaluate_all_candidates = target_pitch is not None and character_age is not None and (character_age < 20 or character_age >= 50)
+        evaluate_all_candidates = max_attempts > 1
         for attempt in range(max_attempts):
             candidate_seed = job_seed + attempt
             torch.manual_seed(candidate_seed)
@@ -174,21 +184,29 @@ def generate_voice_design(
                 text=str(job["text"]),
                 language=str(job.get("language") or "Auto"),
                 instruct=str(job["instruct"]),
-                do_sample=True,
-                temperature=float(payload.get("temperature", 0.8)),
-                top_p=float(payload.get("top_p", 0.9)),
-                repetition_penalty=float(payload.get("repetition_penalty", 1.05)),
-                max_new_tokens=int(payload.get("max_new_tokens", 1024)),
+                do_sample=bool(generation.get("do_sample", True)),
+                top_k=int(generation.get("top_k", 50)),
+                top_p=float(generation.get("top_p", 0.95)),
+                temperature=float(generation.get("temperature", 0.85)),
+                repetition_penalty=float(generation.get("repetition_penalty", 1.05)),
+                subtalker_dosample=bool(generation.get("subtalker_dosample", True)),
+                subtalker_top_k=int(generation.get("subtalker_top_k", 50)),
+                subtalker_top_p=float(generation.get("subtalker_top_p", 0.95)),
+                subtalker_temperature=float(generation.get("subtalker_temperature", 0.85)),
+                max_new_tokens=int(generation.get("max_new_tokens", 2048)),
             )
+            candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
+            sf.write(candidate_path, wavs[0], sample_rate)
             median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
-            score = gender_pitch_score(expected_gender, median_pitch, target_pitch)
+            score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age)
             candidate_metrics.append(
                 {
                     "seed": candidate_seed,
                     "median_pitch_hz": median_pitch,
                     "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
-                    "gender_matched": gender_pitch_matches(expected_gender, median_pitch),
+                    "gender_matched": gender_pitch_matches(expected_gender, median_pitch, character_age),
                     "selected": False,
+                    "path": str(candidate_path),
                 }
             )
             if best_wav is None or score > best_score:
@@ -197,10 +215,7 @@ def generate_voice_design(
                     metric["selected"] = False
                 candidate_metrics[-1]["selected"] = True
             attempts_used = attempt + 1
-            if not evaluate_all_candidates and gender_pitch_matches(expected_gender, median_pitch):
-                if target_pitch is None or (median_pitch is not None and abs(float(median_pitch) - target_pitch) <= max(15.0, target_pitch * 0.12)):
-                    break
-        if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, best_pitch):
+        if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, best_pitch, character_age):
             label = "女性" if expected_gender == "female" else "男性"
             measured = "无法测量" if best_pitch is None else f"{best_pitch:.1f} Hz"
             raise ValueError(f"{job['name']} 要求{label}音色，连续 {attempts_used} 次生成均未通过声学性别校验，最佳基频中位数为 {measured}。")

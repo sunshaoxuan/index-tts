@@ -1,0 +1,100 @@
+{
+  "audition_text": "今天的风很轻，我会慢慢讲清楚这个故事，也会认真回答你的问题。",
+  "rows": [
+    {
+      "role_id": "age-child-10",
+      "age": 10,
+      "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-child-10.wav",
+      "target_pitch_hz": 230,
+      "duration_seconds": 6.0,
+      "median_pitch_hz": 269.73,
+      "spectral_centroid_hz": 3366.34,
+      "spectral_flatness": 0.05191,
+      "rms": 0.07779,
+      "candidate_metrics": [
+        {
+          "seed": 110,
+          "median_pitch_hz": 269.73,
+          "pitch_delta_hz": 39.73,
+          "gender_matched": true,
+          "selected": true,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-child-10-candidate-1.wav"
+        },
+        {
+          "seed": 111,
+          "median_pitch_hz": 186.25,
+          "pitch_delta_hz": 43.75,
+          "gender_matched": true,
+          "selected": false,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-child-10-candidate-2.wav"
+        }
+      ]
+    },
+    {
+      "role_id": "age-adult-35",
+      "age": 35,
+      "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-adult-35.wav",
+      "target_pitch_hz": 125,
+      "duration_seconds": 6.64,
+      "median_pitch_hz": 114.18,
+      "spectral_centroid_hz": 2841.9,
+      "spectral_flatness": 0.04695,
+      "rms": 0.06434,
+      "candidate_metrics": [
+        {
+          "seed": 210,
+          "median_pitch_hz": 95.32,
+          "pitch_delta_hz": 29.68,
+          "gender_matched": true,
+          "selected": false,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-adult-35-candidate-1.wav"
+        },
+        {
+          "seed": 211,
+          "median_pitch_hz": 114.18,
+          "pitch_delta_hz": 10.82,
+          "gender_matched": true,
+          "selected": true,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-adult-35-candidate-2.wav"
+        }
+      ]
+    },
+    {
+      "role_id": "age-older-72",
+      "age": 72,
+      "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-older-72.wav",
+      "target_pitch_hz": 95,
+      "duration_seconds": 7.6,
+      "median_pitch_hz": 94.6,
+      "spectral_centroid_hz": 3200.37,
+      "spectral_flatness": 0.11772,
+      "rms": 0.05159,
+      "candidate_metrics": [
+        {
+          "seed": 310,
+          "median_pitch_hz": 94.37,
+          "pitch_delta_hz": 0.63,
+          "gender_matched": true,
+          "selected": false,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-older-72-candidate-1.wav"
+        },
+        {
+          "seed": 311,
+          "median_pitch_hz": 94.6,
+          "pitch_delta_hz": 0.4,
+          "gender_matched": true,
+          "selected": true,
+          "path": "D:\\workspace\\IndexTTS-2.5\\docs\\evidence\\advanced-voice-controls\\age-samples\\age-older-72-candidate-2.wav"
+        }
+      ]
+    }
+  ],
+  "checks": {
+    "child_pitch_above_adult": true,
+    "adult_pitch_above_older": true,
+    "older_spectral_centroid_below_child": true,
+    "older_delivery_not_faster_than_child": true
+  },
+  "passed": true,
+  "limitation": "声学代理可以验证年龄方向性，最终感知年龄仍需人工试听确认。"
+}

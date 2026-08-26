@@ -214,6 +214,25 @@ test('keeps audio valid for portrait-only edits and invalidates the role after a
   await app.close();
 });
 
+test('normalizes per character voice controls and invalidates only the affected role', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const project = (await app.inject('/api/projects/demo')).json();
+  assert.equal(project.character_assets.narrator.voice_generation.preset, 'balanced');
+  assert.equal(project.character_assets.narrator.voice_generation.candidate_count, 3);
+  assert.ok(project.character_assets.narrator.audition_text.length > 0);
+  project.character_assets.narrator.voice_traits.roughness = 83;
+  project.character_assets.narrator.voice_generation = { ...project.character_assets.narrator.voice_generation, preset: 'custom', temperature: 1.25, top_k: 90, candidate_count: 5 };
+  project.character_assets.narrator.audition_text = '这是旁白独立使用的试听文本。';
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().character_assets.narrator.voice_traits.roughness, 83);
+  assert.equal(saved.json().character_assets.narrator.voice_generation.temperature, 1.25);
+  assert.equal(saved.json().character_assets.narrator.voice_generation.candidate_count, 5);
+  assert.equal(saved.json().character_assets.narrator.audition_text, '这是旁白独立使用的试听文本。');
+  await app.close();
+});
+
 test('serves the latest audio with stable media headers', async () => {
   const { root } = await fixture();
   const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-001');

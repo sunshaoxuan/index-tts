@@ -61,6 +61,54 @@ export function recommendPitchRange(gender, age) {
   return { min, max, target: Math.round((min + max) / 2) };
 }
 
+const DEFAULT_AUDITION_TEXT = '这是我的声音。我会用清晰自然的方式，陪你走进这个故事。';
+const DEFAULT_VOICE_TRAITS = Object.freeze({ weight: 50, brightness: 50, resonance: 35, tension: 50, roughness: 15, breathiness: 15, nasality: 10, articulation: 65, pace: 50, pause_density: 45, pitch_variation: 45, expressiveness: 50, accent: '' });
+const VOICE_GENERATION_PRESETS = Object.freeze({
+  stable: { do_sample: true, top_k: 30, top_p: 0.85, temperature: 0.65, repetition_penalty: 1.08, subtalker_dosample: true, subtalker_top_k: 30, subtalker_top_p: 0.85, subtalker_temperature: 0.65 },
+  balanced: { do_sample: true, top_k: 50, top_p: 0.95, temperature: 0.85, repetition_penalty: 1.05, subtalker_dosample: true, subtalker_top_k: 50, subtalker_top_p: 0.95, subtalker_temperature: 0.85 },
+  explore: { do_sample: true, top_k: 100, top_p: 1, temperature: 1.1, repetition_penalty: 1.03, subtalker_dosample: true, subtalker_top_k: 100, subtalker_top_p: 1, subtalker_temperature: 1.1 },
+});
+const DEFAULT_VOICE_GENERATION = Object.freeze({ preset: 'balanced', ...VOICE_GENERATION_PRESETS.balanced, seed: 42, max_new_tokens: 2048, candidate_count: 3 });
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+}
+
+function recommendedVoiceTraits(age) {
+  const safeAge = Math.max(5, Math.min(100, Math.round(Number(age) || 35)));
+  if (safeAge < 13) return { ...DEFAULT_VOICE_TRAITS, weight: 20, brightness: 75, resonance: 72, tension: 58, roughness: 5, breathiness: 12, articulation: 58, pace: 58, pause_density: 38, pitch_variation: 68, expressiveness: 62 };
+  if (safeAge < 20) return { ...DEFAULT_VOICE_TRAITS, weight: 32, brightness: 66, resonance: 58, tension: 58, roughness: 8, breathiness: 12, pace: 56, pitch_variation: 58, expressiveness: 58 };
+  if (safeAge < 50) return { ...DEFAULT_VOICE_TRAITS };
+  if (safeAge < 70) return { ...DEFAULT_VOICE_TRAITS, weight: 68, brightness: 35, resonance: 22, tension: 40, roughness: 38, breathiness: 28, articulation: 62, pace: 38, pause_density: 62, pitch_variation: 36, expressiveness: 42 };
+  return { ...DEFAULT_VOICE_TRAITS, weight: 75, brightness: 25, resonance: 16, tension: 28, roughness: 52, breathiness: 42, articulation: 55, pace: 30, pause_density: 72, pitch_variation: 30, expressiveness: 38 };
+}
+
+function normalizeVoiceTraits(source, age) {
+  const input = source && typeof source === 'object' ? source : recommendedVoiceTraits(age);
+  return Object.fromEntries(Object.entries(DEFAULT_VOICE_TRAITS).map(([key, fallback]) => [key, key === 'accent' ? String(input[key] || '').trim().slice(0, 120) : clampNumber(input[key], 0, 100, fallback)]));
+}
+
+function normalizeVoiceGeneration(source = {}) {
+  const preset = ['stable', 'balanced', 'explore', 'custom'].includes(String(source.preset)) ? String(source.preset) : 'balanced';
+  const defaults = preset === 'custom' ? DEFAULT_VOICE_GENERATION : { ...DEFAULT_VOICE_GENERATION, ...VOICE_GENERATION_PRESETS[preset] };
+  return {
+    preset,
+    do_sample: source.do_sample ?? defaults.do_sample,
+    top_k: Math.round(clampNumber(source.top_k, 1, 200, defaults.top_k)),
+    top_p: clampNumber(source.top_p, 0.05, 1, defaults.top_p),
+    temperature: clampNumber(source.temperature, 0.1, 2, defaults.temperature),
+    repetition_penalty: clampNumber(source.repetition_penalty, 1, 2, defaults.repetition_penalty),
+    seed: Math.round(clampNumber(source.seed, 0, 2147483647, defaults.seed)),
+    max_new_tokens: Math.round(clampNumber(source.max_new_tokens, 256, 8192, defaults.max_new_tokens)),
+    candidate_count: Math.round(clampNumber(source.candidate_count, 1, 6, defaults.candidate_count)),
+    subtalker_dosample: source.subtalker_dosample ?? defaults.subtalker_dosample,
+    subtalker_top_k: Math.round(clampNumber(source.subtalker_top_k, 1, 200, defaults.subtalker_top_k)),
+    subtalker_top_p: clampNumber(source.subtalker_top_p, 0.05, 1, defaults.subtalker_top_p),
+    subtalker_temperature: clampNumber(source.subtalker_temperature, 0.1, 2, defaults.subtalker_temperature),
+  };
+}
+
 const DEFAULT_PORTRAIT_STYLE = 'cinematic_manga';
 const PORTRAIT_STYLE_PROMPTS = Object.freeze({
   cinematic_manga: '电影感漫画。清晰利落的轮廓线，细腻分层的赛璐璐上色，克制的综合色彩，电影式光影与景深，成熟叙事构图，保留自然面部比例和可连续复用的角色特征。',
@@ -96,6 +144,10 @@ function normalizeCharacterAsset(role, source = {}) {
   const target = Number.isFinite(requested) ? Math.max(min, Math.min(max, Math.round(requested))) : suggested.target;
   return {
     gender, age, pitch_min_hz: min, pitch_max_hz: max, pitch_target_hz: target,
+    audition_text: String(source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
+    voice_traits: normalizeVoiceTraits(source.voice_traits, age),
+    voice_generation: normalizeVoiceGeneration(source.voice_generation),
+    ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id).slice(0, 6).map(item => ({ voice_id: String(item.voice_id), seed: Math.round(Number(item.seed) || 0), ...(Number.isFinite(Number(item.median_pitch_hz)) ? { median_pitch_hz: Number(item.median_pitch_hz) } : {}), selected: Boolean(item.selected) })) } : {}),
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
     portrait_style: normalizePortraitStyle(source.portrait_style),
@@ -183,6 +235,10 @@ function validateProject(payload, id) {
     if (!Number.isInteger(asset.age) || asset.age < 5 || asset.age > 100) throw new Error(`角色 ${row[1]} 的年龄必须在 5 至 100 岁之间`);
     if (![asset.pitch_min_hz, asset.pitch_max_hz, asset.pitch_target_hz].every(value => Number.isFinite(Number(value)))) throw new Error(`角色 ${row[1]} 的声音频率设置无效`);
     if (asset.pitch_min_hz >= asset.pitch_max_hz || asset.pitch_target_hz < asset.pitch_min_hz || asset.pitch_target_hz > asset.pitch_max_hz) throw new Error(`角色 ${row[1]} 的目标频率超出建议区间`);
+    if (!asset.audition_text || asset.audition_text.length > 500) throw new Error(`角色 ${row[1]} 的试听文本必须在 1 至 500 字符之间`);
+    if (!asset.voice_traits || Object.entries(asset.voice_traits).some(([key, value]) => key !== 'accent' && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100))) throw new Error(`角色 ${row[1]} 的声音特征设置无效`);
+    const generation = asset.voice_generation;
+    if (!generation || !['stable', 'balanced', 'explore', 'custom'].includes(generation.preset) || generation.candidate_count < 1 || generation.candidate_count > 6) throw new Error(`角色 ${row[1]} 的音色生成参数无效`);
   }
   payload.segments.forEach((row, index) => {
     if (!Array.isArray(row) || row.length < 12) throw new Error(`分句表第 ${index + 1} 行字段不足`);
@@ -281,6 +337,9 @@ async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
       pitch_min_hz: asset?.pitch_min_hz,
       pitch_max_hz: asset?.pitch_max_hz,
       pitch_target_hz: asset?.pitch_target_hz,
+      audition_text: asset?.audition_text,
+      voice_traits: asset?.voice_traits,
+      voice_generation: asset?.voice_generation,
     });
     if (JSON.stringify(voiceFields(currentAssets[roleId])) !== JSON.stringify(voiceFields(nextAssets[roleId]))) changedRoleIds.add(roleId);
   }

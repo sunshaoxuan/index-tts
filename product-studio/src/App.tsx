@@ -10,14 +10,30 @@ import type { ColumnsType } from 'antd/es/table';
 import { api, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, findMatchingFragment } from './fragmentState';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
+import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
-import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
+import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
+
+const VOICE_TRAIT_CONTROLS: Array<{ key: Exclude<keyof VoiceTraits, 'accent'>; label: string; low: string; high: string }> = [
+  { key: 'weight', label: '声音重量', low: '轻薄', high: '厚重' },
+  { key: 'brightness', label: '音色亮度', low: '暗沉', high: '明亮' },
+  { key: 'resonance', label: '共鸣位置', low: '胸腔', high: '头腔' },
+  { key: 'tension', label: '声带状态', low: '松弛', high: '紧致' },
+  { key: 'roughness', label: '粗糙度', low: '纯净', high: '粗粝' },
+  { key: 'breathiness', label: '气息量', low: '紧实', high: '气声' },
+  { key: 'nasality', label: '鼻音程度', low: '无鼻音', high: '强鼻音' },
+  { key: 'articulation', label: '吐字锐度', low: '柔和', high: '锋利' },
+  { key: 'pace', label: '语速', low: '缓慢', high: '快速' },
+  { key: 'pause_density', label: '停顿密度', low: '稀少', high: '密集' },
+  { key: 'pitch_variation', label: '音高起伏', low: '平直', high: '丰富' },
+  { key: 'expressiveness', label: '情绪外放', low: '克制', high: '外放' },
+];
 
 function formatAudioTime(value: number) {
   const safe = Number.isFinite(value) && value > 0 ? value : 0;
@@ -356,6 +372,27 @@ function Studio() {
     updateRoleDraft(7, '是');
   };
 
+  const updateVoiceTrait = (key: Exclude<keyof VoiceTraits, 'accent'>, value: number) => {
+    setRoleAssetDraft(current => current ? { ...current, voice_traits: { ...current.voice_traits, [key]: value } } : current);
+    updateRoleDraft(7, '是');
+  };
+
+  const updateVoiceGenerationPreset = (preset: VoiceGenerationPreset) => {
+    setRoleAssetDraft(current => current ? { ...current, voice_generation: applyVoiceGenerationPreset(current.voice_generation, preset) } : current);
+    updateRoleDraft(7, '是');
+  };
+
+  const updateVoiceGeneration = (patch: Partial<CharacterAsset['voice_generation']>) => {
+    setRoleAssetDraft(current => current ? { ...current, voice_generation: { ...current.voice_generation, ...patch, preset: 'custom' } } : current);
+    updateRoleDraft(7, '是');
+  };
+
+  const selectVoiceCandidate = (voiceId: string) => {
+    updateRoleDraft(5, voiceId);
+    updateRoleDraft(7, '否');
+    setRoleAssetDraft(current => current ? { ...current, voice_candidates: current.voice_candidates?.map(candidate => ({ ...candidate, selected: candidate.voice_id === voiceId })) } : current);
+  };
+
   const expandCharacterProfile = async () => {
     if (!project || !roleDraft || !roleAssetDraft || jobRunning) return;
     setProfileGenerating(true);
@@ -497,7 +534,7 @@ function Studio() {
   const genderLabel = expectedGender === 'female' ? '女性' : expectedGender === 'male' ? '男性' : '未指定';
   const genderConstraint = expectedGender === 'female' ? '声音性别硬约束：女性；男性或中性偏男性嗓音不合格。' : expectedGender === 'male' ? '声音性别硬约束：男性；女性或中性偏女性嗓音不合格。' : '';
   const pitchConstraint = roleAssetDraft ? `角色年龄设定：约 ${roleAssetDraft.age} 岁。建议基频区间：${roleAssetDraft.pitch_min_hz} 至 ${roleAssetDraft.pitch_max_hz} Hz；目标基频中位数约 ${roleAssetDraft.pitch_target_hz} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。${ageVoiceConstraint(roleAssetDraft.age)}` : '';
-  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。本角色有效导演上下文：${effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。${genderConstraint}${pitchConstraint}表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
+  const finalVoiceInstruction = roleDraft && roleAssetDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。本角色有效导演上下文：${effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。${genderConstraint}${pitchConstraint}${voiceTraitsInstruction(roleAssetDraft.voice_traits)}表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
 
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
@@ -641,10 +678,13 @@ function Studio() {
             <div className="editor-section-heading"><span>02 / Portrait</span><strong>角色形象</strong><Text>角色形象以详细人物小传为主要依据，用于后续插图和视频关键帧中的稳定人物设计。</Text></div>
             <div className="portrait-editor"><div className="portrait-editor-preview">{roleAssetDraft.portrait_url ? <img src={roleAssetDraft.portrait_url} alt={`${roleDraft[1]}角色形象预览`} /> : <div className="character-portrait-placeholder"><PictureOutlined /><span>尚未生成角色形象</span></div>}</div><div className="portrait-editor-controls"><label><Text strong>形象风格</Text><Select disabled={jobRunning} value={roleAssetDraft.portrait_style} options={[{ label: '漫画风格', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'comic').map(item => ({ value: item.id, label: item.label })) }, { label: '真人效果', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'realistic').map(item => ({ value: item.id, label: item.label })) }]} onChange={value => setRoleAssetDraft(current => current ? { ...current, portrait_style: value } : current)} /><small>{portraitStylePreset(roleAssetDraft.portrait_style).description} 默认使用漫画风格，选择“真人写实摄影”时才生成真人效果。</small></label><label><Text strong>补充视觉要求（可选）</Text><Input.TextArea disabled={jobRunning} rows={3} value={roleAssetDraft.portrait_notes || ''} onChange={event => setRoleAssetDraft(current => current ? { ...current, portrait_notes: event.target.value } : current)} placeholder="例如：保留旧式礼帽，深灰风衣，眼神克制，背景不要出现建筑。" /></label><Button type="primary" disabled={jobRunning || roleDraft[3].trim().length < 20} loading={portraitGenerating} icon={<PictureOutlined />} onClick={generateCharacterPortrait}>{roleAssetDraft.portrait_url ? '按当前风格重新生成' : '按当前风格生成形象'}</Button><Text>图像请求会使用当前名称、性别、年龄、人物小传、风格特征和补充视觉要求。生成结果先进入当前卡片，应用设置并保存工程后完成关联。</Text>{roleAssetDraft.portrait_prompt && <Paragraph ellipsis={{ rows: 4 }} title={roleAssetDraft.portrait_prompt}>最近图像提示：{roleAssetDraft.portrait_prompt}</Paragraph>}</div></div>
 
-            <div className="editor-section-heading"><span>03 / Voice</span><strong>声音特征与频率目标</strong><Text>性别和年龄会产生建议基频区间。滑块设置目标基频中位数；儿童和 50 岁以上角色会完整生成三次候选，再选择最接近目标且通过性别校验的自然声音。年龄约束同时控制共鸣、声带厚度和明亮度。</Text></div>
+            <div className="editor-section-heading"><span>03 / Voice</span><strong>声音特征与频率目标</strong><Text>性别和年龄会产生建议基频区间。滑块设置目标基频中位数；系统会按当前角色设置生成一至六个候选，并选择最接近目标且通过年龄与性别校验的自然声音。年龄约束同时控制共鸣、声带厚度和明亮度。</Text></div>
             <label><Text strong>音色生成方式</Text><Select disabled={jobRunning} value={roleVoiceMode} options={[{ value: 'preset', label: '使用可靠音色预设' }, { value: 'custom', label: '高级自定义声音导演' }]} onChange={value => updateRoleDraft(4, value === 'preset' ? '中性清晰' : '')} /></label>
             {roleVoiceMode === 'preset' ? <label><Text strong>音色预设</Text><Select disabled={jobRunning} value={roleDraft[4]} options={presets.voiceStyles.map(value => ({ value, label: `${value} · ${presets.voiceStylePrompts[value]}` }))} onChange={value => updateRoleDraft(4, value)} /></label> : <label><Text strong>高级声音导演提示</Text><Input.TextArea disabled={jobRunning} rows={4} value={roleDraft[4]} onChange={event => updateRoleDraft(4, event.target.value)} placeholder="例如：四十岁男性的中低音，胸腔共鸣明显，气息稳定，吐字略慢且边界清楚，基础情绪冷静克制。" /><small>这里写声音特征，人物经历放在上方人物小传中。</small></label>}
             <label className="pitch-control"><Flex justify="space-between"><Text strong>目标基频中位数</Text><Text>{roleAssetDraft.pitch_target_hz} Hz</Text></Flex><Slider disabled={jobRunning} min={roleAssetDraft.pitch_min_hz} max={roleAssetDraft.pitch_max_hz} value={roleAssetDraft.pitch_target_hz} tooltip={{ formatter: value => `${value} Hz` }} onChange={value => { setRoleAssetDraft(current => current ? { ...current, pitch_target_hz: value } : current); updateRoleDraft(7, '是'); }} /><small>{recommendPitchRange(roleAssetDraft.gender, roleAssetDraft.age).label}。靠近下限更低沉，靠近上限更高亮。此值是自然发声目标，最终实测值会随模型生成结果变化。</small></label>
+            <div className="voice-trait-panel"><Flex justify="space-between" align="center"><Text strong>结构化声音特征</Text><Tag>转换为 VoiceDesign 指令</Tag></Flex><Text>这些滑块按角色独立保存。年龄变化会载入对应年龄段的建议组合，之后可以逐项微调。</Text><div className="voice-trait-grid">{VOICE_TRAIT_CONTROLS.map(item => <label key={item.key}><Flex justify="space-between"><Text strong>{item.label}</Text><Text>{roleAssetDraft.voice_traits[item.key]}</Text></Flex><Slider disabled={jobRunning} min={0} max={100} value={roleAssetDraft.voice_traits[item.key]} onChange={value => updateVoiceTrait(item.key, value)} /><small>{item.low} 到 {item.high}</small></label>)}</div><label><Text strong>地域或口音要求（可选）</Text><Input disabled={jobRunning} value={roleAssetDraft.voice_traits.accent} maxLength={120} onChange={event => { setRoleAssetDraft(current => current ? { ...current, voice_traits: { ...current.voice_traits, accent: event.target.value } } : current); updateRoleDraft(7, '是'); }} placeholder="例如：轻微关西口音。留空时不添加口音约束。" /></label></div>
+            <details className="voice-generation-panel"><summary>生成策略与模型原生高级参数</summary><div className="voice-generation-content"><Alert type="info" showIcon message="原生采样参数逐角色生效" description="稳定、平衡和探索会载入推荐组合。手动修改任一数值后进入高级自定义。Subtalker 参数适用于当前 12Hz tokenizer 配置。" /><label><Text strong>生成策略</Text><Select disabled={jobRunning} value={roleAssetDraft.voice_generation.preset} options={[{ value: 'stable', label: '稳定' }, { value: 'balanced', label: '平衡' }, { value: 'explore', label: '探索' }, { value: 'custom', label: '高级自定义' }]} onChange={updateVoiceGenerationPreset} /></label><div className="generation-number-grid"><label><Text strong>候选数量</Text><InputNumber disabled={jobRunning} min={1} max={6} value={roleAssetDraft.voice_generation.candidate_count} onChange={value => updateVoiceGeneration({ candidate_count: value ?? 3 })} /></label><label><Text strong>随机种子</Text><InputNumber disabled={jobRunning} min={0} max={2147483647} value={roleAssetDraft.voice_generation.seed} onChange={value => updateVoiceGeneration({ seed: value ?? 42 })} /></label><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.temperature} onChange={value => updateVoiceGeneration({ temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.top_k} onChange={value => updateVoiceGeneration({ top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.top_p} onChange={value => updateVoiceGeneration({ top_p: value ?? 0.95 })} /></label><label><Text strong>重复抑制</Text><InputNumber disabled={jobRunning} min={1} max={2} step={0.01} value={roleAssetDraft.voice_generation.repetition_penalty} onChange={value => updateVoiceGeneration({ repetition_penalty: value ?? 1.05 })} /></label><label><Text strong>最大生成 Tokens</Text><InputNumber disabled={jobRunning} min={256} max={8192} step={256} value={roleAssetDraft.voice_generation.max_new_tokens} onChange={value => updateVoiceGeneration({ max_new_tokens: value ?? 2048 })} /></label><label className="switch-field"><Text strong>主采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.do_sample} onChange={checked => updateVoiceGeneration({ do_sample: checked })} /></label></div><Text strong>Subtalker 采样</Text><div className="generation-number-grid"><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.subtalker_temperature} onChange={value => updateVoiceGeneration({ subtalker_temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.subtalker_top_k} onChange={value => updateVoiceGeneration({ subtalker_top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.subtalker_top_p} onChange={value => updateVoiceGeneration({ subtalker_top_p: value ?? 0.95 })} /></label><label className="switch-field"><Text strong>Subtalker 采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.subtalker_dosample} onChange={checked => updateVoiceGeneration({ subtalker_dosample: checked })} /></label></div><label><Text strong>角色专属试听文本</Text><Input.TextArea disabled={jobRunning} rows={3} maxLength={500} value={roleAssetDraft.audition_text} onChange={event => { setRoleAssetDraft(current => current ? { ...current, audition_text: event.target.value } : current); updateRoleDraft(7, '是'); }} /><small>建议使用符合角色身份和年龄的自然台词。每个角色可以使用不同文本。</small></label></div></details>
+            {Boolean(roleAssetDraft.voice_candidates?.length) && <div className="voice-candidate-panel"><Text strong>最近保留的声音候选</Text><Text>可以逐个试听并采用。采用候选只切换该角色的稳定音色。</Text>{roleAssetDraft.voice_candidates?.map((candidate, index) => <div className="voice-candidate-row" key={candidate.voice_id}><div><Text>候选 {index + 1} · Seed {candidate.seed}{candidate.median_pitch_hz ? ` · ${candidate.median_pitch_hz.toFixed(1)} Hz` : ''}</Text><VoicePreview voiceId={candidate.voice_id} /></div><Button disabled={jobRunning} type={candidate.voice_id === roleDraft[5] ? 'primary' : 'default'} onClick={() => selectVoiceCandidate(candidate.voice_id)}>{candidate.voice_id === roleDraft[5] ? '当前采用' : '采用此候选'}</Button></div>)}</div>}
             <div className="editor-voice-controls"><label><Text strong>角色表达节奏</Text><Select disabled={jobRunning} value={roleDraft[6]} options={presets.rhythms.map(value => ({ value, label: `${value} · ${presets.rhythmPrompts[value]}` }))} onChange={value => updateRoleDraft(6, value)} /></label><label className="regenerate-control"><Text strong>下次生成处理</Text><div><Switch disabled={jobRunning} checked={roleDraft[7] === '是'} onChange={checked => updateRoleDraft(7, checked ? '是' : '否')} /><Text>{roleDraft[7] === '是' ? '重新生成并建立新签名' : '保持当前稳定音色'}</Text></div></label></div>
           </section>
           <aside className="voice-instruction-preview">

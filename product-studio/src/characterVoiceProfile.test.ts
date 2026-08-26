@@ -27,6 +27,9 @@ test('normalizes legacy roles into editable character assets', () => {
   assert.ok(asset.pitch_target_hz >= asset.pitch_min_hz);
   assert.ok(asset.pitch_target_hz <= asset.pitch_max_hz);
   assert.equal(asset.portrait_style, 'cinematic_manga');
+  assert.equal(asset.voice_generation.preset, 'balanced');
+  assert.equal(asset.voice_generation.candidate_count, 3);
+  assert.ok(asset.audition_text.length > 0);
 });
 
 test('preserves a supported portrait style and falls back from an unknown style', () => {
@@ -38,4 +41,6 @@ test('changing demographics resets the recommendation and target', () => {
   const current = normalizeCharacterAsset(role, { pitch_target_hz: 90 });
   const updated = updateAssetDemographics(current, 'female', 70);
   assert.deepEqual([updated.pitch_min_hz, updated.pitch_max_hz, updated.pitch_target_hz], [135, 235, 185]);
+  assert.ok(updated.voice_traits.weight > current.voice_traits.weight);
+  assert.ok(updated.voice_traits.roughness > current.voice_traits.roughness);
 });

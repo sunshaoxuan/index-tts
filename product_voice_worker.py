@@ -114,6 +114,7 @@ def main() -> int:
         project["project_id"], title=project["title"], content_type=project["content_type"], source_text=project["source_text"],
         guidance=project.get("guidance", ""), document=document, roles=roles, segments=project["segments"],
         pronunciations=pronunciation_rows(project.get("pronunciations")), voice_files=project.get("voice_files") or [],
+        character_assets=project.get("character_assets") or {},
     )
     jobs = build_voice_design_jobs(project["document"], project["roles"], project)
     output_dir = store.project_dir(project["project_id"]) / "voices"
@@ -127,7 +128,7 @@ def main() -> int:
         if str(row[7]) == "否" and str(row[5]).strip():
             preserved_count += 1
             continue
-        cached = store.find_voice(job, model=str(model_dir), seed=42)
+        cached = store.find_voice(job, model=str(model_dir), seed=int(job.get("seed", 42)))
         if cached:
             registered.append({"role_id": job["role_id"], "name": job["name"], "path": cached["audio_path"], "voice_id": cached["voice_id"]})
         else:
@@ -173,6 +174,7 @@ def main() -> int:
             voice_result = json.loads(worker_result.read_text(encoding="utf-8"))
             generated = voice_result["generated"]
             write_json(status, {"phase": "registering", "fraction": 0.97, "message": "正在注册永久音色并更新工程"})
+    character_assets = {role_id: dict(asset) for role_id, asset in (project.get("character_assets") or {}).items() if isinstance(asset, dict)}
     for item in generated:
         job = jobs_by_role[item["role_id"]]
         verified_job = {
@@ -182,7 +184,20 @@ def main() -> int:
             "candidate_metrics": item.get("candidate_metrics"),
             "gender_verified": str(item.get("expected_gender")) not in {"female", "male"} or item.get("median_pitch_hz") is not None,
         }
-        metadata = store.register_voice(item["path"], verified_job, model=str(model_dir), seed=42)
+        candidate_records = []
+        metadata = None
+        for metric in item.get("candidate_metrics") or []:
+            candidate_job = {**verified_job, "median_pitch_hz": metric.get("median_pitch_hz"), "seed": metric.get("seed")}
+            candidate_metadata = store.register_voice(metric["path"], candidate_job, model=str(model_dir), seed=int(metric["seed"]))
+            candidate_records.append({
+                "voice_id": candidate_metadata["voice_id"], "seed": int(metric["seed"]),
+                "median_pitch_hz": metric.get("median_pitch_hz"), "selected": bool(metric.get("selected")),
+            })
+            if metric.get("selected"):
+                metadata = candidate_metadata
+        if metadata is None:
+            metadata = store.register_voice(item["path"], verified_job, model=str(model_dir), seed=int(job.get("seed", 42)))
+        character_assets.setdefault(item["role_id"], {})["voice_candidates"] = candidate_records
         registered.append({"role_id": item["role_id"], "name": item["name"], "path": metadata["audio_path"], "voice_id": metadata["voice_id"], "expected_gender": metadata["expected_gender"], "median_pitch_hz": metadata["median_pitch_hz"]})
     roles = apply_generated_voices(project["roles"], registered)
     store.save(
@@ -190,6 +205,7 @@ def main() -> int:
         guidance=project.get("guidance", ""), document=project["document"], roles=roles, segments=project["segments"],
         pronunciations=pronunciation_rows(project.get("pronunciations")),
         voice_files=list(dict.fromkeys([*(project.get("voice_files") or []), *[item["path"] for item in registered]])),
+        character_assets=character_assets,
     )
     runtime_summary = "已复用驻留模型" if voice_result.get("model_reused") else "模型已保持驻留" if generated else "未调用模型"
     write_json(Path(args.result), {"roles": roles, "voices": registered, "voice_runtime": {"pid": voice_result.get("runtime_pid") or (voice_runtime or {}).get("pid"), "model_reused": voice_result.get("model_reused"), "resident": bool(generated)}})

@@ -2,6 +2,46 @@ export type RoleRow = [string, string, string, string, string, string, string, s
 export type SegmentRow = [number, string, string, string, string, string, string, string, string, number, string, number];
 
 export type CharacterGender = 'female' | 'male' | 'unspecified';
+export type VoiceGenerationPreset = 'stable' | 'balanced' | 'explore' | 'custom';
+
+export interface VoiceTraits {
+  weight: number;
+  brightness: number;
+  resonance: number;
+  tension: number;
+  roughness: number;
+  breathiness: number;
+  nasality: number;
+  articulation: number;
+  pace: number;
+  pause_density: number;
+  pitch_variation: number;
+  expressiveness: number;
+  accent: string;
+}
+
+export interface VoiceGenerationSettings {
+  preset: VoiceGenerationPreset;
+  do_sample: boolean;
+  top_k: number;
+  top_p: number;
+  temperature: number;
+  repetition_penalty: number;
+  seed: number;
+  max_new_tokens: number;
+  candidate_count: number;
+  subtalker_dosample: boolean;
+  subtalker_top_k: number;
+  subtalker_top_p: number;
+  subtalker_temperature: number;
+}
+
+export interface VoiceCandidate {
+  voice_id: string;
+  seed: number;
+  median_pitch_hz?: number;
+  selected: boolean;
+}
 
 export interface CharacterAsset {
   gender: CharacterGender;
@@ -9,6 +49,10 @@ export interface CharacterAsset {
   pitch_min_hz: number;
   pitch_max_hz: number;
   pitch_target_hz: number;
+  audition_text: string;
+  voice_traits: VoiceTraits;
+  voice_generation: VoiceGenerationSettings;
+  voice_candidates?: VoiceCandidate[];
   portrait_url?: string;
   portrait_prompt?: string;
   portrait_style: string;

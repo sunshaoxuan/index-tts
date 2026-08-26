@@ -114,7 +114,7 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     status_path = tmp_path / "status.json"
     output_dir = tmp_path / "voices"
     prepare_model(tmp_path / "model")
-    input_path.write_text(json.dumps({"jobs": [{"role_id": "role_002", "name": "老板娘", "filename": "owner.wav", "text": "测试", "language": "Chinese", "instruct": "中年女性音色", "expected_gender": "female"}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model")}, ensure_ascii=False), encoding="utf-8")
+    input_path.write_text(json.dumps({"jobs": [{"role_id": "role_002", "name": "老板娘", "filename": "owner.wav", "text": "测试", "language": "Chinese", "instruct": "中年女性音色", "expected_gender": "female", "voice_generation": {"candidate_count": 2}}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model")}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["worker", "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)])
 
     assert worker.main() == 0
@@ -123,6 +123,7 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     assert generated["expected_gender"] == "female"
     assert generated["median_pitch_hz"] >= 135
     assert generated["generation_attempts"] == 2
+    assert all(Path(item["path"]).is_file() for item in generated["candidate_metrics"])
 
 
 def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp_path, monkeypatch):
@@ -204,6 +205,38 @@ def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_pat
     assert results[0]["runtime_pid"] == results[1]["runtime_pid"]
 
 
+def test_voice_design_worker_passes_per_role_native_sampling_parameters(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            calls.append(kwargs)
+            return [np.zeros(2400, dtype=np.float32)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    worker.generate_voice_design({
+        "jobs": [{
+            "role_id": "role_004", "name": "测试角色", "filename": "role.wav", "text": "角色专属试听文本", "language": "Chinese", "instruct": "结构化音色",
+            "voice_generation": {"candidate_count": 1, "do_sample": True, "top_k": 88, "top_p": 0.77, "temperature": 1.2, "repetition_penalty": 1.11, "subtalker_dosample": True, "subtalker_top_k": 66, "subtalker_top_p": 0.72, "subtalker_temperature": 1.15, "max_new_tokens": 3072},
+        }],
+        "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
+    }, tmp_path / "result.json", tmp_path / "status.json")
+    assert len(calls) == 1
+    assert calls[0]["text"] == "角色专属试听文本"
+    assert calls[0]["top_k"] == 88
+    assert calls[0]["subtalker_top_k"] == 66
+    assert calls[0]["temperature"] == 1.2
+    assert calls[0]["max_new_tokens"] == 3072
+
+
 def test_voice_design_runtime_rejects_missing_model_files_before_import(tmp_path, monkeypatch):
     imported = []
     original_import = __import__
@@ -230,6 +263,8 @@ def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():
     assert worker.gender_pitch_matches("female", 180.0)
     assert worker.gender_pitch_matches("male", 110.0)
     assert not worker.gender_pitch_matches("male", 230.0)
+    assert worker.gender_pitch_matches("male", 255.0, 10)
+    assert not worker.gender_pitch_matches("male", 255.0, 35)
 
 
 def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):

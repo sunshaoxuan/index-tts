@@ -111,6 +111,7 @@ def voice_signature(job: dict[str, Any], *, model: str, seed: int) -> str:
         "text": str(job.get("text", "")).strip(),
         "model": str(model),
         "seed": int(seed),
+        "voice_generation": job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {},
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -251,6 +252,8 @@ class NovelProjectStore:
             "median_pitch_hz": job.get("median_pitch_hz"),
             "generation_attempts": job.get("generation_attempts"),
             "candidate_metrics": job.get("candidate_metrics") if isinstance(job.get("candidate_metrics"), list) else [],
+            "voice_traits": job.get("voice_traits") if isinstance(job.get("voice_traits"), dict) else {},
+            "voice_generation": job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {},
             "effective_guidance_sources": job.get("effective_guidance_sources") if isinstance(job.get("effective_guidance_sources"), list) else [],
             "effective_guidance_instructions": job.get("effective_guidance_instructions") if isinstance(job.get("effective_guidance_instructions"), list) else [],
             "gender_verified": bool(job.get("gender_verified", False)),

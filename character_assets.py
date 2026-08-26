@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from voice_controls import DEFAULT_AUDITION_TEXT, normalize_voice_generation, normalize_voice_traits, recommended_voice_traits
+
 
 PORTRAIT_STYLE_IDS = {
     "cinematic_manga", "clean_cel", "soft_watercolor", "noir_ink", "retro_print",
@@ -58,6 +60,10 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
             "pitch_min_hz": minimum,
             "pitch_max_hz": maximum,
             "pitch_target_hz": target,
+            "audition_text": str(source.get("audition_text") or DEFAULT_AUDITION_TEXT).strip()[:500] or DEFAULT_AUDITION_TEXT,
+            "voice_traits": normalize_voice_traits(source.get("voice_traits") if isinstance(source.get("voice_traits"), dict) else recommended_voice_traits(age)),
+            "voice_generation": normalize_voice_generation(source.get("voice_generation")),
+            **({"voice_candidates": source["voice_candidates"][:6]} if isinstance(source.get("voice_candidates"), list) else {}),
             **({"portrait_url": str(source["portrait_url"])} if source.get("portrait_url") else {}),
             **({"portrait_prompt": str(source["portrait_prompt"])} if source.get("portrait_prompt") else {}),
             "portrait_style": portrait_style,

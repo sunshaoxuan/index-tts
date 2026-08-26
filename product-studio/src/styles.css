@@ -452,6 +452,19 @@ body * { box-shadow: none !important; }
 .editor-two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .editor-voice-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .editor-voice-controls > label { min-width: 0; display: grid; gap: 8px; }
+.voice-trait-panel, .voice-generation-panel, .voice-candidate-panel { display: grid; gap: 14px; padding: 16px; border: 1px dashed rgba(255, 237, 215, .34); border-radius: 10px; background: rgba(16, 9, 4, .2); }
+.voice-trait-panel > .ant-typography, .voice-candidate-panel > .ant-typography { color: var(--cream); font-size: 11px; line-height: 1.55; }
+.voice-trait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+.voice-trait-grid label { gap: 2px; }
+.voice-trait-grid .ant-slider { margin: 6px 5px; }
+.voice-generation-panel summary { color: var(--cream); cursor: pointer; font-size: 12px; font-weight: 600; }
+.voice-generation-content { display: grid; gap: 16px; padding-top: 16px; }
+.generation-number-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.generation-number-grid label { align-content: start; }
+.generation-number-grid .ant-input-number { width: 100%; }
+.switch-field { justify-items: start; }
+.voice-candidate-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding-top: 12px; border-top: 1px dashed rgba(255, 237, 215, .22); }
+.voice-candidate-row > div { min-width: 0; display: grid; gap: 7px; }
 .editor-section-heading { display: grid; gap: 7px; padding-top: 20px; border-top: 1px dashed var(--cork); }
 .editor-section-heading:first-child { padding-top: 0; border-top: 0; }
 .editor-section-heading span { color: var(--cream); font-size: 9px; font-weight: 500; opacity: .62; text-transform: uppercase; }
@@ -578,4 +591,9 @@ body * { box-shadow: none !important; }
   .split-segment-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; }
   .split-preview { grid-template-columns: minmax(0, 1fr); }
   .voice-instruction-preview { padding: 16px; }
+}
+
+@media (max-width: 720px) {
+  .voice-trait-grid, .generation-number-grid { grid-template-columns: 1fr; }
+  .voice-candidate-row { grid-template-columns: 1fr; }
 }

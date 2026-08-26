@@ -1,4 +1,5 @@
 import type { CharacterAsset, CharacterGender, RoleRow } from './types';
+import { DEFAULT_AUDITION_TEXT, normalizeVoiceGeneration, normalizeVoiceTraits, recommendedVoiceTraits } from './voiceControls.ts';
 
 const DEFAULT_PORTRAIT_STYLE = 'cinematic_manga';
 const PORTRAIT_STYLE_IDS = new Set([
@@ -16,7 +17,7 @@ export interface PitchRecommendation {
 
 export function ageVoiceConstraint(age: number): string {
   const safeAge = Math.max(5, Math.min(100, Math.round(Number(age) || 35)));
-  if (safeAge < 13) return '年龄听感强约束：儿童声线，发声轻巧自然，保留儿童口腔共鸣和清亮度，禁止成人化厚重声线。';
+  if (safeAge < 13) return '年龄听感强约束：尚未变声的儿童声线，基频明显高于成年人，发声轻巧自然，保留儿童口腔共鸣、清亮度和稚嫩感；成年男性低音、胸腔厚重共鸣或成熟声带质感均不合格。';
   if (safeAge < 20) return '年龄听感强约束：青少年声线，保持较轻的声带质感和自然明亮度，禁止明显中老年化粗粝声线。';
   if (safeAge < 40) return '年龄听感强约束：青年到壮年声线，声带闭合自然，共鸣清晰，避免儿童感或明显衰老感。';
   if (safeAge < 50) return '年龄听感强约束：成熟中年声线，声带质感稳实，共鸣位置适中，减少轻薄和少年感。';
@@ -63,6 +64,10 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     pitch_min_hz: min,
     pitch_max_hz: max,
     pitch_target_hz: target,
+    audition_text: String(input?.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
+    voice_traits: normalizeVoiceTraits(input?.voice_traits ?? recommendedVoiceTraits(age)),
+    voice_generation: normalizeVoiceGeneration(input?.voice_generation),
+    voice_candidates: Array.isArray(input?.voice_candidates) ? input.voice_candidates.filter(item => item?.voice_id).slice(0, 6) : undefined,
     portrait_url: input?.portrait_url,
     portrait_prompt: input?.portrait_prompt,
     portrait_style: PORTRAIT_STYLE_IDS.has(requestedPortraitStyle) ? requestedPortraitStyle : DEFAULT_PORTRAIT_STYLE,
@@ -80,5 +85,6 @@ export function updateAssetDemographics(asset: CharacterAsset, gender: Character
     pitch_min_hz: recommendation.min,
     pitch_max_hz: recommendation.max,
     pitch_target_hz: recommendation.target,
+    voice_traits: recommendedVoiceTraits(age),
   };
 }

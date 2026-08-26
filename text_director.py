@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable
 import requests
 
 from novel_project import apply_pronunciations, normalize_pronunciations
+from voice_controls import DEFAULT_AUDITION_TEXT, normalize_voice_generation, normalize_voice_traits, voice_traits_instruction
 
 
 CONTENT_TYPES = {
@@ -1420,7 +1421,7 @@ VOICE_GENDER_TERMS = {
 def age_voice_constraint(age: int) -> str:
     safe_age = max(5, min(100, int(age)))
     if safe_age < 13:
-        return "年龄听感强约束：儿童声线，发声轻巧自然，保留儿童口腔共鸣和清亮度，禁止成人化厚重声线。"
+        return "年龄听感强约束：尚未变声的儿童声线，基频明显高于成年人，发声轻巧自然，保留儿童口腔共鸣、清亮度和稚嫩感；成年男性低音、胸腔厚重共鸣或成熟声带质感均不合格。"
     if safe_age < 20:
         return "年龄听感强约束：青少年声线，保持较轻的声带质感和自然明亮度，禁止明显中老年化粗粝声线。"
     if safe_age < 40:
@@ -1512,6 +1513,9 @@ def build_voice_design_jobs(
         pitch_min_hz = float(asset.get("pitch_min_hz") or 0)
         pitch_max_hz = float(asset.get("pitch_max_hz") or 0)
         pitch_target_hz = float(asset.get("pitch_target_hz") or 0)
+        voice_traits = normalize_voice_traits(asset.get("voice_traits"))
+        voice_generation = normalize_voice_generation(asset.get("voice_generation"))
+        audition_text = str(asset.get("audition_text") or VOICE_DESIGN_TEXT.get(language, DEFAULT_AUDITION_TEXT)).strip()[:500]
         pitch_constraint = (
             f"角色年龄设定：约 {age} 岁。建议基频区间：{pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz；"
             f"目标基频中位数约 {pitch_target_hz:.0f} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。"
@@ -1532,6 +1536,7 @@ def build_voice_design_jobs(
             f"{gender_constraint}"
             f"{pitch_constraint}"
             f"{age_constraint}"
+            f"{voice_traits_instruction(voice_traits)}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
         )
@@ -1540,7 +1545,7 @@ def build_voice_design_jobs(
                 "role_id": role_id,
                 "name": name,
                 "language": QWEN_LANGUAGE_NAMES.get(language, "Auto"),
-                "text": VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
+                "text": audition_text or VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
                 "instruct": instruct,
                 "expected_gender": expected_gender,
                 "character_age": age,
@@ -1550,7 +1555,9 @@ def build_voice_design_jobs(
                 "effective_guidance_sources": [str(item.get("source_text") or "").strip() for item in role_guidance_assignments if str(item.get("source_text") or "").strip()],
                 "effective_guidance_instructions": [str(item.get("instruction") or "").strip() for item in role_guidance_assignments if str(item.get("instruction") or "").strip()],
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
-                "seed": 42,
+                "voice_traits": voice_traits,
+                "voice_generation": voice_generation,
+                "seed": voice_generation["seed"],
             }
         )
     return jobs
