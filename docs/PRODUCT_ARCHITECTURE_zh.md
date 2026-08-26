@@ -41,6 +41,8 @@ VoiceDesign daemon 协议状态包含实际 Python 解释器、虚拟环境前�
 
 完整渲染 Worker 在加载任何重量级 Python 模块前先写入内存准备阶段，并请求 VoiceDesign daemon 释放常驻模型与 CUDA 缓存。daemon 进程继续存活，后续音色任务按需重新加载模型。释放完成后执行主机可用内存门禁，再写入 PyTorch CUDA 导入阶段；内存不足时返回明确终态，避免页面把导入阻塞误显示为队列等待。
 
+IndexTTS 音频合成由持久 Render Runtime 处理。Node 继续为每个产品作业启动轻量 Worker 以维持活动作业 PID、工程锁和服务恢复契约，Worker 把实际请求原子写入 Render Runtime 队列并等待终态。Runtime 首次请求加载 IndexTTS 2.5，完成后保留模型；后续完整渲染和分句重新生成复用同一模型与锁。VoiceDesign 与 Render Runtime 具有双向释放协议，角色音色生成前释放 IndexTTS，音频合成首次加载或释放后重载前释放 VoiceDesign，避免两个 GPU 模型同时驻留。
+
 任务启动时，Node 在写入 Worker 输入前登记 `activeJob`，其中包含 `jobId`、任务类型和 `projectId`，并持久写入 `runtime-output/product-jobs/active-job.json`。Worker 启动后追加 PID。`GET /api/active-job` 合并活动标记与实时 `status.json`，供刷新后的 React 页面自动选择所属工程、恢复相同进度面板和继续轮询。同一工程在任务存续期间的 PUT 保存返回 409。前端同步禁用工程选择、全文、角色、分句、纠音、新建和保存操作。任务完成或失败后删除活动标记、释放锁并重新载入工程结果。
 
 Node 服务恢复时读取持久活动标记并探测 Worker PID。进程仍存活时恢复活动锁和查询接口。进程不存在时把任务状态写成 error，说明原 Worker 已终止，随后删除活动标记并释放工程锁。该设计避免浏览器刷新丢失等待状态，也避免服务重启后展示无法继续推进的僵尸任务。

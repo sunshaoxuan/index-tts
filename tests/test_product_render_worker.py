@@ -38,3 +38,58 @@ def test_render_preparation_fails_fast_when_memory_is_still_exhausted(tmp_path, 
         raise AssertionError("memory exhaustion was accepted")
 
     assert json.loads(status_path.read_text(encoding="utf-8"))["phase"] == "preparing"
+
+
+def test_render_runtime_reuses_one_loaded_model_for_later_requests(tmp_path, monkeypatch):
+    loads = []
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def is_bf16_supported():
+            return False
+
+    fake_torch = type("Torch", (), {"cuda": FakeCuda})()
+
+    class FakeIndexTTS:
+        def __init__(self, **kwargs):
+            loads.append(kwargs)
+
+    dependencies = (fake_torch, FakeIndexTTS, object(), object(), object())
+    monkeypatch.setattr(worker, "prepare_render_environment", lambda root, status: dependencies)
+    runtime = worker.RenderRuntime()
+    first = runtime.get_model(tmp_path, tmp_path / "first-status.json")
+    second = runtime.get_model(tmp_path, tmp_path / "second-status.json")
+
+    assert len(loads) == 1
+    assert first[-1] is False
+    assert second[-1] is True
+    assert first[-2] is second[-2]
+    assert json.loads((tmp_path / "second-status.json").read_text(encoding="utf-8"))["phase"] == "model_ready"
+
+
+def test_render_runtime_release_drops_model_and_cuda_cache():
+    calls = []
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def empty_cache():
+            calls.append("empty_cache")
+
+        @staticmethod
+        def ipc_collect():
+            calls.append("ipc_collect")
+
+    runtime = worker.RenderRuntime()
+    runtime.model = object()
+    runtime.torch = type("Torch", (), {"cuda": FakeCuda})()
+    assert runtime.release() is True
+    assert runtime.model is None
+    assert calls == ["empty_cache", "ipc_collect"]

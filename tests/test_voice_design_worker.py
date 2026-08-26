@@ -7,7 +7,8 @@ import numpy as np
 
 import voice_design_worker as worker
 from novel_project import NovelProjectStore
-from product_voice_worker import quarantine_cross_role_voices, resolve_or_reuse_guidance
+import product_voice_worker
+from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, resolve_or_reuse_guidance
 from text_director import guidance_role_signature
 
 
@@ -43,6 +44,15 @@ def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     assert runtime.model_dir is None
     assert runtime.torch is None
     assert calls == ["empty_cache", "ipc_collect"]
+
+
+def test_voice_runtime_releases_resident_render_model_before_start(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(product_voice_worker, "release_render_model", lambda root: calls.append(("release_render", root)))
+    monkeypatch.setattr(product_voice_worker, "ensure_voice_design_daemon", lambda root, python: calls.append(("ensure_voice", root, python)) or {"pid": 123})
+    voice_python = tmp_path / "voice-python.exe"
+    assert prepare_voice_runtime(tmp_path, voice_python) == {"pid": 123}
+    assert calls == [("release_render", tmp_path), ("ensure_voice", tmp_path, voice_python)]
 
 
 def test_voice_design_worker_generates_each_role(tmp_path, monkeypatch):

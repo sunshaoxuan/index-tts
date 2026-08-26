@@ -11,6 +11,7 @@ from typing import Any
 from novel_project import NovelProjectStore, pronunciation_rows
 from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs, guidance_role_signature
 from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
+from render_daemon_client import release_render_model
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -61,6 +62,11 @@ def resolve_or_reuse_guidance(project: dict[str, Any], director: OllamaTextDirec
     return director.resolve_guidance(guidance, project.get("roles") or []), False
 
 
+def prepare_voice_runtime(root: Path, voice_python: Path) -> dict[str, Any]:
+    release_render_model(root)
+    return ensure_voice_design_daemon(root, voice_python)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -109,7 +115,7 @@ def main() -> int:
     voice_runtime: dict[str, Any] | None = None
     voice_result: dict[str, Any] = {}
     if pending:
-        voice_runtime = ensure_voice_design_daemon(root, voice_python)
+        voice_runtime = prepare_voice_runtime(root, voice_python)
         runtime_dir = Path(voice_runtime["runtime_dir"])
         warm = bool(voice_runtime.get("model_loaded"))
         runtime_message = "正在复用已驻留的 VoiceDesign 模型" if warm else "VoiceDesign 常驻进程已就绪，正在首次加载模型"
