@@ -1415,6 +1415,23 @@ VOICE_GENDER_TERMS = {
     "female": ("女性", "女声", "女人", "妇人", "妻子", "母亲", "奶奶", "姐姐", "妹妹", "女儿", "少女", "女孩"),
     "male": ("男性", "男声", "男人", "丈夫", "父亲", "爷爷", "哥哥", "弟弟", "儿子", "少年", "男孩"),
 }
+
+
+def age_voice_constraint(age: int) -> str:
+    safe_age = max(5, min(100, int(age)))
+    if safe_age < 13:
+        return "年龄听感强约束：儿童声线，发声轻巧自然，保留儿童口腔共鸣和清亮度，禁止成人化厚重声线。"
+    if safe_age < 20:
+        return "年龄听感强约束：青少年声线，保持较轻的声带质感和自然明亮度，禁止明显中老年化粗粝声线。"
+    if safe_age < 40:
+        return "年龄听感强约束：青年到壮年声线，声带闭合自然，共鸣清晰，避免儿童感或明显衰老感。"
+    if safe_age < 50:
+        return "年龄听感强约束：成熟中年声线，声带质感稳实，共鸣位置适中，减少轻薄和少年感。"
+    if safe_age < 70:
+        return "年龄听感强约束：成熟偏老年声线，声带厚度明显，共鸣位置靠下，高频亮度受控，允许轻微自然粗粝和松弛感，禁止明亮、轻薄、紧致的青年声线。"
+    return "年龄听感强约束：老年声线，声带质感厚而略松，共鸣靠下，高频亮度克制，带自然气息感和轻微粗粝感，禁止青年化清亮紧致声线。"
+
+
 def infer_voice_gender(voice_hint: str, profile: str = "", name: str = "") -> str:
     for source in (voice_hint, profile, name):
         female = any(term in source for term in VOICE_GENDER_TERMS["female"])
@@ -1479,10 +1496,14 @@ def build_voice_design_jobs(
             "character": "人物",
         }[kind]
         role_title = name if name == kind_text else f"{kind_text}{name}"
-        effective_guidance = "；".join(
-            str(item.get("instruction") or "").strip().rstrip("。！？!?；;")
+        role_guidance_assignments = [
+            item
             for item in guidance_assignments
             if isinstance(item, dict) and role_id in item.get("target_role_ids", []) and str(item.get("instruction") or "").strip()
+        ]
+        effective_guidance = "；".join(
+            str(item.get("instruction") or "").strip().rstrip("。！？!?；;")
+            for item in role_guidance_assignments
         )
         asset = character_assets.get(role_id) if isinstance(character_assets.get(role_id), dict) else {}
         explicit_gender = str(asset.get("gender") or "")
@@ -1497,6 +1518,7 @@ def build_voice_design_jobs(
             if pitch_min_hz > 0 and pitch_max_hz > pitch_min_hz and pitch_min_hz <= pitch_target_hz <= pitch_max_hz
             else f"角色年龄设定：约 {age} 岁。"
         )
+        age_constraint = age_voice_constraint(age)
         gender_constraint = {
             "female": "声音性别硬约束：女性；男性或中性偏男性嗓音不合格。",
             "male": "声音性别硬约束：男性；女性或中性偏女性嗓音不合格。",
@@ -1509,6 +1531,7 @@ def build_voice_design_jobs(
             f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
             f"{gender_constraint}"
             f"{pitch_constraint}"
+            f"{age_constraint}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
         )
@@ -1524,6 +1547,8 @@ def build_voice_design_jobs(
                 "pitch_min_hz": pitch_min_hz or None,
                 "pitch_max_hz": pitch_max_hz or None,
                 "pitch_target_hz": pitch_target_hz or None,
+                "effective_guidance_sources": [str(item.get("source_text") or "").strip() for item in role_guidance_assignments if str(item.get("source_text") or "").strip()],
+                "effective_guidance_instructions": [str(item.get("instruction") or "").strip() for item in role_guidance_assignments if str(item.get("instruction") or "").strip()],
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
                 "seed": 42,
             }

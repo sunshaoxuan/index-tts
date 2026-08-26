@@ -618,6 +618,27 @@ def test_voice_design_jobs_include_explicit_character_age_and_pitch_target():
     assert job["pitch_target_hz"] == 105
     assert "建议基频区间：85 至 180 Hz" in job["instruct"]
     assert "目标基频中位数约 105 Hz" in job["instruct"]
+    assert "年龄听感强约束" in job["instruct"]
+
+
+def test_voice_design_jobs_preserve_structured_guidance_sources_and_add_mature_timbre_constraints():
+    roles = [["role_003", "教授", "character", "法医学专家", "老年男性音色", "", "自然叙述", "是"]]
+    routing = {
+        "guidance": "教授声音低沉",
+        "role_signature": guidance_role_signature(roles),
+        "assignments": [{"source_text": "教授声音低沉", "instruction": "声音低沉", "target_role_ids": ["role_003"]}],
+    }
+    document = {
+        "characters": [_character("role_003", "教授", "character")],
+        "segments": [_segment(1, "测试。", "测试。", role_id="role_003", name="教授", kind="character")],
+        "guidance_routing": routing,
+    }
+    job = build_voice_design_jobs(document, roles, {"guidance": "教授声音低沉", "guidance_routing": routing, "character_assets": {"role_003": {"gender": "male", "age": 55, "pitch_min_hz": 85, "pitch_max_hz": 180, "pitch_target_hz": 117}}})[0]
+
+    assert job["effective_guidance_sources"] == ["教授声音低沉"]
+    assert job["effective_guidance_instructions"] == ["声音低沉"]
+    assert "成熟偏老年声线" in job["instruct"]
+    assert "禁止明亮、轻薄、紧致的青年声线" in job["instruct"]
 
 
 def test_ai_routed_guidance_excludes_narrator_voice_from_characters_and_enforces_gender():

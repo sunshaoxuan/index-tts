@@ -37,6 +37,8 @@ def gender_pitch_matches(expected_gender: str, median_pitch: float | None) -> bo
 def gender_pitch_score(expected_gender: str, median_pitch: float | None, target_pitch: float | None = None) -> float:
     if median_pitch is None:
         return float("-inf")
+    if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, median_pitch):
+        return -1_000_000.0 - abs(median_pitch - target_pitch) if target_pitch is not None else -1_000_000.0
     if target_pitch is not None:
         return -abs(median_pitch - target_pitch)
     if expected_gender == "female":
@@ -127,7 +129,7 @@ def generate_voice_design(
     model, torch, model_reused = runtime.get_model(payload, status_path)
     torch.manual_seed(int(payload.get("seed", 42)))
 
-    generated: list[dict[str, str]] = []
+    generated: list[dict[str, Any]] = []
     started = time.perf_counter()
     for index, job in enumerate(jobs, start=1):
         job_seed = int(job.get("seed", payload.get("seed", 42)))
@@ -144,20 +146,28 @@ def generate_voice_design(
         )
         expected_gender = str(job.get("expected_gender") or "unspecified")
         target_pitch = float(job["pitch_target_hz"]) if job.get("pitch_target_hz") is not None else None
+        character_age = int(job["character_age"]) if job.get("character_age") is not None else None
         max_attempts = int(payload.get("gender_max_attempts", 3)) if expected_gender in {"female", "male"} or target_pitch is not None else 1
         best_wav, best_sample_rate, best_pitch, best_score, attempts_used = None, None, None, float("-inf"), 0
+        candidate_metrics: list[dict[str, Any]] = []
+        evaluate_all_candidates = target_pitch is not None and character_age is not None and (character_age < 20 or character_age >= 50)
         for attempt in range(max_attempts):
             candidate_seed = job_seed + attempt
             torch.manual_seed(candidate_seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(candidate_seed)
             if attempt:
+                retry_message = (
+                    f"{job['name']} 正在评估年龄与频率候选 {attempt + 1}/{max_attempts}"
+                    if evaluate_all_candidates
+                    else f"{job['name']} 音色性别校验未通过，正在重试 {attempt + 1}/{max_attempts}"
+                )
                 _write_json(
                     status_path,
                     {
                         "phase": "gender_retry",
                         "fraction": 0.08 + 0.86 * (index - 0.5) / len(jobs),
-                        "message": f"{job['name']} 音色性别校验未通过，正在重试 {attempt + 1}/{max_attempts}",
+                        "message": retry_message,
                     },
                 )
             wavs, sample_rate = model.generate_voice_design(
@@ -172,10 +182,22 @@ def generate_voice_design(
             )
             median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
             score = gender_pitch_score(expected_gender, median_pitch, target_pitch)
+            candidate_metrics.append(
+                {
+                    "seed": candidate_seed,
+                    "median_pitch_hz": median_pitch,
+                    "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
+                    "gender_matched": gender_pitch_matches(expected_gender, median_pitch),
+                    "selected": False,
+                }
+            )
             if best_wav is None or score > best_score:
                 best_wav, best_sample_rate, best_pitch, best_score = wavs[0], sample_rate, median_pitch, score
+                for metric in candidate_metrics:
+                    metric["selected"] = False
+                candidate_metrics[-1]["selected"] = True
             attempts_used = attempt + 1
-            if gender_pitch_matches(expected_gender, median_pitch):
+            if not evaluate_all_candidates and gender_pitch_matches(expected_gender, median_pitch):
                 if target_pitch is None or (median_pitch is not None and abs(float(median_pitch) - target_pitch) <= max(15.0, target_pitch * 0.12)):
                     break
         if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, best_pitch):
@@ -193,6 +215,7 @@ def generate_voice_design(
                 "median_pitch_hz": best_pitch,
                 "pitch_target_hz": target_pitch,
                 "generation_attempts": attempts_used,
+                "candidate_metrics": candidate_metrics,
             }
         )
 

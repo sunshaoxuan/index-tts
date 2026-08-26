@@ -94,10 +94,13 @@ def test_explicit_gender_voice_cache_requires_verification_metadata(tmp_path):
     assert unverified["gender_verified"] is False
     assert store.find_voice(job, model="voice-model", seed=42) is None
 
-    verified_job = {**job, "gender_verified": True, "median_pitch_hz": 188.0}
+    verified_job = {**job, "gender_verified": True, "median_pitch_hz": 188.0, "generation_attempts": 3, "candidate_metrics": [{"seed": 42, "median_pitch_hz": 188.0, "selected": True}], "effective_guidance_sources": ["女性声线"], "effective_guidance_instructions": ["使用女性声线"]}
     verified = store.register_voice(generated, verified_job, model="voice-model", seed=42)
     assert verified["voice_id"] == unverified["voice_id"]
     assert store.find_voice(job, model="voice-model", seed=42)["median_pitch_hz"] == 188.0
+    assert verified["generation_attempts"] == 3
+    assert verified["candidate_metrics"][0]["selected"] is True
+    assert verified["effective_guidance_sources"] == ["女性声线"]
 
 
 def test_quarantined_voice_is_not_reused_or_listed(tmp_path):

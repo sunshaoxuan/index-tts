@@ -20,27 +20,47 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def quarantine_cross_role_voices(store: NovelProjectStore, routing: dict[str, Any]) -> set[str]:
+def _legacy_effective_guidance(instruct: str) -> str:
+    marker = "本角色有效导演上下文："
+    boundary = "。人物小传："
+    if marker not in instruct or boundary not in instruct:
+        return ""
+    return instruct.split(marker, 1)[1].split(boundary, 1)[0].strip()
+
+
+def quarantine_cross_role_voices(store: NovelProjectStore, routing: dict[str, Any], active_voice_ids: set[str] | None = None) -> set[str]:
     assignments = routing.get("assignments") if isinstance(routing, dict) else []
     quarantined: set[str] = set()
     for metadata_path in store.voice_library_root.glob("voice-*.json"):
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            voice_id = str(metadata.get("voice_id") or metadata_path.stem)
+            if active_voice_ids is not None and voice_id not in active_voice_ids:
+                continue
             role_id = str(metadata.get("role_id") or "")
             instruct = str(metadata.get("instruct") or "")
+            structured_sources = {str(value).strip() for value in metadata.get("effective_guidance_sources", []) if str(value).strip()}
+            structured_instructions = {str(value).strip() for value in metadata.get("effective_guidance_instructions", []) if str(value).strip()}
+            legacy_context = _legacy_effective_guidance(instruct) if not structured_sources and not structured_instructions else ""
             forbidden = [
-                str(item.get("source_text") or "").strip()
+                (str(item.get("source_text") or "").strip(), str(item.get("instruction") or "").strip())
                 for item in assignments or []
                 if isinstance(item, dict) and role_id not in item.get("target_role_ids", [])
             ]
-            matched = [fragment for fragment in forbidden if fragment and fragment in instruct]
+            matched = [
+                source or instruction
+                for source, instruction in forbidden
+                if (source and source in structured_sources)
+                or (instruction and instruction in structured_instructions)
+                or (legacy_context and ((source and source in legacy_context) or (instruction and instruction in legacy_context)))
+            ]
             if not matched:
                 continue
             metadata["quarantined"] = True
             metadata["quarantine_reason"] = f"包含分配给其他轨道的导演补充：{'；'.join(matched)}"
             metadata["quarantined_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             write_json(metadata_path, metadata)
-            quarantined.add(str(metadata.get("voice_id") or metadata_path.stem))
+            quarantined.add(voice_id)
         except (OSError, ValueError, TypeError):
             continue
     return quarantined
@@ -84,7 +104,8 @@ def main() -> int:
     document["guidance_routing"], routing_reused = cached_routing
     routing_message = "正在复用已有导演补充分配" if routing_reused else "正在用 AI 分配导演补充的角色影响范围"
     write_json(status, {"phase": "routing_guidance", "fraction": 0.01, "message": routing_message})
-    quarantined = quarantine_cross_role_voices(store, document["guidance_routing"])
+    active_voice_ids = {str(row[5]).strip() for row in project["roles"] if len(row) > 5 and str(row[5]).strip()}
+    quarantined = quarantine_cross_role_voices(store, document["guidance_routing"], active_voice_ids)
     roles = [list(row) for row in project["roles"]]
     for row in roles:
         if str(row[5]) in quarantined:
@@ -157,6 +178,8 @@ def main() -> int:
         verified_job = {
             **job,
             "median_pitch_hz": item.get("median_pitch_hz"),
+            "generation_attempts": item.get("generation_attempts"),
+            "candidate_metrics": item.get("candidate_metrics"),
             "gender_verified": str(item.get("expected_gender")) not in {"female", "male"} or item.get("median_pitch_hz") is not None,
         }
         metadata = store.register_voice(item["path"], verified_job, model=str(model_dir), seed=42)

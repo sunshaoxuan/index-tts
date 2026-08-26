@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
+import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
 import type { RoleRow } from './types.ts';
 
 const role: RoleRow = ['role_001', '林澈', 'character', '三十五岁的男性刑警，性格克制。', '低沉厚实', '', '自然叙述', '是'];
@@ -12,6 +12,12 @@ test('recommends distinct pitch ranges by gender and age', () => {
   assert.deepEqual([male.min, male.max], [85, 180]);
   assert.deepEqual([female.min, female.max], [165, 255]);
   assert.ok(child.min > male.min);
+});
+
+test('adds explicit perceived age timbre constraints', () => {
+  assert.match(ageVoiceConstraint(55), /成熟偏老年声线/);
+  assert.match(ageVoiceConstraint(55), /禁止明亮、轻薄、紧致的青年声线/);
+  assert.match(ageVoiceConstraint(10), /儿童声线/);
 });
 
 test('normalizes legacy roles into editable character assets', () => {

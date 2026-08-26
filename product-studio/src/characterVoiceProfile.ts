@@ -14,6 +14,16 @@ export interface PitchRecommendation {
   label: string;
 }
 
+export function ageVoiceConstraint(age: number): string {
+  const safeAge = Math.max(5, Math.min(100, Math.round(Number(age) || 35)));
+  if (safeAge < 13) return '年龄听感强约束：儿童声线，发声轻巧自然，保留儿童口腔共鸣和清亮度，禁止成人化厚重声线。';
+  if (safeAge < 20) return '年龄听感强约束：青少年声线，保持较轻的声带质感和自然明亮度，禁止明显中老年化粗粝声线。';
+  if (safeAge < 40) return '年龄听感强约束：青年到壮年声线，声带闭合自然，共鸣清晰，避免儿童感或明显衰老感。';
+  if (safeAge < 50) return '年龄听感强约束：成熟中年声线，声带质感稳实，共鸣位置适中，减少轻薄和少年感。';
+  if (safeAge < 70) return '年龄听感强约束：成熟偏老年声线，声带厚度明显，共鸣位置靠下，高频亮度受控，允许轻微自然粗粝和松弛感，禁止明亮、轻薄、紧致的青年声线。';
+  return '年龄听感强约束：老年声线，声带质感厚而略松，共鸣靠下，高频亮度克制，带自然气息感和轻微粗粝感，禁止青年化清亮紧致声线。';
+}
+
 export function inferCharacterGender(...sources: string[]): CharacterGender {
   const femaleTerms = ['女性', '女声', '女人', '妇人', '妻子', '母亲', '奶奶', '姐姐', '妹妹', '女儿', '少女', '女孩'];
   const maleTerms = ['男性', '男声', '男人', '丈夫', '父亲', '爷爷', '哥哥', '弟弟', '儿子', '少年', '男孩'];

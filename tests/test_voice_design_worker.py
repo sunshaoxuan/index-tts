@@ -23,6 +23,11 @@ def test_pitch_score_prefers_the_candidate_closest_to_user_target():
     assert worker.gender_pitch_score("female", 225.0, 220.0) > worker.gender_pitch_score("female", 180.0, 220.0)
 
 
+def test_pitch_score_prioritizes_a_gender_matched_candidate_before_target_distance():
+    assert worker.gender_pitch_score("female", 180.0, 120.0) > worker.gender_pitch_score("female", 120.0, 120.0)
+    assert worker.gender_pitch_score("male", 180.0, 220.0) > worker.gender_pitch_score("male", 220.0, 220.0)
+
+
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     calls = []
 
@@ -120,6 +125,47 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     assert generated["generation_attempts"] == 2
 
 
+def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp_path, monkeypatch):
+    frequencies = [108, 101, 96]
+    calls = []
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            frequency = frequencies[len(calls)]
+            calls.append(frequency)
+            timeline = np.arange(24000, dtype=np.float32) / 24000
+            return [0.2 * np.sin(2 * np.pi * frequency * timeline)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    result = worker.generate_voice_design(
+        {
+            "jobs": [{
+                "role_id": "role_003", "name": "教授", "filename": "professor.wav", "text": "测试",
+                "language": "Chinese", "instruct": "成熟偏老年男性声线", "expected_gender": "male",
+                "character_age": 55, "pitch_target_hz": 100,
+            }],
+            "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir), "gender_max_attempts": 3,
+        },
+        tmp_path / "result.json",
+        tmp_path / "status.json",
+    )
+
+    generated = result["generated"][0]
+    assert calls == frequencies
+    assert generated["generation_attempts"] == 3
+    assert len(generated["candidate_metrics"]) == 3
+    assert sum(item["selected"] for item in generated["candidate_metrics"]) == 1
+    assert generated["median_pitch_hz"] == generated["candidate_metrics"][1]["median_pitch_hz"]
+
+
 def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_path, monkeypatch):
     load_count = 0
 
@@ -190,7 +236,7 @@ def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):
     store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
     generated = tmp_path / "generated.wav"
     generated.write_bytes(b"RIFF")
-    job = {"role_id": "role_002", "name": "老板娘", "language": "Chinese", "text": "测试", "instruct": "本角色上下文：旁白缓慢而深沉。女性音色。"}
+    job = {"role_id": "role_002", "name": "老板娘", "language": "Chinese", "text": "测试", "instruct": "本角色有效导演上下文：旁白缓慢而深沉。人物小传：店主。声音导演：女性音色。"}
     metadata = store.register_voice(generated, job, model="voice-model")
     routing = {"assignments": [{"source_text": "旁白缓慢而深沉", "target_role_ids": ["narrator"]}]}
 
@@ -198,6 +244,36 @@ def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):
     saved = json.loads((store.voice_library_root / f"{metadata['voice_id']}.json").read_text(encoding="utf-8"))
     assert saved["quarantined"] is True
     assert "其他轨道" in saved["quarantine_reason"]
+
+
+def test_cross_role_guidance_does_not_quarantine_a_role_voice_with_the_same_words_in_its_own_voice_hint(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    generated = tmp_path / "generated.wav"
+    generated.write_bytes(b"RIFF")
+    job = {
+        "role_id": "role_003", "name": "松野教授", "language": "Chinese", "text": "测试",
+        "instruct": "本角色有效导演上下文：遵循作品体裁。人物小传：法医学教授。声音导演：老年男性音色，语气冷静。",
+        "effective_guidance_sources": [], "effective_guidance_instructions": [],
+    }
+    metadata = store.register_voice(generated, job, model="voice-model")
+    routing = {"assignments": [{"source_text": "老年男性音色", "instruction": "老年男性音色", "target_role_ids": ["narrator"]}]}
+
+    assert quarantine_cross_role_voices(store, routing, {metadata["voice_id"]}) == set()
+    saved = json.loads((store.voice_library_root / f"{metadata['voice_id']}.json").read_text(encoding="utf-8"))
+    assert "quarantined" not in saved
+
+
+def test_cross_role_guidance_only_scans_voices_referenced_by_the_current_project(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    generated = tmp_path / "generated.wav"
+    generated.write_bytes(b"RIFF")
+    active = store.register_voice(generated, {"role_id": "role_001", "name": "当前角色", "language": "Chinese", "text": "甲", "instruct": "本角色有效导演上下文：正常。人物小传：当前。"}, model="voice-model")
+    unrelated = store.register_voice(generated, {"role_id": "role_002", "name": "其他工程角色", "language": "Chinese", "text": "乙", "instruct": "本角色有效导演上下文：旁白低沉。人物小传：其他。"}, model="voice-model")
+    routing = {"assignments": [{"source_text": "旁白低沉", "target_role_ids": ["narrator"]}]}
+
+    assert quarantine_cross_role_voices(store, routing, {active["voice_id"]}) == set()
+    saved = json.loads((store.voice_library_root / f"{unrelated['voice_id']}.json").read_text(encoding="utf-8"))
+    assert "quarantined" not in saved
 
 
 def test_voice_job_reuses_current_guidance_routing_without_calling_ollama():

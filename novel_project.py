@@ -249,6 +249,10 @@ class NovelProjectStore:
             "pitch_max_hz": job.get("pitch_max_hz"),
             "pitch_target_hz": job.get("pitch_target_hz"),
             "median_pitch_hz": job.get("median_pitch_hz"),
+            "generation_attempts": job.get("generation_attempts"),
+            "candidate_metrics": job.get("candidate_metrics") if isinstance(job.get("candidate_metrics"), list) else [],
+            "effective_guidance_sources": job.get("effective_guidance_sources") if isinstance(job.get("effective_guidance_sources"), list) else [],
+            "effective_guidance_instructions": job.get("effective_guidance_instructions") if isinstance(job.get("effective_guidance_instructions"), list) else [],
             "gender_verified": bool(job.get("gender_verified", False)),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
