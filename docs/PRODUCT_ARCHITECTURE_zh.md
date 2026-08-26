@@ -110,4 +110,4 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 工程 PUT 在服务端读取当前 `project.json`，按导演字段计算变化类型，追加 `director_history`，并更新 `director_memory` 快照。客户端携带的历史字段不参与覆盖。AI 分析 worker 读取分析前的角色与分句，`director_memory.reapply_director_memory` 使用 `SequenceMatcher` 建立单调边界映射；相似度达到门槛时按旧分句边界重建新稿片段，恢复稳定角色和导演参数。仅在片段原文未变化时保留人工合成文字，防止修改稿件后朗读旧文字。重应用报告写入 document、任务结果和操作历史。
 
-工程 PUT 在保存导演变化时同步执行成果失效。服务端以旧分句完整导演状态和发生变化的角色 ID 定位受影响片断，从 `process/segment-fragments.json` 移除索引，并删除 `process/segment-cache/<cache-key>.wav`。既有 `renders/<renderId>` 交付目录继续保留，只写入 `.stale.json` 记录过期时间、变化原因和失效缓存键；连续编辑时累积原因和失效键，防止文字恢复后重新暴露已删除片断。`latest-render` 依据导演清单时间选择最新交付，过期标记不会改变交付顺序；接口过滤已失效片断并返回过期状态、时间和原因。页面保留完整音频播放、下载和用户二次确认删除入口。
+工程 PUT 在保存导演变化时同步执行成果失效。服务端以旧分句完整导演状态和发生变化的角色 ID 定位受影响片断；纠音表变化使用与 Python 合成流程相同的启用规则、长词优先顺序和全量替换语义，分别计算每条旧分句在变化前后的实际朗读文字，只把结果不同的分句纳入失效范围。未命中当前分句的纠音变化产生空失效集合。服务端从 `process/segment-fragments.json` 移除受影响索引，并删除 `process/segment-cache/<cache-key>.wav`。既有 `renders/<renderId>` 交付目录继续保留；只有导演清单包含受影响片断的交付才写入 `.stale.json`，记录过期时间、变化原因和失效缓存键。连续编辑时累积原因和失效键，防止文字恢复后重新暴露已删除片断。`latest-render` 依据导演清单时间选择最新交付，过期标记不会改变交付顺序；接口过滤已失效片断并返回过期状态、时间和原因。页面保留完整音频播放、下载和用户二次确认删除入口。

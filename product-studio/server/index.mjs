@@ -171,33 +171,55 @@ function segmentIdentity(row) {
   return JSON.stringify((row || []).slice(1));
 }
 
+function applyPronunciations(text, rules) {
+  let result = String(text || '');
+  const active = [...(rules || [])]
+    .filter(rule => rule?.enabled !== false)
+    .sort((left, right) => String(right?.source || '').length - String(left?.source || '').length);
+  for (const rule of active) {
+    const source = String(rule?.source || '');
+    const replacement = String(rule?.replacement || '');
+    if (source && result.includes(source)) result = result.split(source).join(replacement);
+  }
+  return result;
+}
+
 async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
   if (!changes.length) return { invalidatedCacheKeys: [], staleRenders: 0 };
-  const invalidateAll = changes.includes('稿件文字') || changes.includes('全篇纠音');
+  const invalidateAll = changes.includes('稿件文字');
+  const pronunciationAffectedRows = new Set((current.segments || []).filter(row => (
+    applyPronunciations(row?.[6], current.pronunciations) !== applyPronunciations(row?.[6], next.pronunciations)
+  )));
   const nextRoles = new Map((next.roles || []).map(row => [String(row?.[0] || ''), JSON.stringify(row || [])]));
   const changedRoleIds = new Set((current.roles || [])
     .filter(row => nextRoles.get(String(row?.[0] || '')) !== JSON.stringify(row || []))
     .map(row => String(row?.[0] || '')));
   const nextIdentities = new Set((next.segments || []).map(segmentIdentity));
   const invalidatedRows = (current.segments || []).filter(row => invalidateAll
+    || pronunciationAffectedRows.has(row)
     || changedRoleIds.has(String(row?.[2] || ''))
     || !nextIdentities.has(segmentIdentity(row)));
   const invalidatedSignatures = new Set(invalidatedRows.map(row => `${row[2]}\u0000${row[4]}\u0000${row[5]}\u0000${row[6]}`));
   const invalidatedCacheKeys = new Set();
+  const invalidationReasons = changes.filter(change => change !== '全篇纠音' || pronunciationAffectedRows.size > 0);
   const rendersDir = path.join(projectDir, 'renders');
   let staleRenders = 0;
-  const renderDirs = [];
+  const affectedRenders = [];
   try {
     const renderEntries = await readdir(rendersDir, { withFileTypes: true });
     for (const entry of renderEntries.filter(item => item.isDirectory())) {
       const renderDir = path.join(rendersDir, entry.name);
-      renderDirs.push(renderDir);
       try {
         const manifest = JSON.parse(await readFile(path.join(renderDir, 'director-manifest.json'), 'utf8'));
+        let affected = false;
         for (const item of manifest.segments || []) {
           const signature = `${item.speaker_id}\u0000${item.language}\u0000${item.source_text}\u0000${item.text}`;
-          if (invalidateAll || invalidatedSignatures.has(signature)) invalidatedCacheKeys.add(String(item.cache_key || ''));
+          if (invalidatedSignatures.has(signature)) {
+            affected = true;
+            invalidatedCacheKeys.add(String(item.cache_key || ''));
+          }
         }
+        if (affected) affectedRenders.push(renderDir);
       } catch {}
     }
   } catch {}
@@ -207,7 +229,7 @@ async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
     const index = JSON.parse(await readFile(fragmentIndexPath, 'utf8'));
     for (const [cacheKey, item] of Object.entries(index.fragments || {})) {
       const signature = `${item.speaker_id}\u0000${item.language}\u0000${item.source_text}\u0000${item.text}`;
-      if (invalidateAll || invalidatedSignatures.has(signature)) {
+      if (invalidatedSignatures.has(signature)) {
         invalidatedCacheKeys.add(cacheKey);
         delete index.fragments[cacheKey];
       }
@@ -222,14 +244,14 @@ async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
     }
   }
   const staleAt = new Date().toISOString();
-  for (const renderDir of renderDirs) {
+  for (const renderDir of affectedRenders) {
     const stalePath = path.join(renderDir, '.stale.json');
     let previous = {};
     try { previous = JSON.parse(await readFile(stalePath, 'utf8')); } catch {}
     const stale = {
       stale: true,
       stale_at: staleAt,
-      reasons: [...new Set([...(previous.reasons || []), ...changes])],
+      reasons: [...new Set([...(previous.reasons || []), ...invalidationReasons])],
       invalidated_cache_keys: [...new Set([...(previous.invalidated_cache_keys || []), ...invalidatedCacheKeys])].filter(Boolean),
     };
     await writeFile(stalePath, `${JSON.stringify(stale, null, 2)}\n`, 'utf8');

@@ -195,6 +195,137 @@ test('invalidates changed segment audio and marks complete renders stale without
   await app.close();
 });
 
+test('keeps every generated fragment when a new pronunciation rule matches no segment', async () => {
+  const { root, project } = await fixture();
+  const firstKey = '1'.repeat(64);
+  const secondKey = '2'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-current');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  project.segments.push([2, '正文', 'narrator', '旁白', 'ZH', '第二句', '第二句', '中性叙述', '平静', 0.5, '自然', 300]);
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  const fragments = {
+    [firstKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文' },
+    [secondKey]: { order: 2, speaker_id: 'narrator', language: 'ZH', source_text: '第二句', text: '第二句' },
+  };
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { ...fragments[firstKey], cache_key: firstKey, audio: 'segments/0001.wav' },
+    { ...fragments[secondKey], cache_key: secondKey, audio: 'segments/0002.wav' },
+  ] }));
+  await writeFile(path.join(cacheDir, `${firstKey}.wav`), Buffer.from('first'));
+  await writeFile(path.join(cacheDir, `${secondKey}.wav`), Buffer.from('second'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.pronunciations = [{ source: '未出现词', replacement: '新读法', note: '', enabled: true }];
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [], staleRenders: 0 });
+  await access(path.join(cacheDir, `${firstKey}.wav`));
+  await access(path.join(cacheDir, `${secondKey}.wav`));
+  await assert.rejects(access(path.join(renderDir, '.stale.json')));
+  const index = JSON.parse(await readFile(path.join(projectDir, 'process', 'segment-fragments.json'), 'utf8'));
+  assert.deepEqual(new Set(Object.keys(index.fragments)), new Set([firstKey, secondKey]));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.stale, false);
+  assert.equal(latest.fragments.length, 2);
+  await app.close();
+});
+
+test('invalidates only the fragment whose effective pronunciation changes', async () => {
+  const { root, project } = await fixture();
+  const affectedKey = '3'.repeat(64);
+  const preservedKey = '4'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-current');
+  const unrelatedRenderDir = path.join(projectDir, 'renders', 'render-unrelated');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  project.segments[0][5] = '笹垣出现了';
+  project.segments[0][6] = '笹垣出现了';
+  project.segments.push([2, '正文', 'narrator', '旁白', 'ZH', '第二句', '第二句', '中性叙述', '平静', 0.5, '自然', 300]);
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(path.join(unrelatedRenderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  const fragments = {
+    [affectedKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '笹垣出现了', text: '笹垣出现了' },
+    [preservedKey]: { order: 2, speaker_id: 'narrator', language: 'ZH', source_text: '第二句', text: '第二句' },
+  };
+  await writeFile(path.join(unrelatedRenderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { ...fragments[preservedKey], cache_key: preservedKey, audio: 'segments/0002.wav' },
+  ] }));
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('full'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { ...fragments[affectedKey], cache_key: affectedKey, audio: 'segments/0001.wav' },
+    { ...fragments[preservedKey], cache_key: preservedKey, audio: 'segments/0002.wav' },
+  ] }));
+  await writeFile(path.join(cacheDir, `${affectedKey}.wav`), Buffer.from('affected'));
+  await writeFile(path.join(cacheDir, `${preservedKey}.wav`), Buffer.from('preserved'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.pronunciations = [{ source: '笹垣', replacement: '世元', note: '', enabled: true }];
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [affectedKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(cacheDir, `${affectedKey}.wav`)));
+  await access(path.join(cacheDir, `${preservedKey}.wav`));
+  await access(path.join(renderDir, 'full-audio.wav'));
+  await assert.rejects(access(path.join(unrelatedRenderDir, '.stale.json')));
+  const index = JSON.parse(await readFile(path.join(projectDir, 'process', 'segment-fragments.json'), 'utf8'));
+  assert.deepEqual(Object.keys(index.fragments), [preservedKey]);
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.stale, true);
+  assert.deepEqual(latest.staleReasons, ['全篇纠音']);
+  assert.equal(latest.fragments.length, 1);
+  assert.equal(latest.fragments[0].sourceText, '第二句');
+  await app.close();
+});
+
+test('invalidates only matching fragments when an enabled pronunciation is disabled', async () => {
+  const { root, project } = await fixture();
+  const affectedKey = '5'.repeat(64);
+  const preservedKey = '6'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-current');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  project.segments[0][5] = '近畿地方';
+  project.segments[0][6] = '近畿地方';
+  project.segments.push([2, '正文', 'narrator', '旁白', 'ZH', '近处地方', '近处地方', '中性叙述', '平静', 0.5, '自然', 300]);
+  project.pronunciations = [
+    { source: '近畿', replacement: '近机', note: '', enabled: true },
+    { source: '近', replacement: '进', note: '', enabled: true },
+  ];
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  const fragments = {
+    [affectedKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '近畿地方', text: '近畿地方' },
+    [preservedKey]: { order: 2, speaker_id: 'narrator', language: 'ZH', source_text: '近处地方', text: '近处地方' },
+  };
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { ...fragments[affectedKey], cache_key: affectedKey, audio: 'segments/0001.wav' },
+    { ...fragments[preservedKey], cache_key: preservedKey, audio: 'segments/0002.wav' },
+  ] }));
+  await writeFile(path.join(cacheDir, `${affectedKey}.wav`), Buffer.from('affected'));
+  await writeFile(path.join(cacheDir, `${preservedKey}.wav`), Buffer.from('preserved'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.pronunciations[0].enabled = false;
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [affectedKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(cacheDir, `${affectedKey}.wav`)));
+  await access(path.join(cacheDir, `${preservedKey}.wav`));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.fragments.length, 1);
+  assert.equal(latest.fragments[0].sourceText, '近处地方');
+  await app.close();
+});
+
 test('invalidates fragments for a changed role and preserves latest render ordering', async () => {
   const { root, project } = await fixture();
   const olderKey = 'c'.repeat(64);
