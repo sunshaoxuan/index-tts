@@ -367,6 +367,9 @@ body * { box-shadow: none !important; }
 .studio-table .ant-select, .studio-table .ant-input-number, .cell-control { width: 100%; }
 .segment-editor-toolbar { margin-top: 18px; padding: 14px 0; border-top: 1px dashed var(--cork); border-bottom: 1px dashed var(--cork); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .segment-editor-toolbar > .ant-typography { margin: 0; color: var(--cream); font-size: 11px; }
+.segment-save-state { margin-top: 12px; }
+.segment-save-state.ant-alert-warning { border-color: rgba(255, 190, 92, .72) !important; background: rgba(126, 73, 24, .22) !important; }
+.segment-save-state.ant-alert-success { border-color: rgba(151, 204, 152, .58) !important; background: rgba(35, 89, 56, .18) !important; }
 .director-memory-summary { margin-top: 18px; padding: 13px 16px; display: grid; grid-template-columns: max-content max-content minmax(260px, 1fr); gap: 14px; align-items: center; border: 1px dashed rgba(255, 237, 215, .38); border-radius: 12px; background: rgba(56, 36, 22, .32); }
 .director-memory-summary > span { color: rgba(255, 237, 215, .62); font-size: 9px; text-transform: uppercase; }
 .director-memory-summary > strong { color: var(--cream); font-size: 12px; font-weight: 500; }

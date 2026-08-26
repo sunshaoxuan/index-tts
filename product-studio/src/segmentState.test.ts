@@ -32,6 +32,18 @@ test('returns the original collection when the stable order does not exist', () 
   assert.equal(updateSegmentByOrder(segments, roles, 103, 7, '严肃'), segments);
 });
 
+test('keeps an edited synthesis text in the project segment state', () => {
+  const segments = [segment(21), segment(22)];
+  const edited = '笹垣衔了根和平牌香烟，擦火柴点zhao2，瞄了一下那份报纸，';
+  const updated = updateSegmentByOrder(segments, roles, 21, 6, edited);
+
+  assert.notEqual(updated, segments);
+  assert.notEqual(updated[0], segments[0]);
+  assert.equal(updated[0][5], '原文 21');
+  assert.equal(updated[0][6], edited);
+  assert.equal(updated[1], segments[1]);
+});
+
 test('merges two or more adjacent rows and keeps final pause while resequencing', () => {
   const rows = [segment(1), segment(2), segment(3), segment(4)];
   rows[1][5] = '第二句，'; rows[1][6] = '第二句，'; rows[1][11] = 250;
