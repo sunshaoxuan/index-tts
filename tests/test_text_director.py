@@ -910,6 +910,88 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
     assert second_model.calls == []
     assert second_manifest["reused_segments"] == 1
 
+    forced_model = FakeModel()
+    forced = render_directed_audio(
+        document={"title": "纠音缓存", "content_type": "novel"},
+        role_table=role_rows,
+        segment_table=segment_rows,
+        pronunciation_table=pronunciations,
+        uploaded_files=None,
+        model=forced_model,
+        model_lock=threading.Lock(),
+        output_root=output_root,
+        project_process_dir=process_root,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        force_segment_orders=[1],
+    )
+    forced_manifest = json.loads(Path(forced[2]).read_text(encoding="utf-8"))
+    assert len(forced_model.calls) == 1
+    assert forced_manifest["forced_segment_orders"] == [1]
+    assert forced_manifest["segments"][0]["forced_regeneration"] is True
+
+    fragment_model = FakeModel()
+    fragment_rows = segment_rows + [[2, "第一章", "narrator", "旁白", "ZH", "新增片断。", "新增片断。", "中性叙述", "平静", 0.5, "自然", 100]]
+    fragment_result = render_directed_audio(
+        document={"title": "单句重生成", "content_type": "novel"},
+        role_table=role_rows,
+        segment_table=fragment_rows,
+        pronunciation_table=pronunciations,
+        uploaded_files=None,
+        model=fragment_model,
+        model_lock=threading.Lock(),
+        output_root=output_root,
+        project_process_dir=process_root,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        fragment_only_orders=[2],
+    )
+    assert len(fragment_model.calls) == 1
+    assert fragment_model.calls[0]["text"] == "新增片断。"
+    assert Path(fragment_result[0]).is_file()
+    assert fragment_result[1:3] == ("", "")
+    assert not Path(fragment_result[0]).is_relative_to(output_root)
+    fragment_index = json.loads((process_root / "segment-fragments.json").read_text(encoding="utf-8"))
+    assert next(iter(fragment_index["fragments"].values()))["order"] == 2
+
+    assembled = render_directed_audio(
+        document={"title": "纠音缓存", "content_type": "novel"},
+        role_table=role_rows,
+        segment_table=segment_rows,
+        pronunciation_table=pronunciations,
+        uploaded_files=None,
+        model=object(),
+        model_lock=threading.Lock(),
+        output_root=output_root,
+        project_process_dir=process_root,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        cache_only=True,
+    )
+    assembled_manifest = json.loads(Path(assembled[2]).read_text(encoding="utf-8"))
+    assert assembled_manifest["cache_only"] is True
+    assert assembled_manifest["reused_segments"] == 1
+
+
+def test_cache_only_render_reports_the_missing_segment_order(tmp_path):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+
+    with pytest.raises(DirectorError, match="第 1 条分句缺少可串接"):
+        render_directed_audio(
+            document={"title": "缺失缓存", "content_type": "novel"},
+            role_table=[_role_row()],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.5, "自然", 0]],
+            uploaded_files=None,
+            model=object(),
+            model_lock=threading.Lock(),
+            output_root=tmp_path / "outputs",
+            project_process_dir=tmp_path / "process",
+            demo_dir=demo_dir,
+            demo_voices={"voice_05.wav": "旁白"},
+            cache_only=True,
+        )
+
 
 def test_tables_reject_unknown_role_reference():
     role_rows = [_role_row()]

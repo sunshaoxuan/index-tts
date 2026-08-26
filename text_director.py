@@ -1706,11 +1706,18 @@ def render_directed_audio(
     demo_voices: dict[str, str],
     pronunciation_table: Any | None = None,
     project_process_dir: Path | None = None,
+    force_segment_orders: Iterable[int] | None = None,
+    fragment_only_orders: Iterable[int] | None = None,
+    cache_only: bool = False,
     progress: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
 ) -> tuple[str, str, str, str]:
     roles, segments = tables_to_script(role_table, segment_table)
     pronunciation_rules = normalize_pronunciations(pronunciation_table)
+    forced_orders = {int(order) for order in (force_segment_orders or [])}
+    fragment_orders = {int(order) for order in (fragment_only_orders or [])}
+    if fragment_orders:
+        forced_orders.update(fragment_orders)
     catalog = _build_voice_catalog(demo_dir, demo_voices, uploaded_files, generated_files)
     for role in roles.values():
         if role["voice_id"] not in catalog:
@@ -1736,11 +1743,15 @@ def render_directed_audio(
     voice_digests = {voice_id: _file_digest(path) for voice_id, path in catalog.items() if voice_id in {role["voice_id"] for role in roles.values()}}
     try:
         with model_lock:
-            for index, segment in enumerate(segments, start=1):
+            selected_segments = [segment for segment in segments if not fragment_orders or segment["order"] in fragment_orders]
+            if fragment_orders and len(selected_segments) != len(fragment_orders):
+                missing = sorted(fragment_orders - {segment["order"] for segment in selected_segments})
+                raise DirectorError(f"待重新生成的分句不存在：{missing}")
+            for index, segment in enumerate(selected_segments, start=1):
                 if cancel_event is not None and cancel_event.is_set():
                     raise DirectorCancelled("音频生成已取消。")
                 role = roles[segment["speaker_id"]]
-                _notify(progress, (index - 1) / len(segments), f"IndexTTS 正在生成 {index}/{len(segments)}｜{role['name']}")
+                _notify(progress, (index - 1) / len(selected_segments), f"IndexTTS 正在生成 {index}/{len(selected_segments)}｜{role['name']}")
                 filename = f"{index:04d}-{_safe_name(role['id'], 'track')}.wav"
                 output_path = segment_dir / filename
                 emotion_prompt = (
@@ -1761,11 +1772,14 @@ def render_directed_audio(
                     json.dumps(cache_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest()
                 cache_path = cache_dir / f"{cache_key}.wav" if cache_dir else None
-                if cache_path and cache_path.is_file():
+                cache_hit = bool(cache_path and cache_path.is_file())
+                if cache_hit and segment["order"] not in forced_orders:
                     shutil.copy2(cache_path, output_path)
                     result = str(output_path)
                     reused_segments += 1
                 else:
+                    if cache_only:
+                        raise DirectorError(f"第 {segment['order']} 条分句缺少可串接的已生成片断，请先单独生成该分句。")
                     result = model.infer(
                         spk_audio_prompt=str(catalog[role["voice_id"]]),
                         text=effective_text,
@@ -1783,7 +1797,7 @@ def render_directed_audio(
                     )
                 if not result or not output_path.is_file():
                     raise DirectorError(f"第 {index} 条语音没有生成有效 WAV。")
-                if cache_path and not cache_path.is_file():
+                if cache_path and (not cache_path.is_file() or segment["order"] in forced_orders):
                     shutil.copy2(output_path, cache_path)
                 rendered.append(
                     {
@@ -1794,10 +1808,36 @@ def render_directed_audio(
                         "applied_pronunciations": applied_rules,
                         "duration_factor": duration_factor,
                         "cache_key": cache_key,
+                        "cache_reused": cache_hit and segment["order"] not in forced_orders,
+                        "forced_regeneration": segment["order"] in forced_orders,
                     }
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise DirectorCancelled("音频生成已取消。")
+
+        if fragment_orders:
+            if cache_dir is None:
+                raise DirectorError("单句重生成需要工程片断缓存目录。")
+            index_path = Path(project_process_dir) / "segment-fragments.json"
+            try:
+                fragment_index = json.loads(index_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                fragment_index = {"version": 1, "fragments": {}}
+            entries = fragment_index.setdefault("fragments", {})
+            for item in rendered:
+                entries[item["cache_key"]] = {
+                    **{key: value for key, value in item.items() if key not in {"audio_path", "role"}},
+                    "audio_file": f"{item['cache_key']}.wav",
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }
+            temporary = index_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(fragment_index, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(index_path)
+            status = f"已只重新生成分句 {', '.join(str(order) for order in sorted(fragment_orders))}，其他分句未执行推理。"
+            cache_result = str(cache_dir / f"{rendered[0]['cache_key']}.wav")
+            shutil.rmtree(run_dir, ignore_errors=True)
+            _notify(progress, 1.0, status)
+            return cache_result, "", "", status
 
         master_path = run_dir / "full-audio.wav"
         concatenate_wav_segments(rendered, master_path)
@@ -1831,6 +1871,8 @@ def render_directed_audio(
             "generated_role_tracks": generated_track_count,
             "pronunciations": pronunciation_rules,
             "reused_segments": reused_segments,
+            "cache_only": cache_only,
+            "forced_segment_orders": sorted(forced_orders),
             "chapters": chapter_outputs,
             "segments": [
                 {

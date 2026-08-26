@@ -48,6 +48,8 @@ def test_project_round_trip_keeps_roles_segments_pronunciations_and_chapters(tmp
         segments=segments,
         pronunciations=[["重庆银行", "重 庆 银行", "专名", "是"]],
         voice_files=[],
+        director_history=[{"operation_id": "history-1"}],
+        director_memory={"source_text": source, "roles": roles, "segments": segments, "pronunciations": []},
     )
     loaded = store.load(project["project_id"])
 
@@ -56,6 +58,8 @@ def test_project_round_trip_keeps_roles_segments_pronunciations_and_chapters(tmp
     assert loaded["segments"] == segments
     assert len(loaded["chapters"]) == 2
     assert loaded["pronunciations"][0]["replacement"] == "重 庆 银行"
+    assert loaded["director_history"][0]["operation_id"] == "history-1"
+    assert loaded["director_memory"]["segments"] == segments
 
 
 def test_voice_registration_is_idempotent_and_keeps_generation_conditions(tmp_path):

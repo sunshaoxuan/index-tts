@@ -12,6 +12,8 @@ export interface ProjectPayload {
   pronunciations: Array<{ source: string; replacement: string; note: string; enabled: boolean }>;
   chapters?: Array<{ index: number; title: string; start: number; end: number }>;
   document?: Record<string, unknown>;
+  director_history?: Array<{ operation_id: string; recorded_at: string; actor: string; changes: string[]; memory_report?: Record<string, unknown> }>;
+  director_memory?: { source_text: string; roles: RoleRow[]; segments: SegmentRow[]; pronunciations: ProjectPayload['pronunciations'] };
 }
 
 export interface Presets {

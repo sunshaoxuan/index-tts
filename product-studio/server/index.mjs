@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -128,15 +128,146 @@ function validateProject(payload, id) {
   return payload;
 }
 
+function directorSnapshot(payload) {
+  return {
+    source_text: String(payload.source_text || ''),
+    roles: structuredClone(payload.roles || []),
+    segments: structuredClone(payload.segments || []),
+    pronunciations: structuredClone(payload.pronunciations || []),
+  };
+}
+
+function directorChangeKinds(before, after) {
+  const kinds = [];
+  if (before.source_text !== after.source_text) kinds.push('稿件文字');
+  if (JSON.stringify(before.roles) !== JSON.stringify(after.roles)) kinds.push('角色与音色');
+  if (JSON.stringify(before.segments.map(row => row.slice(0, 6))) !== JSON.stringify(after.segments.map(row => row.slice(0, 6)))) kinds.push('断句与角色分配');
+  if (JSON.stringify(before.segments.map(row => row.slice(6))) !== JSON.stringify(after.segments.map(row => row.slice(6)))) kinds.push('合成文字与导演参数');
+  if (JSON.stringify(before.pronunciations) !== JSON.stringify(after.pronunciations)) kinds.push('全篇纠音');
+  return kinds;
+}
+
+function preserveDirectorOperations(current, next) {
+  const before = directorSnapshot(current);
+  const after = directorSnapshot(next);
+  const changes = directorChangeKinds(before, after);
+  const history = Array.isArray(current.director_history) ? structuredClone(current.director_history) : [];
+  if (changes.length) {
+    history.push({
+      operation_id: randomUUID(),
+      recorded_at: new Date().toISOString(),
+      actor: 'studio-user',
+      changes,
+      source_digest: createHash('sha256').update(after.source_text).digest('hex'),
+      snapshot: after,
+    });
+  }
+  next.director_history = history;
+  next.director_memory = after;
+  return next;
+}
+
+function segmentIdentity(row) {
+  return JSON.stringify((row || []).slice(1));
+}
+
+async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
+  if (!changes.length) return { invalidatedCacheKeys: [], staleRenders: 0 };
+  const invalidateAll = changes.includes('稿件文字') || changes.includes('全篇纠音');
+  const nextRoles = new Map((next.roles || []).map(row => [String(row?.[0] || ''), JSON.stringify(row || [])]));
+  const changedRoleIds = new Set((current.roles || [])
+    .filter(row => nextRoles.get(String(row?.[0] || '')) !== JSON.stringify(row || []))
+    .map(row => String(row?.[0] || '')));
+  const nextIdentities = new Set((next.segments || []).map(segmentIdentity));
+  const invalidatedRows = (current.segments || []).filter(row => invalidateAll
+    || changedRoleIds.has(String(row?.[2] || ''))
+    || !nextIdentities.has(segmentIdentity(row)));
+  const invalidatedSignatures = new Set(invalidatedRows.map(row => `${row[2]}\u0000${row[4]}\u0000${row[5]}\u0000${row[6]}`));
+  const invalidatedCacheKeys = new Set();
+  const rendersDir = path.join(projectDir, 'renders');
+  let staleRenders = 0;
+  const renderDirs = [];
+  try {
+    const renderEntries = await readdir(rendersDir, { withFileTypes: true });
+    for (const entry of renderEntries.filter(item => item.isDirectory())) {
+      const renderDir = path.join(rendersDir, entry.name);
+      renderDirs.push(renderDir);
+      try {
+        const manifest = JSON.parse(await readFile(path.join(renderDir, 'director-manifest.json'), 'utf8'));
+        for (const item of manifest.segments || []) {
+          const signature = `${item.speaker_id}\u0000${item.language}\u0000${item.source_text}\u0000${item.text}`;
+          if (invalidateAll || invalidatedSignatures.has(signature)) invalidatedCacheKeys.add(String(item.cache_key || ''));
+        }
+      } catch {}
+    }
+  } catch {}
+
+  const fragmentIndexPath = path.join(projectDir, 'process', 'segment-fragments.json');
+  try {
+    const index = JSON.parse(await readFile(fragmentIndexPath, 'utf8'));
+    for (const [cacheKey, item] of Object.entries(index.fragments || {})) {
+      const signature = `${item.speaker_id}\u0000${item.language}\u0000${item.source_text}\u0000${item.text}`;
+      if (invalidateAll || invalidatedSignatures.has(signature)) {
+        invalidatedCacheKeys.add(cacheKey);
+        delete index.fragments[cacheKey];
+      }
+    }
+    const temporary = `${fragmentIndexPath}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    await rename(temporary, fragmentIndexPath);
+  } catch {}
+  for (const cacheKey of invalidatedCacheKeys) {
+    if (/^[a-f0-9]{64}$/.test(cacheKey)) {
+      try { await unlink(path.join(projectDir, 'process', 'segment-cache', `${cacheKey}.wav`)); } catch {}
+    }
+  }
+  const staleAt = new Date().toISOString();
+  for (const renderDir of renderDirs) {
+    const stalePath = path.join(renderDir, '.stale.json');
+    let previous = {};
+    try { previous = JSON.parse(await readFile(stalePath, 'utf8')); } catch {}
+    const stale = {
+      stale: true,
+      stale_at: staleAt,
+      reasons: [...new Set([...(previous.reasons || []), ...changes])],
+      invalidated_cache_keys: [...new Set([...(previous.invalidated_cache_keys || []), ...invalidatedCacheKeys])].filter(Boolean),
+    };
+    await writeFile(stalePath, `${JSON.stringify(stale, null, 2)}\n`, 'utf8');
+    staleRenders += 1;
+  }
+  return { invalidatedCacheKeys: [...invalidatedCacheKeys].filter(Boolean), staleRenders };
+}
+
 async function latestRender(projectDir) {
   const rendersDir = path.join(projectDir, 'renders');
   try {
     const entries = await readdir(rendersDir, { withFileTypes: true });
-    const candidates = await Promise.all(entries.filter(item => item.isDirectory()).map(async item => ({
-      name: item.name, time: (await stat(path.join(rendersDir, item.name))).mtimeMs,
-    })));
+    const candidates = (await Promise.all(entries.filter(item => item.isDirectory()).map(async item => {
+      const renderDir = path.join(rendersDir, item.name);
+      try { return { name: item.name, time: (await stat(path.join(renderDir, 'director-manifest.json'))).mtimeMs }; }
+      catch { return undefined; }
+    }))).filter(Boolean);
     return candidates.sort((a, b) => b.time - a.time)[0]?.name;
   } catch { return undefined; }
+}
+
+async function voiceRuntimeHealth(repoRoot) {
+  try {
+    const state = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', 'voice-design-runtime', 'state.json'), 'utf8'));
+    let processAlive = false;
+    if (Number.isSafeInteger(state.pid) && state.pid > 0) {
+      try { process.kill(state.pid, 0); processAlive = true; } catch {}
+    }
+    return {
+      processAlive,
+      modelLoaded: processAlive && Boolean(state.model_loaded),
+      phase: processAlive ? String(state.phase || 'ready') : 'stopped',
+      pid: processAlive ? state.pid : undefined,
+      modelDir: processAlive && state.model_dir ? String(state.model_dir) : undefined,
+    };
+  } catch {
+    return { processAlive: false, modelLoaded: false, phase: 'cold' };
+  }
 }
 
 export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}) {
@@ -173,7 +304,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
   } catch {}
   await app.register(fastifyStatic, { root: distRoot, wildcard: false });
 
-  app.get('/api/health', async () => ({ status: 'ok', runtime: process.version, architecture: 'react-antd-node-python' }));
+  app.get('/api/health', async () => ({ status: 'ok', runtime: process.version, architecture: 'react-antd-node-python', voiceModel: await voiceRuntimeHealth(repoRoot) }));
   app.get('/api/active-job', async () => {
     if (!activeJob) return { available: false };
     try {
@@ -240,7 +371,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       const dir = path.join(projectRoot, id);
       await Promise.all(['voices', 'process', 'renders', 'analysis'].map(name => mkdir(path.join(dir, name), { recursive: true })));
       const now = new Date().toISOString();
-      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: [], segments: [], pronunciations: [], voice_files: [], created_at: now, updated_at: now };
+      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: [], segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: [], segments: [], pronunciations: [] }, voice_files: [], created_at: now, updated_at: now };
       await writeFile(path.join(dir, 'project.json'), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       return reply.code(201).send(payload);
     } catch (error) { return reply.code(400).send({ error: error.message }); }
@@ -259,7 +390,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       }
       const currentPath = path.join(projectRoot, id, 'project.json');
       await access(currentPath);
+      const current = JSON.parse(await readFile(currentPath, 'utf8'));
       const payload = validateProject(request.body, id);
+      const directorChanges = directorChangeKinds(directorSnapshot(current), directorSnapshot(payload));
+      preserveDirectorOperations(current, payload);
+      payload.artifact_invalidation = await invalidateDirectorArtifacts(path.join(projectRoot, id), current, payload, directorChanges);
       payload.updated_at = new Date().toISOString();
       const temporary = `${currentPath}.tmp`;
       await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -272,7 +407,31 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     const name = await latestRender(path.join(projectRoot, id));
     if (!name) return { available: false };
     const base = `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}`;
-    return { available: true, renderId: name, audio: `${base}/audio`, package: `${base}/package`, manifest: `${base}/manifest` };
+    let fragments = [];
+    let stale;
+    try { stale = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, '.stale.json'), 'utf8')); } catch {}
+    try {
+      const manifest = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, 'director-manifest.json'), 'utf8'));
+      const invalidated = new Set(stale?.invalidated_cache_keys || []);
+      fragments = (manifest.segments || []).filter(item => !invalidated.has(item.cache_key)).map(item => ({
+        order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
+        synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
+        appliedPronunciations: item.applied_pronunciations || [], cacheReused: Boolean(item.cache_reused),
+        forcedRegeneration: Boolean(item.forced_regeneration), audio: `${base}/segments/${encodeURIComponent(path.basename(item.audio || ''))}`,
+      }));
+    } catch {}
+    try {
+      const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
+      const draftFragments = Object.entries(draft.fragments || {}).map(([cacheKey, item]) => ({
+        order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
+        synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
+        appliedPronunciations: item.applied_pronunciations || [], cacheReused: false, forcedRegeneration: true,
+        audio: `/api/projects/${encodeURIComponent(id)}/cached-fragments/${cacheKey}`,
+      }));
+      const draftKeys = new Set(draftFragments.map(item => `${item.sourceText}\u0000${item.synthesisText}`));
+      fragments = [...fragments.filter(item => !draftKeys.has(`${item.sourceText}\u0000${item.synthesisText}`)), ...draftFragments];
+    } catch {}
+    return { available: true, renderId: name, audio: `${base}/audio`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
   });
   app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {
     try {
@@ -295,7 +454,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       return reply.code(statusCode).send({ error: error.code === 'ENOENT' ? '交付记录不存在' : error.message });
     }
   });
-  async function startJob(projectId, kind) {
+  async function startJob(projectId, kind, options = {}) {
     if (activeJob) {
       const error = new Error(`任务 ${activeJob.jobId} 正在运行，请等待完成后再启动新任务`);
       error.statusCode = 409;
@@ -312,7 +471,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       const status = path.join(dir, 'status.json');
       const result = path.join(dir, 'result.json');
       const worker = kind === 'analyze' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
-      const payload = { root: repoRoot, project_id: id };
+      const payload = { root: repoRoot, project_id: id, ...options };
       if (kind === 'analyze') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
       await writeFile(input, JSON.stringify(payload), 'utf8');
       await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
@@ -367,6 +526,20 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     try { return reply.code(202).send(await startJob(request.params.id, 'render')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.post('/api/projects/:id/assemble', async (request, reply) => {
+    try { return reply.code(202).send(await startJob(request.params.id, 'render', { cache_only: true })); }
+    catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/segments/:order/regenerate', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const order = Number(request.params.order);
+      if (!Number.isSafeInteger(order) || order < 1) throw new Error('分句序号无效');
+      const project = JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8'));
+      if (!project.segments?.some(row => Number(row[0]) === order)) throw new Error(`分句 ${order} 不存在`);
+      return reply.code(202).send(await startJob(id, 'render', { fragment_only_orders: [order] }));
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
   app.post('/api/projects/:id/voices', async (request, reply) => {
     try { return reply.code(202).send(await startJob(request.params.id, 'voice')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
@@ -395,6 +568,28 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       return reply.send(createReadStream(file));
     }
     catch { return reply.code(404).send({ error: '交付文件不存在' }); }
+  });
+  app.get('/api/projects/:id/render-file/:render/segments/:file', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const render = safeProjectId(request.params.render);
+      const fileName = safeProjectId(request.params.file);
+      const file = path.join(projectRoot, id, 'renders', render, 'segments', fileName);
+      const info = await stat(file);
+      reply.type('audio/wav').header('Content-Length', info.size).header('Accept-Ranges', 'bytes');
+      return reply.send(createReadStream(file));
+    } catch { return reply.code(404).send({ error: '分句音频不存在' }); }
+  });
+  app.get('/api/projects/:id/cached-fragments/:cacheKey', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const cacheKey = String(request.params.cacheKey || '');
+      if (!/^[a-f0-9]{64}$/.test(cacheKey)) throw new Error('片断缓存标识无效');
+      const file = path.join(projectRoot, id, 'process', 'segment-cache', `${cacheKey}.wav`);
+      const info = await stat(file);
+      reply.type('audio/wav').header('Content-Length', info.size).header('Accept-Ranges', 'bytes');
+      return reply.send(createReadStream(file));
+    } catch { return reply.code(404).send({ error: '工程片断缓存不存在' }); }
   });
   app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: '接口不存在' }) : reply.sendFile('index.html'));
   return app;

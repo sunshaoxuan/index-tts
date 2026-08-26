@@ -77,17 +77,28 @@ def main() -> int:
     root = Path(request["root"]).resolve()
     status_path = Path(args.status).resolve()
     result_path = Path(args.result).resolve()
-    torch, IndexTTS2, NovelProjectStore, pronunciation_rows, render_directed_audio = prepare_render_environment(root, status_path)
+    cache_only = bool(request.get("cache_only"))
+    if cache_only:
+        from novel_project import NovelProjectStore, pronunciation_rows
+        from text_director import render_directed_audio
+
+        torch = IndexTTS2 = None
+        write_json(status_path, {"phase": "assembling", "fraction": 0.01, "message": "正在校验并串接全部已生成片断"})
+    else:
+        torch, IndexTTS2, NovelProjectStore, pronunciation_rows, render_directed_audio = prepare_render_environment(root, status_path)
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
     model_dir = root / "checkpoints"
-    write_json(status_path, {"phase": "loading", "fraction": 0.02, "message": "正在加载 IndexTTS 2.5"})
-    model = IndexTTS2(
-        cfg_path=str(model_dir / "config.yaml"), model_dir=str(model_dir),
-        use_bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
-        use_cuda_kernel=False, use_deepspeed=False, use_accel=False,
-        use_torch_compile=False, use_qwen_emo=True,
-    )
+    if cache_only:
+        model = object()
+    else:
+        write_json(status_path, {"phase": "loading", "fraction": 0.02, "message": "正在加载 IndexTTS 2.5"})
+        model = IndexTTS2(
+            cfg_path=str(model_dir / "config.yaml"), model_dir=str(model_dir),
+            use_bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+            use_cuda_kernel=False, use_deepspeed=False, use_accel=False,
+            use_torch_compile=False, use_qwen_emo=True,
+        )
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "rendering", "fraction": fraction, "message": desc or description})
     master, package, manifest, summary = render_directed_audio(
@@ -97,13 +108,20 @@ def main() -> int:
         uploaded_files=project.get("voice_files") or [], model=model, model_lock=threading.Lock(),
         output_root=store.project_dir(project["project_id"]) / "renders",
         project_process_dir=store.project_dir(project["project_id"]) / "process",
+        force_segment_orders=request.get("force_segment_orders") or [],
+        fragment_only_orders=request.get("fragment_only_orders") or [],
+        cache_only=cache_only,
         demo_dir=root / "examples",
         demo_voices={path.name: path.name for path in (root / "examples").glob("voice_*.wav")},
         progress=progress,
     )
     result = {"master": master, "package": package, "manifest": manifest, "summary": summary}
     write_json(result_path, result)
-    write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": "完整音频与分轨交付已经生成"})
+    if request.get("fragment_only_orders"):
+        complete_message = f"分句 {request['fragment_only_orders'][0]} 已重新生成，其他分句保持不变"
+    else:
+        complete_message = "已使用全部已有片断串接完整音频" if cache_only else "完整音频与分轨交付已经生成"
+    write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": complete_message})
     return 0
 
 

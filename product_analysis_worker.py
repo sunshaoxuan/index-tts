@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from novel_project import NovelProjectStore, pronunciation_rows
+from director_memory import reapply_director_memory
 from text_director import DirectorConfig, OllamaTextDirector, document_to_tables
 
 
@@ -34,17 +37,33 @@ def main() -> int:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
     roles, segments = document_to_tables(document, [path.name for path in (root / "examples").glob("voice_*.wav")])
+    roles, segments, memory_report = reapply_director_memory(
+        "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
+    )
+    document["director_memory_reapply"] = memory_report
     write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
     document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
+    history = list(project.get("director_history") or [])
+    history.append({
+        "operation_id": str(uuid.uuid4()), "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "actor": "ai-analysis-memory", "changes": ["AI 全文分析", "历史导演操作重应用"],
+        "memory_report": memory_report,
+    })
+    memory_snapshot = {
+        "source_text": project["source_text"], "roles": roles, "segments": segments,
+        "pronunciations": project.get("pronunciations") or [],
+    }
     store.save(
         project["project_id"], title=project["title"], content_type=document["content_type"],
         source_text=project["source_text"], guidance=project.get("guidance", ""), document=document,
         roles=roles, segments=segments, pronunciations=pronunciation_rows(project.get("pronunciations")),
         voice_files=project.get("voice_files") or [],
+        director_history=history, director_memory=memory_snapshot,
     )
-    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"]}
+    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report}
     write_json(Path(args.result).resolve(), result)
-    write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": "AI 文本导演完成"})
+    memory_message = f"，恢复历史分句 {memory_report.get('restored_segments', 0)} 条" if memory_report.get("applied") else ""
+    write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": f"AI 文本导演完成{memory_message}"})
     return 0
 
 

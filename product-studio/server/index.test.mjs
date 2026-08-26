@@ -23,7 +23,9 @@ async function fixture() {
 test('serves presets and project data', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });
-  assert.equal((await app.inject('/api/health')).statusCode, 200);
+  const health = await app.inject('/api/health');
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(health.json().voiceModel, { processAlive: false, modelLoaded: false, phase: 'cold' });
   const presetResponse = await app.inject('/api/presets');
   assert.ok(presetResponse.json().emotions.includes('平静'));
   assert.equal(presetResponse.json().voiceStylePrompts['低沉厚实'], '低沉厚实，声音有支撑，气息稳定');
@@ -37,17 +39,33 @@ test('serves the latest audio with stable media headers', async () => {
   const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-001');
   await mkdir(renderDir, { recursive: true });
   await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('RIFFfake'));
+  await mkdir(path.join(renderDir, 'segments'));
+  await writeFile(path.join(renderDir, 'segments', '0001-narrator.wav'), Buffer.from('RIFFsegment'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [{ order: 1, speaker_name: '旁白', source_text: '原文', text: '原文', effective_text: '纠音原文', applied_pronunciations: ['原文'], audio: 'segments/0001-narrator.wav' }] }));
+  const cacheKey = 'a'.repeat(64);
+  const processDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'process');
+  await mkdir(path.join(processDir, 'segment-cache'), { recursive: true });
+  await writeFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), Buffer.from('RIFFdraft'));
+  await writeFile(path.join(processDir, 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [cacheKey]: { order: 2, speaker_name: '旁白', source_text: '新增', text: '新增', effective_text: '新 增', applied_pronunciations: ['新增'] } } }));
   const app = await buildApp({ repoRoot: root });
   const latest = await app.inject('/api/projects/demo/latest-render');
   assert.equal(latest.statusCode, 200);
   assert.equal(latest.json().available, true);
   assert.equal(latest.json().renderId, 'render-001');
+  assert.equal(latest.json().fragments.length, 2);
+  assert.equal(latest.json().fragments[0].effectiveText, '纠音原文');
   const audio = await app.inject(latest.json().audio);
   assert.equal(audio.statusCode, 200);
   assert.match(audio.headers['content-type'], /^audio\/wav/);
   assert.equal(audio.headers['content-length'], '8');
   assert.equal(audio.headers['accept-ranges'], 'bytes');
   assert.deepEqual(audio.rawPayload, Buffer.from('RIFFfake'));
+  const fragment = await app.inject(latest.json().fragments[0].audio);
+  assert.equal(fragment.statusCode, 200);
+  assert.deepEqual(fragment.rawPayload, Buffer.from('RIFFsegment'));
+  const draftFragment = await app.inject(latest.json().fragments.find(item => item.order === 2).audio);
+  assert.equal(draftFragment.statusCode, 200);
+  assert.deepEqual(draftFragment.rawPayload, Buffer.from('RIFFdraft'));
   await app.close();
 });
 
@@ -58,9 +76,11 @@ test('deletes one confirmed render and keeps the project available for later ren
   const latest = path.join(rendersDir, 'render-002');
   await mkdir(older, { recursive: true });
   await writeFile(path.join(older, 'full-audio.wav'), Buffer.from('older'));
+  await writeFile(path.join(older, 'director-manifest.json'), JSON.stringify({ segments: [] }));
   await new Promise(resolve => setTimeout(resolve, 10));
   await mkdir(latest, { recursive: true });
   await writeFile(path.join(latest, 'full-audio.wav'), Buffer.from('latest'));
+  await writeFile(path.join(latest, 'director-manifest.json'), JSON.stringify({ segments: [] }));
   const app = await buildApp({ repoRoot: root });
 
   assert.equal((await app.inject('/api/projects/demo/latest-render')).json().renderId, 'render-002');
@@ -133,6 +153,103 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   assert.equal(saved.statusCode, 200);
   assert.equal(saved.json().chapters[0].title, '第一章');
   assert.equal(saved.json().pronunciations[0].replacement, '重 庆 银行');
+  assert.equal(saved.json().director_history.length, 1);
+  assert.deepEqual(saved.json().director_history[0].changes, ['全篇纠音']);
+  assert.equal(saved.json().director_memory.pronunciations[0].replacement, '重 庆 银行');
+  await app.close();
+});
+
+test('invalidates changed segment audio and marks complete renders stale without deleting them', async () => {
+  const { root, project } = await fixture();
+  const cacheKey = 'b'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-stale');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('full'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [{ order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文', cache_key: cacheKey, audio: 'segments/0001.wav' }] }));
+  await writeFile(path.join(cacheDir, `${cacheKey}.wav`), Buffer.from('segment'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [cacheKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文', audio_file: `${cacheKey}.wav` } } }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.segments[0][6] = '编辑后的朗读文字';
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [cacheKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(cacheDir, `${cacheKey}.wav`)));
+  await access(path.join(renderDir, 'full-audio.wav'));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.stale, true);
+  assert.deepEqual(latest.staleReasons, ['合成文字与导演参数']);
+  assert.deepEqual(latest.fragments, []);
+
+  project.segments[0][6] = '原文';
+  const restored = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(restored.statusCode, 200);
+  const latestAfterRestore = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latestAfterRestore.stale, true);
+  assert.deepEqual(latestAfterRestore.fragments, []);
+  const staleRecord = JSON.parse(await readFile(path.join(renderDir, '.stale.json'), 'utf8'));
+  assert.deepEqual(staleRecord.invalidated_cache_keys, [cacheKey]);
+  await app.close();
+});
+
+test('invalidates fragments for a changed role and preserves latest render ordering', async () => {
+  const { root, project } = await fixture();
+  const olderKey = 'c'.repeat(64);
+  const latestKey = 'd'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  const olderDir = path.join(projectDir, 'renders', 'render-older');
+  const latestDir = path.join(projectDir, 'renders', 'render-latest');
+  await mkdir(path.join(olderDir, 'segments'), { recursive: true });
+  await mkdir(path.join(latestDir, 'segments'), { recursive: true });
+  await mkdir(path.join(projectDir, 'renders', 'render-incomplete'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  const manifest = cacheKey => ({ segments: [{ order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文', cache_key: cacheKey, audio: 'segments/0001.wav' }] });
+  await writeFile(path.join(olderDir, 'director-manifest.json'), JSON.stringify(manifest(olderKey)));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await writeFile(path.join(latestDir, 'director-manifest.json'), JSON.stringify(manifest(latestKey)));
+  await writeFile(path.join(latestDir, 'full-audio.wav'), Buffer.from('latest-full'));
+  await writeFile(path.join(cacheDir, `${latestKey}.wav`), Buffer.from('segment'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [latestKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文' } } }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.roles[0][4] = '低沉男声';
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(new Set(saved.json().artifact_invalidation.invalidatedCacheKeys), new Set([olderKey, latestKey]));
+  await assert.rejects(access(path.join(cacheDir, `${latestKey}.wav`)));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.renderId, 'render-latest');
+  assert.equal(latest.stale, true);
+  assert.deepEqual(latest.fragments, []);
+  await access(path.join(latestDir, 'full-audio.wav'));
+  await app.close();
+});
+
+test('starts strict assembly and one forced segment regeneration with worker options', async () => {
+  const { root } = await fixture();
+  const launches = [];
+  let child;
+  const app = await buildApp({ repoRoot: root, launchWorker: details => {
+    launches.push(details);
+    child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); return child;
+  } });
+
+  const assembled = await app.inject({ method: 'POST', url: '/api/projects/demo/assemble', payload: {} });
+  assert.equal(assembled.statusCode, 202);
+  let input = JSON.parse(await readFile(launches[0].args[2], 'utf8'));
+  assert.equal(input.cache_only, true);
+  child.emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+
+  const regenerated = await app.inject({ method: 'POST', url: '/api/projects/demo/segments/1/regenerate', payload: {} });
+  assert.equal(regenerated.statusCode, 202);
+  input = JSON.parse(await readFile(launches[1].args[2], 'utf8'));
+  assert.deepEqual(input.fragment_only_orders, [1]);
+  child.emit('close', 0);
   await app.close();
 });
 

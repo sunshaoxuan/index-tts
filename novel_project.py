@@ -150,6 +150,8 @@ class NovelProjectStore:
             "roles": [],
             "segments": [],
             "pronunciations": [],
+            "director_history": [],
+            "director_memory": {"source_text": str(source_text or ""), "roles": [], "segments": [], "pronunciations": []},
             "voice_files": [],
             "created_at": now,
             "updated_at": now,
@@ -190,6 +192,8 @@ class NovelProjectStore:
         segments: list[list[Any]],
         pronunciations: Any,
         voice_files: Iterable[str] | None,
+        director_history: list[dict[str, Any]] | None = None,
+        director_memory: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self.load(project_id)
         payload.update(
@@ -207,6 +211,10 @@ class NovelProjectStore:
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }
         )
+        if director_history is not None:
+            payload["director_history"] = director_history
+        if director_memory is not None:
+            payload["director_memory"] = director_memory
         self._write(self.project_dir(project_id) / "project.json", payload)
         return payload
 
