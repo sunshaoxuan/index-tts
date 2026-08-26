@@ -93,3 +93,5 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 完整交付按 `renders/<renderId>` 保存为独立版本。`GET /api/projects/:id/latest-render` 返回最近一次交付标识和下载入口。`DELETE /api/projects/:id/renders/:renderId` 在无活动任务时删除用户确认的单个交付目录，并以工程目录和合法标识校验限制目标范围。删除后前端重新查询最近一次交付，较早版本存在时立即回退显示。工程 JSON、永久音色库和其他交付目录不在删除范围内。
 
 交付页把 `latest-render` 返回的完整音频、分轨包和导演清单路径同时用于下载按钮与成果物链接。成果物链接使用当前页面 origin 转为绝对 URL，页面显示该 URL 并提供复制操作；打开链接仍访问同一个受工程 ID 与 render ID 约束的文件 API。
+
+分句导演表为实际 `.ant-table-body` 增加双轴 `overscroll-behavior: contain`。页面级非 passive wheel 边界保护只匹配 `.segment-table`，在纵向或横向边界阻止默认滚动并停止事件传播；表格仍有可用滚动范围时保留原生滚动。

@@ -349,6 +349,7 @@ body * { box-shadow: none !important; }
 
 .studio-table { margin-top: 18px; border-top: 1px dashed var(--cork); }
 .ant-table, .ant-table-container, .ant-table-content, .ant-table-body { background: transparent !important; }
+.segment-table .ant-table-container, .segment-table .ant-table-body { overscroll-behavior: contain; }
 .studio-table .ant-table-thead > tr > th { border-bottom: 1px dashed var(--cork) !important; color: var(--cream); background: transparent !important; font-weight: 500; }
 .studio-table .ant-table-cell { vertical-align: top; border-bottom: 1px dashed var(--cork) !important; color: var(--cream); background: transparent !important; }
 .studio-table .ant-table-row:hover > td { background: rgba(56, 36, 22, .34) !important; }
