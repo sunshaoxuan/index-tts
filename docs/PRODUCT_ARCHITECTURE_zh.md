@@ -102,6 +102,8 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 交付页把 `latest-render` 返回的完整音频、分轨包和导演清单路径同时用于下载按钮与成果物链接。成果物链接使用当前页面 origin 转为绝对 URL，页面显示该 URL 并提供复制操作；打开链接仍访问同一个受工程 ID 与 render ID 约束的文件 API。
 
+`GET /api/projects/:id/render-file/:render/mp3` 按请求读取对应交付的 `full-audio.wav`，通过 FFmpeg `libmp3lame` 以 160 kbps 编码并把 stdout 直接流式返回为 `audio/mpeg`。当前完整音频为 22050 Hz 单声道，160 kbps 是该 MPEG-2 Layer III 采样率档位支持的最高标准码率。服务端不写入 MP3 文件；客户端下载中止时终止本次编码进程。该链路只做格式转换，不进入 Python Worker，也不加载 TTS 模型。
+
 分句导演表为实际 `.ant-table-body` 增加双轴 `overscroll-behavior: contain`。页面级非 passive wheel 边界保护只匹配 `.segment-table`，在纵向或横向边界阻止默认滚动并停止事件传播；表格仍有可用滚动范围时保留原生滚动。
 
 分句音频缓存键由实际朗读文字、语言、音色文件摘要、情绪提示、强度和时长因子共同计算。常规完整渲染复用全部命中缓存，单句重生成通过 `force_segment_orders` 只覆盖指定缓存，严格串接通过 `cache_only` 禁止模型推理。每次渲染仍从全部片断重新生成完整音频、章节音频、角色分轨、CSV、JSON 和 ZIP，使重新生成的片断自动进入最新完整交付。

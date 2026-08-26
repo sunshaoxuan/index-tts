@@ -52,6 +52,7 @@ test('serves the latest audio with stable media headers', async () => {
   assert.equal(latest.statusCode, 200);
   assert.equal(latest.json().available, true);
   assert.equal(latest.json().renderId, 'render-001');
+  assert.equal(latest.json().mp3, '/api/projects/demo/render-file/render-001/mp3');
   assert.equal(latest.json().fragments.length, 2);
   assert.equal(latest.json().fragments[0].effectiveText, '纠音原文');
   const audio = await app.inject(latest.json().audio);
@@ -66,6 +67,41 @@ test('serves the latest audio with stable media headers', async () => {
   const draftFragment = await app.inject(latest.json().fragments.find(item => item.order === 2).audio);
   assert.equal(draftFragment.statusCode, 200);
   assert.deepEqual(draftFragment.rawPayload, Buffer.from('RIFFdraft'));
+  await app.close();
+});
+
+test('encodes a complete WAV to MP3 as a download stream without creating a stored MP3', async () => {
+  const { root } = await fixture();
+  const renderId = 'render-中文';
+  const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', renderId);
+  await mkdir(renderDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('RIFFsource'));
+  let encodedFile;
+  const app = await buildApp({ repoRoot: root, launchEncoder: file => {
+    encodedFile = file;
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    child.killed = false;
+    child.kill = () => { child.killed = true; child.exitCode = 0; };
+    queueMicrotask(() => {
+      child.emit('spawn');
+      child.stdout.end(Buffer.from('ID3encoded'));
+      child.exitCode = 0;
+      child.emit('close', 0);
+    });
+    return child;
+  } });
+
+  const response = await app.inject(`/api/projects/demo/render-file/${encodeURIComponent(renderId)}/mp3`);
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers['content-type'], /^audio\/mpeg/);
+  assert.equal(response.headers['content-disposition'], `attachment; filename="full-audio.mp3"; filename*=UTF-8''${encodeURIComponent(`${renderId}.mp3`)}`);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.deepEqual(response.rawPayload, Buffer.from('ID3encoded'));
+  assert.equal(encodedFile, path.join(renderDir, 'full-audio.wav'));
+  await assert.rejects(access(path.join(renderDir, 'full-audio.mp3')));
   await app.close();
 });
 

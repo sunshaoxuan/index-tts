@@ -292,7 +292,14 @@ async function voiceRuntimeHealth(repoRoot) {
   }
 }
 
-export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}) {
+function launchMp3Encoder(file) {
+  return spawn('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-i', file, '-vn',
+    '-codec:a', 'libmp3lame', '-b:a', '160k', '-f', 'mp3', 'pipe:1',
+  ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launchEncoder = launchMp3Encoder } = {}) {
   const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
@@ -453,7 +460,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
       const draftKeys = new Set(draftFragments.map(item => `${item.sourceText}\u0000${item.synthesisText}`));
       fragments = [...fragments.filter(item => !draftKeys.has(`${item.sourceText}\u0000${item.synthesisText}`)), ...draftFragments];
     } catch {}
-    return { available: true, renderId: name, audio: `${base}/audio`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
+    return { available: true, renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
   });
   app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {
     try {
@@ -580,6 +587,32 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     const id = safeProjectId(request.params.id);
     const render = safeProjectId(request.params.render);
     const files = { audio: ['full-audio.wav', 'audio/wav'], package: ['directed-audio-package.zip', 'application/zip'], manifest: ['director-manifest.json', 'application/json'] };
+    if (request.params.kind === 'mp3') {
+      const file = path.join(projectRoot, id, 'renders', render, 'full-audio.wav');
+      try {
+        await access(file);
+        const encoder = launchEncoder(file);
+        let stderr = '';
+        encoder.stderr?.setEncoding('utf8');
+        encoder.stderr?.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-4000); });
+        await new Promise((resolve, reject) => {
+          encoder.once('spawn', resolve);
+          encoder.once('error', reject);
+        });
+        encoder.once('close', code => {
+          if (code && !reply.raw.destroyed) app.log.error({ code, stderr, file }, 'MP3 实时编码失败');
+        });
+        reply.raw.once('close', () => {
+          if (encoder.exitCode === null && !encoder.killed) encoder.kill();
+        });
+        const encodedName = encodeURIComponent(`${render}.mp3`);
+        reply.type('audio/mpeg').header('Content-Disposition', `attachment; filename="full-audio.mp3"; filename*=UTF-8''${encodedName}`).header('Cache-Control', 'no-store');
+        return reply.send(encoder.stdout);
+      } catch (error) {
+        app.log.error({ error, file }, '无法启动 MP3 实时编码');
+        return reply.type('application/json').code(error.code === 'ENOENT' ? 404 : 503).send({ error: error.code === 'ENOENT' ? '交付音频不存在' : `MP3 编码器不可用：${error.message}` });
+      }
+    }
     const selected = files[request.params.kind];
     if (!selected) return reply.code(404).send({ error: '交付文件类型无效' });
     const file = path.join(projectRoot, id, 'renders', render, selected[0]);

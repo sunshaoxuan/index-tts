@@ -13,7 +13,7 @@ export interface RenderFragment {
 }
 
 export interface RenderInfo {
-  available: boolean; renderId?: string; audio?: string; package?: string; manifest?: string; fragments?: RenderFragment[];
+  available: boolean; renderId?: string; audio?: string; mp3?: string; package?: string; manifest?: string; fragments?: RenderFragment[];
   stale?: boolean; staleAt?: string; staleReasons?: string[];
 }
 
