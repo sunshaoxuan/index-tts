@@ -1724,17 +1724,26 @@ def render_directed_audio(
             available = "、".join(catalog)
             raise DirectorError(f"角色 {role['name']} 的音色ID不存在：{role['voice_id']}。可用：{available}")
 
-    run_name = (
+    base_run_name = (
         f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}-"
         f"{_safe_name(str(document.get('title', 'directed-audio')), 'directed-audio')}"
     )
-    run_dir = output_root / run_name
+    for attempt in range(100):
+        run_name = base_run_name if attempt == 0 else f"{base_run_name}-{attempt:02d}"
+        run_dir = output_root / run_name
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise DirectorError("无法分配唯一的音频交付目录，请稍后重试。")
     segment_dir = run_dir / "segments"
     track_dir = run_dir / "tracks"
     chapter_dir = run_dir / "chapters"
-    segment_dir.mkdir(parents=True, exist_ok=False)
-    track_dir.mkdir(parents=True, exist_ok=False)
-    chapter_dir.mkdir(parents=True, exist_ok=False)
+    segment_dir.mkdir()
+    track_dir.mkdir()
+    chapter_dir.mkdir()
     cache_dir = Path(project_process_dir) / "segment-cache" if project_process_dir else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,7 @@ desktop.ini
 /product-studio/node_modules/
 /product-studio/dist/
 /product-studio/*.tsbuildinfo
+/docs/evidence/
 
 # Example audio files (downloaded on demand, not stored in git)
 /examples/*.wav

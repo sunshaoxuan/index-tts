@@ -1,5 +1,7 @@
 # Index Voice Studio 产品架构
 
+产品版本由根 `VERSION` 管理，Node 启动时读取并通过 `/api/health` 返回，React 品牌区显示同一值。`product-studio/package.json`、README、CHANGELOG 和 Git 标签在正式发布时使用同一版本。IndexTTS 推理引擎版本继续独立管理。
+
 ## 目标
 
 使用独立 Web 产品架构承载长篇声音作品工程。页面组件具备原生枚举、数值约束、加载状态、错误反馈、横向大表格和响应式能力。

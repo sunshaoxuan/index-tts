@@ -851,7 +851,8 @@ def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path)
     assert not list(output_root.glob("*"))
 
 
-def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(tmp_path):
+def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("text_director.time.time_ns", lambda: 1234567890)
     demo_dir = tmp_path / "voices"
     _write_wav(demo_dir / "voice_05.wav", 100)
     output_root = tmp_path / "outputs"

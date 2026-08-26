@@ -2,6 +2,7 @@ import type { Presets, ProjectPayload } from './types';
 
 export interface RuntimeHealth {
   status: string;
+  productVersion: string;
   runtime: string;
   architecture: string;
   voiceModel: { processAlive: boolean; modelLoaded: boolean; phase: string; pid?: number; modelDir?: string };

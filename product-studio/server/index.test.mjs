@@ -13,6 +13,7 @@ async function fixture() {
   await mkdir(path.join(root, 'product-studio', 'dist'), { recursive: true });
   await mkdir(path.join(root, 'examples'), { recursive: true });
   await mkdir(dir, { recursive: true });
+  await writeFile(path.join(root, 'VERSION'), '1.0.0\n');
   await writeFile(path.join(root, 'product-studio', 'dist', 'index.html'), '<div>ok</div>');
   await writeFile(path.join(root, 'examples', 'voice_05.wav'), Buffer.from('RIFFfake'));
   const project = { project_id: 'demo', title: '测试', content_type: 'novel', source_text: '第一章\n原文', roles: [['narrator', '旁白', 'narrator', '全篇叙事视角，负责环境、动作、心理活动与说话归属，声音需要保持稳定。', '中性清晰', 'voice.wav', '自然叙述', '否']], segments: [[1, '正文', 'narrator', '旁白', 'ZH', '原文', '原文', '中性叙述', '平静', 0.5, '自然', 300]], pronunciations: [] };
@@ -25,6 +26,7 @@ test('serves presets and project data', async () => {
   const app = await buildApp({ repoRoot: root });
   const health = await app.inject('/api/health');
   assert.equal(health.statusCode, 200);
+  assert.equal(health.json().productVersion, '1.0.0');
   assert.deepEqual(health.json().voiceModel, { processAlive: false, modelLoaded: false, phase: 'cold' });
   const presetResponse = await app.inject('/api/presets');
   assert.ok(presetResponse.json().emotions.includes('平静'));

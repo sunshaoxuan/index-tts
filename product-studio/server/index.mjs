@@ -304,6 +304,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
+  const productVersion = (await readFile(path.join(repoRoot, 'VERSION'), 'utf8')).trim();
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
   await mkdir(jobRoot, { recursive: true });
@@ -333,7 +334,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
   } catch {}
   await app.register(fastifyStatic, { root: distRoot, wildcard: false });
 
-  app.get('/api/health', async () => ({ status: 'ok', runtime: process.version, architecture: 'react-antd-node-python', voiceModel: await voiceRuntimeHealth(repoRoot) }));
+  app.get('/api/health', async () => ({ status: 'ok', productVersion, runtime: process.version, architecture: 'react-antd-node-python', voiceModel: await voiceRuntimeHealth(repoRoot) }));
   app.get('/api/active-job', async () => {
     if (!activeJob) return { available: false };
     try {
