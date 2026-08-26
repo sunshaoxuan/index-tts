@@ -97,9 +97,11 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 角色八列数组继续作为 IndexTTS 与既有导演流程的兼容层。扩展人物属性存入工程根级 `character_assets`，键为稳定角色 ID，字段包括 `gender`、`age`、`pitch_min_hz`、`pitch_max_hz`、`pitch_target_hz`、`portrait_url`、`portrait_prompt` 和人物小传来源。Node 与 Python 在旧工程缺失该映射时使用同一性别推断和年龄频率建议规则补齐默认值。
 
-OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传路由使用 `/v1/chat/completions`，从角色名字命中的句子向前后各取两句并限制为 30000 字符。图像路由使用 `/v1/images/generations`，兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
+OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。图像路由使用 `/v1/images/generations`，兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
 
 设置窗口通过 `POST /api/settings/ai-media/test` 触发模型发现。Node 使用当前保存或请求中待保存的 Endpoint 与 API Key 请求兼容 `/v1/models`，去重并排序模型 ID 后回传浏览器。响应不包含密钥。前端把模型 ID 用作两个可搜索下拉框的数据源，并继续允许手工模型名，以兼容模型列表延迟或服务端自定义路由。
+
+本机 Cockpit 和远端节点没有继承关系。Node 只向当前配置 Endpoint 发送请求；可选 `instance_id` 作为 `X-Cockpit-Instance-Id` 同时应用于模型发现、文本和同源图像请求。回环 HTTP 视为本机传输；公网 HTTP 在 `allow_insecure_http` 未明确启用时于发出请求前停止，从而避免默认明文发送 Bearer Key。远程图像 URL 只有与 Endpoint 同源时才携带认证头。
 
 VoiceDesign 作业读取 `character_assets`，把年龄、建议区间和目标基频写入自然语言指令。存在目标频率时生成进程最多评估三个连续种子，继续执行既有声学性别门禁，并以实测中位基频到目标的绝对距离选择最佳候选。声音签名包含完整指令，因此性别、年龄和目标频率变化会建立新缓存签名。人物形象字段不进入声音签名，也不触发音频片断失效。
 

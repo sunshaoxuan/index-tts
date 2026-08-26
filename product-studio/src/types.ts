@@ -34,12 +34,17 @@ export interface AiMediaSettings {
   endpoint: string;
   textModel: string;
   imageModel: string;
+  instanceId: string;
+  textApi: 'responses' | 'chat_completions';
+  allowInsecureHttp: boolean;
+  transportRisk: boolean;
   hasApiKey: boolean;
 }
 
 export interface AiMediaModelDiscovery {
   ok: boolean;
   endpoint: string;
+  instanceId: string;
   models: string[];
   modelCount: number;
 }

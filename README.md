@@ -179,9 +179,13 @@ http://127.0.0.1:7864/
 http://ccnode.briconbric.com:49530/v1
 ```
 
-人物小传模型可以配置为兼容服务实际暴露的 Gemini Pro 模型名，图像模型可以配置为 GPT Image 或该服务支持的其他图像模型名。系统调用 `/chat/completions` 和 `/images/generations` 兼容接口。
+人物小传模型可以配置为兼容服务实际暴露的 Gemini、Claude 或其他文本模型名，图像模型可以配置为 GPT Image 或该服务支持的其他图像模型名。人物小传可以选择 `/responses` 或 `/chat/completions`，图像使用 `/images/generations`。
 
 填写 Endpoint 与 API Key 后，点击“测试连接并加载模型”。系统调用兼容 `/models` 接口并把当前 Key 可用的模型加载到两个可搜索下拉框。模型列表没有包含服务端支持的别名时，也可以直接输入模型名。当前选择不在可用列表时，设置窗口会显示警告。
+
+本机 Cockpit 与远端节点是两个独立入口。使用本机 Cockpit 时，填写当前实际监听的回环 Endpoint、Cockpit API Key 和需要的 Instance ID，并把文本接口选择为 Responses API。远端节点必须使用远端自己的 API Key 和模型映射。本机可见模型不会自动同步到远端。
+
+回环地址允许使用 HTTP。公网 HTTP 会以明文传输 Bearer Key，产品默认阻止测试和 AI 调用；推荐先配置 HTTPS。只有在设置窗口明确启用风险开关后，公网 HTTP 请求才会发出。
 
 调用小传扩写时，系统会发送角色名称、年龄、性别、当前小传和稿件中该角色附近的证据。调用图像生成时，只发送角色名称、年龄、性别、人物小传和角色形象提示。API Key 保存于本机 `runtime-output/product-settings.json`，读取接口只返回是否已经配置。
 

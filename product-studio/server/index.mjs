@@ -369,6 +369,27 @@ function aiRoute(endpoint, route) {
   return `${endpoint}${endpoint.endsWith('/v1') ? '' : '/v1'}${route}`;
 }
 
+function publicHttpEndpoint(endpoint) {
+  if (!endpoint) return false;
+  const parsed = new URL(endpoint);
+  const host = parsed.hostname.toLowerCase();
+  return parsed.protocol === 'http:' && !['127.0.0.1', 'localhost', '::1'].includes(host);
+}
+
+function assertEndpointTransport(settings) {
+  if (publicHttpEndpoint(settings.endpoint) && !settings.allow_insecure_http) {
+    throw new Error('当前 Endpoint 使用公网 HTTP。为避免 Bearer Key 明文传输，请配置 HTTPS；如已了解风险，可在系统配置中明确允许公网 HTTP');
+  }
+}
+
+function compatibleHeaders(settings, json = false) {
+  return {
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+    Authorization: `Bearer ${settings.api_key}`,
+    ...(settings.instance_id ? { 'X-Cockpit-Instance-Id': settings.instance_id } : {}),
+  };
+}
+
 async function readAiMediaSettings(file) {
   try {
     const stored = JSON.parse(await readFile(file, 'utf8'));
@@ -377,9 +398,12 @@ async function readAiMediaSettings(file) {
       api_key: String(stored.api_key || ''),
       text_model: String(stored.text_model || 'gemini-2.5-pro'),
       image_model: String(stored.image_model || 'gpt-image-1'),
+      instance_id: String(stored.instance_id || ''),
+      text_api: stored.text_api === 'responses' ? 'responses' : 'chat_completions',
+      allow_insecure_http: Boolean(stored.allow_insecure_http),
     };
   } catch {
-    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', image_model: 'gpt-image-1' };
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
   }
 }
 
@@ -388,14 +412,19 @@ function publicAiMediaSettings(settings) {
     endpoint: settings.endpoint,
     textModel: settings.text_model,
     imageModel: settings.image_model,
+    instanceId: settings.instance_id,
+    textApi: settings.text_api,
+    allowInsecureHttp: settings.allow_insecure_http,
+    transportRisk: publicHttpEndpoint(settings.endpoint),
     hasApiKey: Boolean(settings.api_key),
   };
 }
 
 async function callCompatibleJson(remoteFetch, url, settings, payload) {
+  assertEndpointTransport(settings);
   const response = await remoteFetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.api_key}` },
+    headers: compatibleHeaders(settings, true),
     body: JSON.stringify(payload),
   });
   const text = await response.text();
@@ -405,9 +434,10 @@ async function callCompatibleJson(remoteFetch, url, settings, payload) {
   return body;
 }
 
-async function discoverCompatibleModels(remoteFetch, endpoint, apiKey) {
-  const response = await remoteFetch(aiRoute(endpoint, '/models'), {
-    headers: { Authorization: `Bearer ${apiKey}` },
+async function discoverCompatibleModels(remoteFetch, settings) {
+  assertEndpointTransport(settings);
+  const response = await remoteFetch(aiRoute(settings.endpoint, '/models'), {
+    headers: compatibleHeaders(settings),
   });
   const text = await response.text();
   let body;
@@ -420,6 +450,9 @@ async function discoverCompatibleModels(remoteFetch, endpoint, apiKey) {
 }
 
 function extractCompatibleText(body) {
+  if (typeof body?.output_text === 'string' && body.output_text.trim()) return body.output_text.trim();
+  const responsesText = body?.output?.flatMap(item => Array.isArray(item?.content) ? item.content : []).map(item => item?.text || item?.output_text || '').filter(Boolean).join('\n').trim();
+  if (responsesText) return responsesText;
   const openAiText = body?.choices?.[0]?.message?.content;
   if (typeof openAiText === 'string' && openAiText.trim()) return openAiText.trim();
   const geminiText = body?.candidates?.[0]?.content?.parts?.map(part => part?.text || '').join('\n').trim();
@@ -454,7 +487,9 @@ async function decodeCompatibleImage(remoteFetch, item, settings) {
   if (item?.inline_data?.data) return Buffer.from(String(item.inline_data.data), 'base64');
   if (item?.inlineData?.data) return Buffer.from(String(item.inlineData.data), 'base64');
   if (item?.url) {
-    const response = await remoteFetch(String(item.url), { headers: { Authorization: `Bearer ${settings.api_key}` } });
+    const imageUrl = String(item.url);
+    const sameOrigin = new URL(imageUrl).origin === new URL(settings.endpoint).origin;
+    const response = await remoteFetch(imageUrl, { headers: sameOrigin ? compatibleHeaders(settings) : {} });
     if (!response.ok) throw new Error(`兼容服务图像下载失败 ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
   }
@@ -536,8 +571,15 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const apiKey = String(request.body?.apiKey || current.api_key || '').trim();
       if (!endpoint) throw new Error('请先填写 OpenAI 兼容 Endpoint');
       if (!apiKey) throw new Error('请先填写或保存 API Key');
-      const models = await discoverCompatibleModels(remoteFetch, endpoint, apiKey);
-      return { ok: true, endpoint, models, modelCount: models.length };
+      const settings = {
+        ...current,
+        endpoint,
+        api_key: apiKey,
+        instance_id: String(request.body?.instanceId ?? current.instance_id ?? '').trim(),
+        allow_insecure_http: Boolean(request.body?.allowInsecureHttp ?? current.allow_insecure_http),
+      };
+      const models = await discoverCompatibleModels(remoteFetch, settings);
+      return { ok: true, endpoint, instanceId: settings.instance_id, models, modelCount: models.length };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.put('/api/settings/ai-media', async (request, reply) => {
@@ -546,10 +588,13 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const endpoint = normalizeAiEndpoint(request.body?.endpoint);
       const textModel = String(request.body?.textModel || '').trim();
       const imageModel = String(request.body?.imageModel || '').trim();
+      const instanceId = String(request.body?.instanceId || '').trim();
+      const textApi = request.body?.textApi === 'responses' ? 'responses' : 'chat_completions';
+      const allowInsecureHttp = Boolean(request.body?.allowInsecureHttp);
       const apiKey = request.body?.clearApiKey ? '' : String(request.body?.apiKey || current.api_key || '').trim();
       if (endpoint && !textModel) throw new Error('请填写人物小传模型名称');
       if (endpoint && !imageModel) throw new Error('请填写图像模型名称');
-      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', image_model: imageModel || 'gpt-image-1' };
+      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', image_model: imageModel || 'gpt-image-1', instance_id: instanceId, text_api: textApi, allow_insecure_http: allowInsecureHttp };
       const temporary = `${aiMediaSettingsFile}.tmp`;
       await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
       await rename(temporary, aiMediaSettingsFile);
@@ -652,14 +697,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const gender = String(request.body?.gender || project.character_assets[roleId]?.gender || 'unspecified');
       const age = Math.max(5, Math.min(100, Math.round(Number(request.body?.age) || project.character_assets[roleId]?.age || 35)));
       const evidence = characterEvidence(project.source_text, name);
-      const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/chat/completions'), settings, {
-        model: settings.text_model,
-        temperature: 0.35,
-        messages: [
-          { role: 'system', content: '你是长篇声音作品的人物设定导演。只使用稿件证据与用户已确认设定，写一篇具体、可复用、适合声音设计和视觉形象生成的人物小传。未知信息明确写“稿件未说明”，不得虚构关键事实。输出纯中文正文，不使用标题、列表或 Markdown。' },
-          { role: 'user', content: `角色：${name}\n年龄设定：约 ${age} 岁\n性别设定：${gender}\n当前小传：${currentProfile}\n稿件相关证据：\n${evidence}\n\n请在 300 至 600 个中文字符内覆盖身份与社会位置、外貌线索、年龄气质、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式、叙事作用，并区分稿件事实与未知信息。` },
-        ],
-      });
+      const systemPrompt = '你是长篇声音作品的人物设定导演。只使用稿件证据与用户已确认设定，写一篇具体、可复用、适合声音设计和视觉形象生成的人物小传。未知信息明确写“稿件未说明”，不得虚构关键事实。输出纯中文正文，不使用标题、列表或 Markdown。';
+      const userPrompt = `角色：${name}\n年龄设定：约 ${age} 岁\n性别设定：${gender}\n当前小传：${currentProfile}\n稿件相关证据：\n${evidence}\n\n请在 300 至 600 个中文字符内覆盖身份与社会位置、外貌线索、年龄气质、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式、叙事作用，并区分稿件事实与未知信息。`;
+      const response = settings.text_api === 'responses'
+        ? await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/responses'), settings, { model: settings.text_model, instructions: systemPrompt, input: userPrompt, stream: false })
+        : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/chat/completions'), settings, { model: settings.text_model, temperature: 0.35, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] });
       const profile = extractCompatibleText(response);
       if (profile.length < 80) throw new Error('兼容服务返回的人物小传过短，请检查模型配置');
       return { profile, model: settings.text_model };

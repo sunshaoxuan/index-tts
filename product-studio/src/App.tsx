@@ -27,6 +27,13 @@ function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
 }
 
+function isPublicHttpEndpoint(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' && !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname.toLowerCase());
+  } catch { return false; }
+}
+
 function StudioAudio({ src }: { src: string }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -99,7 +106,7 @@ function Studio() {
   const [portraitGenerating, setPortraitGenerating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
-  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', imageModel: 'gpt-image-1', clearApiKey: false });
+  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsTesting, setSettingsTesting] = useState(false);
   const [availableAiModels, setAvailableAiModels] = useState<string[]>([]);
@@ -114,7 +121,7 @@ function Studio() {
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
       setPresets(p); setProjects(list); setRuntimeHealth(health); setAiMediaSettings(mediaSettings);
-      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, imageModel: mediaSettings.imageModel, clearApiKey: false });
+      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, imageModel: mediaSettings.imageModel, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
       if (active.available && active.jobId && active.kind && active.projectId) {
         setProjectId(active.projectId);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
@@ -376,7 +383,7 @@ function Studio() {
     try {
       const saved = await api.saveAiMediaSettings(settingsDraft);
       setAiMediaSettings(saved);
-      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, imageModel: saved.imageModel, clearApiKey: false });
+      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, imageModel: saved.imageModel, instanceId: saved.instanceId, textApi: saved.textApi, allowInsecureHttp: saved.allowInsecureHttp, clearApiKey: false });
       setSettingsOpen(false);
       message.success('AI 人物与图像服务配置已保存在本机运行目录');
     } catch (error) { message.error((error as Error).message); }
@@ -386,7 +393,7 @@ function Studio() {
   const testAiMediaSettings = async () => {
     setSettingsTesting(true);
     try {
-      const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined });
+      const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp });
       setAvailableAiModels(result.models);
       const missing = [settingsDraft.textModel, settingsDraft.imageModel].filter(model => model && !result.models.includes(model));
       if (missing.length) message.warning(`连接成功，已加载 ${result.modelCount} 个模型。当前选择不在可用列表：${missing.join('、')}`);
@@ -471,6 +478,7 @@ function Studio() {
   const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel, settingsDraft.imageModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel, settingsDraft.imageModel]);
   const textModelUnavailable = Boolean(availableAiModels.length && settingsDraft.textModel && !availableAiModels.includes(settingsDraft.textModel));
   const imageModelUnavailable = Boolean(availableAiModels.length && settingsDraft.imageModel && !availableAiModels.includes(settingsDraft.imageModel));
+  const insecurePublicEndpoint = isPublicHttpEndpoint(settingsDraft.endpoint);
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
     { value: 'reporter', label: '记者' }, { value: 'interviewee', label: '采访对象' },
@@ -602,9 +610,13 @@ function Studio() {
       <Modal width={720} title="AI 人物与图像服务" open={settingsOpen} okText="保存本机配置" cancelText="取消" confirmLoading={settingsSaving} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
         <Space direction="vertical" size="large" className="modal-fields ai-media-settings">
           <Alert type="warning" showIcon message="外部内容传输提示" description="点击 AI 扩写人物小传时，会把该角色附近的稿件证据发送到你配置的服务。生成形象时，只发送角色名称、性别、年龄、人物小传和视觉提示。API Key 只保存在本机 runtime-output，不写入工程、Git 或浏览器回读内容。" />
-          <label><Text strong>OpenAI 兼容 Endpoint</Text><Input value={settingsDraft.endpoint} onChange={event => setSettingsDraft(current => ({ ...current, endpoint: event.target.value }))} placeholder="例如：http://ccnode.briconbric.com:49530/v1" /></label>
+          <Alert type="info" showIcon message="入口能力彼此独立" description="模型列表和调用能力只来自当前 Endpoint。本机 Cockpit、远端节点及其 API Key、OAuth 账号和模型映射互不继承。" />
+          <label><Text strong>OpenAI 兼容 Endpoint</Text><Input value={settingsDraft.endpoint} onChange={event => setSettingsDraft(current => ({ ...current, endpoint: event.target.value, allowInsecureHttp: isPublicHttpEndpoint(event.target.value) ? current.allowInsecureHttp : false }))} placeholder="例如：http://127.0.0.1:39452/v1" /></label>
+          {insecurePublicEndpoint && <Alert type="error" showIcon message="公网 HTTP 会明文传输 Bearer Key" description="推荐先为远端节点配置有效 TLS。启用下方风险开关后才允许测试连接、扩写人物小传或生成图像。" />}
           <label><Text strong>API Key</Text><Input.Password value={settingsDraft.apiKey} onChange={event => setSettingsDraft(current => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} placeholder={aiMediaSettings?.hasApiKey ? '已保存，留空表示继续使用当前 Key' : '填写兼容服务 API Key'} /></label>
           {aiMediaSettings?.hasApiKey && <label className="clear-key-control"><Switch checked={settingsDraft.clearApiKey} onChange={checked => setSettingsDraft(current => ({ ...current, clearApiKey: checked, apiKey: '' }))} /><Text>清除当前保存的 API Key</Text></label>}
+          {insecurePublicEndpoint && <label className="clear-key-control"><Switch checked={settingsDraft.allowInsecureHttp} onChange={checked => setSettingsDraft(current => ({ ...current, allowInsecureHttp: checked }))} /><Text>我了解风险，允许通过公网 HTTP 发送当前 API Key</Text></label>}
+          <div className="editor-two-column"><label><Text strong>Cockpit Instance ID（可选）</Text><Input value={settingsDraft.instanceId} onChange={event => setSettingsDraft(current => ({ ...current, instanceId: event.target.value }))} placeholder="例如：.codex-gemini-agent" /></label><label><Text strong>人物小传文本接口</Text><Select value={settingsDraft.textApi} onChange={value => setSettingsDraft(current => ({ ...current, textApi: value }))} options={[{ value: 'responses', label: 'Responses API · /v1/responses' }, { value: 'chat_completions', label: 'Chat Completions · /v1/chat/completions' }]} /></label></div>
           <Button icon={<ReloadOutlined />} loading={settingsTesting} onClick={testAiMediaSettings}>测试连接并加载模型</Button>
           {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型`} description={textModelUnavailable || imageModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请从下拉列表重新选择。' : '人物小传模型和角色图像模型都在当前可用列表中。'} />}
           <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>

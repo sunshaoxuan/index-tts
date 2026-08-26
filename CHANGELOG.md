@@ -11,6 +11,7 @@
 * OpenAI 兼容人物小传和图像服务配置，支持独立填写 Endpoint、API Key、文本模型和图像模型。
 * AI 详细人物小传扩写、角色形象生成和工程专属角色图像存储。
 * AI 人物与图像服务连接测试、兼容模型发现，以及可搜索、可手工输入的人物小传和图像模型选择器。
+* 本机 Cockpit Instance ID、Responses API 文本调用、入口能力隔离和公网 HTTP Bearer Key 默认阻断。
 
 ### Changed
 

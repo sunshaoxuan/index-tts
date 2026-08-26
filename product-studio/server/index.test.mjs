@@ -41,7 +41,7 @@ test('stores AI media credentials locally without returning the API key', async 
   const app = await buildApp({ repoRoot: root });
   const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:49530/v1/', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
   assert.equal(saved.statusCode, 200);
-  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', imageModel: 'gpt-image', hasApiKey: true });
+  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
   const loaded = await app.inject('/api/settings/ai-media');
   assert.equal(loaded.json().hasApiKey, true);
   assert.equal(JSON.stringify(loaded.json()).includes('secret-key'), false);
@@ -58,12 +58,49 @@ test('tests the compatible service and returns selectable model ids without expo
     return new Response(JSON.stringify({ data: [{ id: 'gemini-2.5-flash' }, { id: 'gpt-image-1' }, { id: 'gemini-2.5-flash' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   const app = await buildApp({ repoRoot: root, remoteFetch });
-  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'old-model', imageModel: 'old-image' } });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'old-model', imageModel: 'old-image', allowInsecureHttp: true } });
   const tested = await app.inject({ method: 'POST', url: '/api/settings/ai-media/test', payload: { endpoint: 'http://ai.example/v1' } });
   assert.equal(tested.statusCode, 200);
-  assert.deepEqual(tested.json(), { ok: true, endpoint: 'http://ai.example/v1', models: ['gemini-2.5-flash', 'gpt-image-1'], modelCount: 2 });
+  assert.deepEqual(tested.json(), { ok: true, endpoint: 'http://ai.example/v1', instanceId: '', models: ['gemini-2.5-flash', 'gpt-image-1'], modelCount: 2 });
   assert.deepEqual(calls, [{ url: 'http://ai.example/v1/models', authorization: 'Bearer secret-key' }]);
   assert.equal(JSON.stringify(tested.json()).includes('secret-key'), false);
+  await app.close();
+});
+
+test('uses Cockpit instance headers and the Responses API for character profiles', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), headers: options?.headers, body: options?.body ? JSON.parse(options.body) : undefined });
+    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'gemini-pro-agent' }, { id: 'claude-opus-4-6-thinking' }] }), { status: 200 });
+    return new Response(JSON.stringify({ output_text: '这是一篇通过 Responses API 生成的详细人物小传，覆盖人物身份、年龄气质、关系、经历、欲望、矛盾、性格、行为习惯、说话方式与叙事作用，并明确保留稿件未说明的事实边界。'.repeat(2) }), { status: 200 });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:39452/v1', apiKey: 'cockpit-key', instanceId: '.codex-gemini-agent', textApi: 'responses', textModel: 'gemini-pro-agent', imageModel: 'gpt-image-1' } });
+  assert.equal(saved.statusCode, 200);
+  const models = await app.inject({ method: 'POST', url: '/api/settings/ai-media/test', payload: {} });
+  assert.equal(models.statusCode, 200);
+  assert.deepEqual(models.json().models, ['claude-opus-4-6-thinking', 'gemini-pro-agent']);
+  const profile = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/expand-profile', payload: { name: '旁白', profile: '负责全文叙事的人物设定。', gender: 'unspecified', age: 40 } });
+  assert.equal(profile.statusCode, 200);
+  assert.deepEqual(calls.map(call => call.url), ['http://127.0.0.1:39452/v1/models', 'http://127.0.0.1:39452/v1/responses']);
+  assert.ok(calls.every(call => call.headers.Authorization === 'Bearer cockpit-key'));
+  assert.ok(calls.every(call => call.headers['X-Cockpit-Instance-Id'] === '.codex-gemini-agent'));
+  assert.equal(calls[1].body.model, 'gemini-pro-agent');
+  assert.equal(calls[1].body.stream, false);
+  assert.equal(typeof calls[1].body.input, 'string');
+  await app.close();
+});
+
+test('blocks bearer credentials on public HTTP until the risk is explicitly allowed', async () => {
+  const { root } = await fixture();
+  let called = false;
+  const app = await buildApp({ repoRoot: root, remoteFetch: async () => { called = true; return new Response('{}', { status: 200 }); } });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://remote.example/v1', apiKey: 'remote-key', textModel: 'text-model', imageModel: 'image-model' } });
+  const tested = await app.inject({ method: 'POST', url: '/api/settings/ai-media/test', payload: {} });
+  assert.equal(tested.statusCode, 400);
+  assert.match(tested.json().error, /公网 HTTP/);
+  assert.equal(called, false);
   await app.close();
 });
 
@@ -77,7 +114,7 @@ test('expands a character profile and generates a locally served portrait throug
     return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   const app = await buildApp({ repoRoot: root, remoteFetch });
-  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image', allowInsecureHttp: true } });
   const profile = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/expand-profile', payload: { name: '旁白', profile: '负责全文叙事的人物设定。', gender: 'unspecified', age: 40 } });
   assert.equal(profile.statusCode, 200);
   assert.equal(profile.json().model, 'gemini-pro');
@@ -93,6 +130,28 @@ test('expands a character profile and generates a locally served portrait throug
   assert.ok(calls.every(call => call.authorization === 'Bearer secret-key'));
   assert.equal(calls[1].body.model, 'gpt-image');
   assert.match(calls[1].body.prompt, /稳定角色设计/);
+  await app.close();
+});
+
+test('strips compatible service credentials from cross-origin portrait downloads', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 5, 6, 7, 8]);
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), headers: options?.headers || {} });
+    if (String(url).endsWith('/images/generations')) {
+      return new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/portrait.png' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(png, { status: 200, headers: { 'Content-Type': 'image/png' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', instanceId: '.portrait-agent', textModel: 'text-model', imageModel: 'image-model' } });
+  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: '负责全文叙事，并具有稳定人物设定和明确声音表达方式。', gender: 'unspecified', age: 40 } });
+  assert.equal(portrait.statusCode, 200);
+  assert.deepEqual(calls.map(call => call.url), ['https://ai.example/v1/images/generations', 'https://cdn.example/portrait.png']);
+  assert.equal(calls[0].headers.Authorization, 'Bearer secret-key');
+  assert.equal(calls[0].headers['X-Cockpit-Instance-Id'], '.portrait-agent');
+  assert.deepEqual(calls[1].headers, {});
   await app.close();
 });
 
