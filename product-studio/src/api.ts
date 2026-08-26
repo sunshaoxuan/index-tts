@@ -18,7 +18,8 @@ export const api = {
   save: (project: ProjectPayload) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(project.project_id)}`, {
     method: 'PUT', body: JSON.stringify(project),
   }),
-  latestRender: (id: string) => request<{ available: boolean; audio?: string; package?: string; manifest?: string }>(`/api/projects/${encodeURIComponent(id)}/latest-render`),
+  latestRender: (id: string) => request<{ available: boolean; renderId?: string; audio?: string; package?: string; manifest?: string }>(`/api/projects/${encodeURIComponent(id)}/latest-render`),
+  deleteRender: (id: string, renderId: string) => request<{ deleted: boolean; renderId: string }>(`/api/projects/${encodeURIComponent(id)}/renders/${encodeURIComponent(renderId)}`, { method: 'DELETE', body: JSON.stringify({}) }),
   analyze: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/analyze`, emptyPost),
   render: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/render`, emptyPost),
   voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),

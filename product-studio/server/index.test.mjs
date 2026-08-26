@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -41,12 +41,56 @@ test('serves the latest audio with stable media headers', async () => {
   const latest = await app.inject('/api/projects/demo/latest-render');
   assert.equal(latest.statusCode, 200);
   assert.equal(latest.json().available, true);
+  assert.equal(latest.json().renderId, 'render-001');
   const audio = await app.inject(latest.json().audio);
   assert.equal(audio.statusCode, 200);
   assert.match(audio.headers['content-type'], /^audio\/wav/);
   assert.equal(audio.headers['content-length'], '8');
   assert.equal(audio.headers['accept-ranges'], 'bytes');
   assert.deepEqual(audio.rawPayload, Buffer.from('RIFFfake'));
+  await app.close();
+});
+
+test('deletes one confirmed render and keeps the project available for later renders', async () => {
+  const { root } = await fixture();
+  const rendersDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders');
+  const older = path.join(rendersDir, 'render-001');
+  const latest = path.join(rendersDir, 'render-002');
+  await mkdir(older, { recursive: true });
+  await writeFile(path.join(older, 'full-audio.wav'), Buffer.from('older'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await mkdir(latest, { recursive: true });
+  await writeFile(path.join(latest, 'full-audio.wav'), Buffer.from('latest'));
+  const app = await buildApp({ repoRoot: root });
+
+  assert.equal((await app.inject('/api/projects/demo/latest-render')).json().renderId, 'render-002');
+  const deleted = await app.inject({ method: 'DELETE', url: '/api/projects/demo/renders/render-002', payload: {} });
+  assert.deepEqual(deleted.json(), { deleted: true, renderId: 'render-002' });
+  await assert.rejects(access(latest));
+  assert.equal((await app.inject('/api/projects/demo/latest-render')).json().renderId, 'render-001');
+  assert.equal((await app.inject({ method: 'DELETE', url: '/api/projects/demo/renders/missing' })).statusCode, 404);
+  await app.close();
+});
+
+test('rejects render deletion while the same project has an active job', async () => {
+  const { root } = await fixture();
+  const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-locked');
+  await mkdir(renderDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('locked'));
+  let child;
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    return child;
+  } });
+
+  assert.equal((await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} })).statusCode, 202);
+  const rejected = await app.inject({ method: 'DELETE', url: '/api/projects/demo/renders/render-locked', payload: {} });
+  assert.equal(rejected.statusCode, 409);
+  assert.match(rejected.json().error, /工程版本已被任务.*锁定/);
+  await access(renderDir);
+  child.emit('close', 0);
   await app.close();
 });
 

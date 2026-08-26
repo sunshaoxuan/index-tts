@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -272,7 +272,28 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker } = {}
     const name = await latestRender(path.join(projectRoot, id));
     if (!name) return { available: false };
     const base = `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}`;
-    return { available: true, audio: `${base}/audio`, package: `${base}/package`, manifest: `${base}/manifest` };
+    return { available: true, renderId: name, audio: `${base}/audio`, package: `${base}/package`, manifest: `${base}/manifest` };
+  });
+  app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const renderId = safeProjectId(request.params.renderId);
+      if (activeJob?.projectId === id) {
+        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+        error.statusCode = 409;
+        throw error;
+      }
+      const rendersDir = path.resolve(projectRoot, id, 'renders');
+      const target = path.resolve(rendersDir, renderId);
+      if (path.dirname(target) !== rendersDir) throw new Error('交付记录路径无效');
+      const info = await stat(target);
+      if (!info.isDirectory()) throw new Error('交付记录不是目录');
+      await rm(target, { recursive: true, force: false });
+      return { deleted: true, renderId };
+    } catch (error) {
+      const statusCode = error.statusCode || (error.code === 'ENOENT' ? 404 : 400);
+      return reply.code(statusCode).send({ error: error.code === 'ENOENT' ? '交付记录不存在' : error.message });
+    }
   });
   async function startJob(projectId, kind) {
     if (activeJob) {

@@ -29,6 +29,7 @@
 10. `GET /api/jobs/:id`
 11. `GET /api/active-job`
 12. `GET /api/projects/:id/latest-render`
+13. `DELETE /api/projects/:id/renders/:renderId`
 
 ## 数据边界
 
@@ -89,3 +90,4 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 旧 Gradio 产品页面和对应 UI 测试已经删除。Windows 产品启动入口只启动 Node 服务。Python 不再渲染产品页面。
 
 产品固定使用专用端口 7864。启动器发现端口已被占用时会终止占用进程，再启动当前版本，不再通过参数切换产品端口。
+完整交付按 `renders/<renderId>` 保存为独立版本。`GET /api/projects/:id/latest-render` 返回最近一次交付标识和下载入口。`DELETE /api/projects/:id/renders/:renderId` 在无活动任务时删除用户确认的单个交付目录，并以工程目录和合法标识校验限制目标范围。删除后前端重新查询最近一次交付，较早版本存在时立即回退显示。工程 JSON、永久音色库和其他交付目录不在删除范围内。
