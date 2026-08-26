@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, App as AntApp, Button, Card, Empty, Flex, Input, InputNumber, Layout, Modal,
-  Popconfirm, Progress, Select, Space, Switch, Table, Tabs, Tag, Typography,
+  Alert, App as AntApp, AutoComplete, Button, Card, Empty, Flex, Input, InputNumber, Layout, Modal,
+  Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PlusOutlined, SaveOutlined, SoundOutlined,
+  AudioOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, findMatchingFragment } from './fragmentState';
+import { normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
-import type { Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
+import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow } from './types';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -24,17 +25,6 @@ function formatAudioTime(value: number) {
 
 function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
-}
-
-function inferVoiceGender(voiceHint: string, profile: string, name: string) {
-  const femaleTerms = ['女性', '女声', '女人', '妇人', '妻子', '母亲', '奶奶', '姐姐', '妹妹', '女儿', '少女', '女孩'];
-  const maleTerms = ['男性', '男声', '男人', '丈夫', '父亲', '爷爷', '哥哥', '弟弟', '儿子', '少年', '男孩'];
-  for (const source of [voiceHint, profile, name]) {
-    const female = femaleTerms.some(term => source.includes(term));
-    const male = maleTerms.some(term => source.includes(term));
-    if (female !== male) return female ? 'female' : 'male';
-  }
-  return 'unspecified';
 }
 
 function StudioAudio({ src }: { src: string }) {
@@ -79,7 +69,7 @@ function VoicePreview({ voiceId }: { voiceId: string }) {
     try { if (audio.paused) await audio.play(); else audio.pause(); }
     catch { setFailed(true); }
   };
-  return <div className={`voice-preview${failed ? ' voice-preview-failed' : ''}`}>
+  return <div className={`voice-preview${failed ? ' voice-preview-failed' : ''}`} onClick={event => event.stopPropagation()}>
     <audio ref={audioRef} src={`/api/voices/${encodeURIComponent(voiceId)}/audio`} preload="metadata" onLoadedMetadata={(event) => { setFailed(false); setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0); }} onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setCurrent(0); }} onError={() => { setPlaying(false); setFailed(true); }} />
     <button type="button" disabled={failed} onClick={toggle} aria-label={failed ? `音色 ${voiceId} 不可用` : playing ? `暂停音色 ${voiceId}` : `播放音色 ${voiceId}`}>{playing ? <PauseOutlined /> : <CaretRightOutlined />}</button>
     <div className="voice-preview-body"><strong title={voiceId}>{voiceId}</strong><input aria-label={`音色 ${voiceId} 进度`} disabled={failed || !safeDuration} type="range" min={0} max={safeDuration} step={0.05} value={Math.min(current, safeDuration)} onInput={(event) => { const value = Number(event.currentTarget.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} /></div>
@@ -104,6 +94,15 @@ function Studio() {
   const [activeTab, setActiveTab] = useState('source');
   const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
   const [roleDraft, setRoleDraft] = useState<RoleRow>();
+  const [roleAssetDraft, setRoleAssetDraft] = useState<CharacterAsset>();
+  const [profileGenerating, setProfileGenerating] = useState(false);
+  const [portraitGenerating, setPortraitGenerating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
+  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', imageModel: 'gpt-image-1', clearApiKey: false });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsTesting, setSettingsTesting] = useState(false);
+  const [availableAiModels, setAvailableAiModels] = useState<string[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string>();
   const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
@@ -113,8 +112,9 @@ function Studio() {
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
 
   useEffect(() => {
-    Promise.all([api.presets(), api.projects(), api.activeJob(), api.health()]).then(([p, list, active, health]) => {
-      setPresets(p); setProjects(list); setRuntimeHealth(health);
+    Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
+      setPresets(p); setProjects(list); setRuntimeHealth(health); setAiMediaSettings(mediaSettings);
+      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, imageModel: mediaSettings.imageModel, clearApiKey: false });
       if (active.available && active.jobId && active.kind && active.projectId) {
         setProjectId(active.projectId);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
@@ -324,10 +324,13 @@ function Studio() {
     let suffix = project.roles.length + 1;
     while (project.roles.some(row => row[0] === `role-${suffix}`)) suffix += 1;
     const newRole: RoleRow = [`role-${suffix}`, '新角色', 'character', '新补充的独立说话人物。请根据原文补充身份、年龄阶段、人物关系、性格、经历和叙事作用。', '中性清晰', '', '自然叙述', '是'];
-    patchProject('roles', [...project.roles, newRole]);
+    const newAsset = normalizeCharacterAsset(newRole);
+    setProject({ ...project, roles: [...project.roles, newRole], character_assets: { ...project.character_assets, [newRole[0]]: newAsset } });
+    setDirty(true);
     setActiveRoleId(newRole[0]);
     setRoleEditorIndex(project.roles.length);
     setRoleDraft([...newRole]);
+    setRoleAssetDraft(newAsset);
   };
 
   const openRoleEditor = (index: number) => {
@@ -335,25 +338,83 @@ function Studio() {
     setActiveRoleId(project.roles[index][0]);
     setRoleEditorIndex(index);
     setRoleDraft([...project.roles[index]]);
+    setRoleAssetDraft(normalizeCharacterAsset(project.roles[index], project.character_assets?.[project.roles[index][0]]));
   };
 
-  const updateRoleDraft = (column: number, value: string) => setRoleDraft(current => current?.map((cell, index) => index === column ? value : cell) as RoleRow);
+  const updateRoleDraft = (column: number, value: string) => setRoleDraft(current => current?.map((cell, index) => index === column ? value : ([1, 2, 3, 4, 6].includes(column) && index === 7 ? '是' : cell)) as RoleRow);
+
+  const updateRoleDemographics = (gender: CharacterGender, age: number) => {
+    setRoleAssetDraft(current => current ? updateAssetDemographics(current, gender, age) : current);
+    updateRoleDraft(7, '是');
+  };
+
+  const expandCharacterProfile = async () => {
+    if (!project || !roleDraft || !roleAssetDraft || jobRunning) return;
+    setProfileGenerating(true);
+    try {
+      const result = await api.expandCharacterProfile(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age });
+      updateRoleDraft(3, result.profile);
+      setRoleAssetDraft(current => current ? { ...current, profile_updated_by: result.model } : current);
+      message.success(`人物小传已由 ${result.model} 扩写，请核对后应用角色设置`);
+    } catch (error) { message.error((error as Error).message); }
+    finally { setProfileGenerating(false); }
+  };
+
+  const generateCharacterPortrait = async () => {
+    if (!project || !roleDraft || !roleAssetDraft || jobRunning) return;
+    setPortraitGenerating(true);
+    try {
+      const result = await api.generateCharacterPortrait(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age });
+      setRoleAssetDraft(current => current ? { ...current, portrait_url: result.portraitUrl, portrait_prompt: result.portraitPrompt } : current);
+      message.success(`角色形象已由 ${result.model} 生成，请应用角色设置并保存工程`);
+    } catch (error) { message.error((error as Error).message); }
+    finally { setPortraitGenerating(false); }
+  };
+
+  const saveAiMediaSettings = async () => {
+    setSettingsSaving(true);
+    try {
+      const saved = await api.saveAiMediaSettings(settingsDraft);
+      setAiMediaSettings(saved);
+      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, imageModel: saved.imageModel, clearApiKey: false });
+      setSettingsOpen(false);
+      message.success('AI 人物与图像服务配置已保存在本机运行目录');
+    } catch (error) { message.error((error as Error).message); }
+    finally { setSettingsSaving(false); }
+  };
+
+  const testAiMediaSettings = async () => {
+    setSettingsTesting(true);
+    try {
+      const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined });
+      setAvailableAiModels(result.models);
+      const missing = [settingsDraft.textModel, settingsDraft.imageModel].filter(model => model && !result.models.includes(model));
+      if (missing.length) message.warning(`连接成功，已加载 ${result.modelCount} 个模型。当前选择不在可用列表：${missing.join('、')}`);
+      else message.success(`连接成功，已加载 ${result.modelCount} 个可用模型`);
+    } catch (error) { setAvailableAiModels([]); message.error((error as Error).message); }
+    finally { setSettingsTesting(false); }
+  };
 
   const applyRoleDraft = () => {
-    if (!project || roleEditorIndex === undefined || !roleDraft || jobRunning) return;
+    if (!project || roleEditorIndex === undefined || !roleDraft || !roleAssetDraft || jobRunning) return;
     if (!roleDraft[1].trim()) { message.error('请填写角色名称'); return; }
     if (roleDraft[3].trim().length < 20) { message.error('人物小传至少填写 20 个字符，并说明身份、关系或性格'); return; }
     if (!roleDraft[4].trim()) { message.error('请选择音色预设或填写声音导演提示'); return; }
-    patchProject('roles', project.roles.map((row, index) => index === roleEditorIndex ? roleDraft : row));
-    setRoleEditorIndex(undefined); setRoleDraft(undefined);
-    message.success('人物小传与声音方案已应用，请保存工程后生成音色');
+    const roles = project.roles.map((row, index) => index === roleEditorIndex ? roleDraft : row);
+    setProject({ ...project, roles, character_assets: { ...project.character_assets, [roleDraft[0]]: roleAssetDraft } });
+    setDirty(true);
+    setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined);
+    message.success('角色资产与声音方案已应用，请保存工程后生成音色');
   };
 
   const removeRole = (roleId: string) => {
     if (!project || jobRunning) return;
     if (project.segments.some(row => row[2] === roleId)) { message.error('该角色仍被分句引用，请先调整分句归属'); return; }
     const roles = project.roles.filter(row => row[0] !== roleId);
-    patchProject('roles', roles);
+    const characterAssets = { ...project.character_assets };
+    delete characterAssets[roleId];
+    setProject({ ...project, roles, character_assets: characterAssets });
+    setDirty(true);
     setActiveRoleId(current => normalizeActiveRoleId(roles, current));
   };
 
@@ -407,25 +468,13 @@ function Studio() {
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];
   const activeRole = project?.roles.find(row => row[0] === activeRoleId);
   const matchingFragmentCount = countMatchingFragments(render.fragments, project?.segments ?? []);
+  const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel, settingsDraft.imageModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel, settingsDraft.imageModel]);
+  const textModelUnavailable = Boolean(availableAiModels.length && settingsDraft.textModel && !availableAiModels.includes(settingsDraft.textModel));
+  const imageModelUnavailable = Boolean(availableAiModels.length && settingsDraft.imageModel && !availableAiModels.includes(settingsDraft.imageModel));
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
     { value: 'reporter', label: '记者' }, { value: 'interviewee', label: '采访对象' },
   ];
-  const roleColumns = useMemo<ColumnsType<RoleRow>>(() => {
-    if (!presets) return [];
-    return [
-      { title: '轨道 ID', dataIndex: 0, width: 125, fixed: 'left', render: (v) => <Text code>{v}</Text> },
-      { title: '角色', width: 150, render: (_v, row) => <div className="role-identity"><strong>{row[1]}</strong><Tag>{presets.roleKindLabels[row[2]] || row[2]}</Tag></div> },
-      { title: '人物小传', dataIndex: 3, width: 330, render: (v, row) => {
-        const incomplete = String(v).trim().length < 40 || String(v).trim() === row[1] || /请.*补充|证据尚不足/.test(String(v));
-        return <div className="role-biography"><Tag>{incomplete ? '待补充' : '已建立'}</Tag><Paragraph ellipsis={{ rows: 3 }} title={v}>{v}</Paragraph></div>;
-      } },
-      { title: '声音导演方案', width: 250, render: (_v, row) => <div className="voice-plan-summary"><strong>{presets.voiceStyles.includes(row[4]) ? `预设 · ${row[4]}` : '高级自定义'}</strong><Text>{row[4]}</Text><Text>节奏 · {row[6]}</Text><Tag>{row[7] === '是' ? '保存后重新生成' : '保持当前音色'}</Tag></div> },
-      { title: '音色 ID 与试听', dataIndex: 5, width: 270, render: (v) => <VoicePreview voiceId={v} /> },
-      { title: '操作', key: 'actions', width: 190, render: (_v, row, index) => <Space><Button disabled={jobRunning} icon={<EditOutlined />} onClick={() => openRoleEditor(index)}>编辑人物与音色</Button><Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm></Space> },
-    ];
-  }, [presets, project, jobRunning]);
-
   const roleVoiceMode = roleDraft && presets?.voiceStyles.includes(roleDraft[4]) ? 'preset' : 'custom';
   const voiceConditionPrompt = roleDraft && presets ? (presets.voiceStylePrompts[roleDraft[4]] || roleDraft[4] || '尚未填写声音导演提示') : '';
   const rhythmPrompt = roleDraft && presets ? (presets.rhythmPrompts[roleDraft[6]] || roleDraft[6]) : '';
@@ -435,10 +484,11 @@ function Studio() {
   const routingCurrent = Boolean(project && trimSentence(guidanceRouting.guidance || '') === trimSentence(project.guidance));
   const roleGuidanceAssignments = roleDraft && routingCurrent ? (guidanceRouting.assignments || []).filter(item => item.target_role_ids.includes(roleDraft[0])) : [];
   const effectiveGuidance = roleGuidanceAssignments.map(item => trimSentence(item.instruction)).filter(Boolean).join('；');
-  const expectedGender = roleDraft ? inferVoiceGender(`${voiceConditionPrompt} ${effectiveGuidance}`, roleDraft[3], roleDraft[1]) : 'unspecified';
+  const expectedGender = roleAssetDraft?.gender || 'unspecified';
   const genderLabel = expectedGender === 'female' ? '女性' : expectedGender === 'male' ? '男性' : '未指定';
   const genderConstraint = expectedGender === 'female' ? '声音性别硬约束：女性；男性或中性偏男性嗓音不合格。' : expectedGender === 'male' ? '声音性别硬约束：男性；女性或中性偏女性嗓音不合格。' : '';
-  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。本角色有效导演上下文：${effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。${genderConstraint}表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
+  const pitchConstraint = roleAssetDraft ? `角色年龄设定：约 ${roleAssetDraft.age} 岁。建议基频区间：${roleAssetDraft.pitch_min_hz} 至 ${roleAssetDraft.pitch_max_hz} Hz；目标基频中位数约 ${roleAssetDraft.pitch_target_hz} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。` : '';
+  const finalVoiceInstruction = roleDraft && project && presets ? `为${roleVoiceTitle}设计可长期复用的独特声音。作品体裁：${presets.contentTypeLabels[project.content_type] || project.content_type}。本角色有效导演上下文：${effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}。人物小传：${trimSentence(roleDraft[3]) || '原文身份信息不足，使用自然可信的角色声音'}。声音导演：${trimSentence(voiceConditionPrompt) || '采用与人物身份和作品体裁相符的自然声线'}。${genderConstraint}${pitchConstraint}表达节奏：${trimSentence(rhythmPrompt) || '自然表达，按语义停连'}。吐字清晰，干声，无背景音乐，无环境噪声。` : '';
 
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
@@ -523,12 +573,43 @@ function Studio() {
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'roles', label: `角色与音色 ${project.roles.length}`, children: <Card title="角色轨道" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}><Alert type="info" showIcon message="AI 全文分析会为每个角色建立人物小传和声音导演建议。点击任意角色行、播放试听或打开编辑时，该行会成为当前重点。" /><div className="role-focus-summary" aria-live="polite"><span>Current Focus / 当前重点</span><strong>{activeRole ? `${activeRole[1]} · ${activeRole[0]}` : '点击任意角色行'}</strong><Text>{activeRole ? '试听、编辑和键盘焦点会持续标记这一角色轨道' : '选择后会保持行高亮，便于在长列表中定位'}</Text></div><Table className="studio-table role-table" rowKey={(row) => row[0]} rowClassName={(row) => roleRowClassName(row[0], activeRoleId)} onRow={(row) => ({ tabIndex: 0, 'aria-selected': row[0] === activeRoleId, onClick: () => setActiveRoleId(row[0]), onFocus: () => setActiveRoleId(row[0]), onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setActiveRoleId(row[0]); } } })} columns={roleColumns} dataSource={project.roles} pagination={false} scroll={{ x: 1315, y: 560 }} /></Card> },
+          { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Space wrap><Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>AI 人物与图像服务</Button><Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button></Space>}>
+            <Alert type="info" showIcon message="每个人物使用一张独立卡片。打开卡片即可编辑身份、性别、年龄、详细小传、声音特征、目标频率和角色形象。音色仍是可试听、可重新生成的声音样本。" />
+            <div className="role-focus-summary" aria-live="polite"><span>Current Character / 当前人物</span><strong>{activeRole ? `${activeRole[1]} · ${activeRole[0]}` : '打开任意角色卡片'}</strong><Text>{activeRole ? '角色卡片集中保存人物设定、视觉资产和声音样本' : '选择后会保持卡片高亮，便于在人物较多时定位'}</Text></div>
+            <div className="character-card-grid">
+              {project.roles.map((row, index) => {
+                const asset = normalizeCharacterAsset(row, project.character_assets?.[row[0]]);
+                const incomplete = String(row[3]).trim().length < 80 || /请.*补充|证据尚不足/.test(String(row[3]));
+                const gender = asset.gender === 'female' ? '女性' : asset.gender === 'male' ? '男性' : '性别待定';
+                return <Card key={row[0]} hoverable className={`character-card ${roleRowClassName(row[0], activeRoleId)}`} tabIndex={0} aria-selected={row[0] === activeRoleId} onClick={() => { setActiveRoleId(row[0]); openRoleEditor(index); }} onFocus={() => setActiveRoleId(row[0])} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRoleEditor(index); } }}>
+                  <div className="character-portrait">{asset.portrait_url ? <img src={asset.portrait_url} alt={`${row[1]}角色形象`} /> : <div className="character-portrait-placeholder"><UserOutlined /><span>尚未生成形象</span></div>}<Tag className="character-id">{row[0]}</Tag></div>
+                  <div className="character-card-body"><div className="character-card-title"><div><strong>{row[1]}</strong><Text>{presets.roleKindLabels[row[2]] || row[2]}</Text></div><Tag>{incomplete ? '小传待完善' : '详细小传已建立'}</Tag></div>
+                    <Space wrap><Tag>{gender}</Tag><Tag>{asset.age} 岁</Tag><Tag>{asset.pitch_target_hz} Hz 目标</Tag></Space>
+                    <Paragraph ellipsis={{ rows: 4 }} title={row[3]}>{row[3]}</Paragraph>
+                    <div className="pitch-summary"><span>建议基频</span><strong>{asset.pitch_min_hz} 至 {asset.pitch_max_hz} Hz</strong></div>
+                    <VoicePreview voiceId={row[5]} />
+                    <div className="character-card-actions"><Button disabled={jobRunning} type="primary" icon={<EditOutlined />} onClick={event => { event.stopPropagation(); openRoleEditor(index); }}>打开角色卡片</Button><Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} onClick={event => event.stopPropagation()} /></Popconfirm></div>
+                  </div>
+                </Card>;
+              })}
+            </div>
+          </Card> },
           { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 2260, y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>
       </>}
+      <Modal width={720} title="AI 人物与图像服务" open={settingsOpen} okText="保存本机配置" cancelText="取消" confirmLoading={settingsSaving} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
+        <Space direction="vertical" size="large" className="modal-fields ai-media-settings">
+          <Alert type="warning" showIcon message="外部内容传输提示" description="点击 AI 扩写人物小传时，会把该角色附近的稿件证据发送到你配置的服务。生成形象时，只发送角色名称、性别、年龄、人物小传和视觉提示。API Key 只保存在本机 runtime-output，不写入工程、Git 或浏览器回读内容。" />
+          <label><Text strong>OpenAI 兼容 Endpoint</Text><Input value={settingsDraft.endpoint} onChange={event => setSettingsDraft(current => ({ ...current, endpoint: event.target.value }))} placeholder="例如：http://ccnode.briconbric.com:49530/v1" /></label>
+          <label><Text strong>API Key</Text><Input.Password value={settingsDraft.apiKey} onChange={event => setSettingsDraft(current => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} placeholder={aiMediaSettings?.hasApiKey ? '已保存，留空表示继续使用当前 Key' : '填写兼容服务 API Key'} /></label>
+          {aiMediaSettings?.hasApiKey && <label className="clear-key-control"><Switch checked={settingsDraft.clearApiKey} onChange={checked => setSettingsDraft(current => ({ ...current, clearApiKey: checked, apiKey: '' }))} /><Text>清除当前保存的 API Key</Text></label>}
+          <Button icon={<ReloadOutlined />} loading={settingsTesting} onClick={testAiMediaSettings}>测试连接并加载模型</Button>
+          {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型`} description={textModelUnavailable || imageModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请从下拉列表重新选择。' : '人物小传模型和角色图像模型都在当前可用列表中。'} />}
+          <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>
+        </Space>
+      </Modal>
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
       <Modal className="split-segment-modal" width={760} title={splitRow ? `拆分第 ${splitRow[0]} 条分句` : '拆分分句'} open={Boolean(splitEditor && splitRow)} okText="在光标处拆分" cancelText="取消" okButtonProps={{ disabled: jobRunning || !splitValid }} onOk={applySplit} onCancel={() => setSplitEditor(undefined)}>
         <Alert type="info" showIcon message="点击原文中的目标位置放置光标。拆分后两条继承当前角色和导演参数，前半句使用 250 ms 短停顿，后半句保留原停顿。" />
@@ -536,21 +617,26 @@ function Studio() {
         <Text className="split-position">拆分位置 {splitEditor?.offset ?? 0} / {splitSource.length}</Text>
         <div className="split-preview"><section><Text strong>前半句</Text><p>{splitBefore || '尚无可朗读文字'}</p></section><section><Text strong>后半句</Text><p>{splitAfter || '尚无可朗读文字'}</p></section></div>
       </Modal>
-      <Modal className="role-editor-modal" width={920} title={roleDraft ? `${roleDraft[1]} · 人物与音色导演` : '人物与音色导演'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); }}>
-        {roleDraft && presets && project && <div className="role-editor-grid">
+      <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
+        {roleDraft && roleAssetDraft && presets && project && <div className="role-editor-grid">
           <section className="role-editor-fields">
             <div className="editor-section-heading"><span>01 / Character</span><strong>人物身份与小传</strong><Text>人物小传来自 AI 全文分析，也是音色选择的主要人物依据。信息必须来自原文，未知内容可以明确标注。</Text></div>
             <div className="editor-two-column"><label><Text strong>角色名称</Text><Input disabled={jobRunning} value={roleDraft[1]} onChange={event => updateRoleDraft(1, event.target.value)} /></label><label><Text strong>角色类型</Text><Select disabled={jobRunning} value={roleDraft[2]} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={value => updateRoleDraft(2, value)} /></label></div>
-            <label><Text strong>人物小传</Text><Input.TextArea disabled={jobRunning} rows={6} value={roleDraft[3]} onChange={event => updateRoleDraft(3, event.target.value)} placeholder="例如：四十岁左右的刑警，观察敏锐、行事克制，与中冢长期共事。原文未说明家庭背景。负责推动案件调查。" /><small>{roleDraft[3].length} 字符。建议包含身份、年龄阶段、人物关系、性格、经历和叙事作用。</small></label>
+            <div className="editor-two-column"><label><Text strong>性别</Text><Select disabled={jobRunning} value={roleAssetDraft.gender} options={[{ value: 'female', label: '女性' }, { value: 'male', label: '男性' }, { value: 'unspecified', label: '未指定' }]} onChange={(value: CharacterGender) => updateRoleDemographics(value, roleAssetDraft.age)} /></label><label><Text strong>年龄</Text><InputNumber disabled={jobRunning} min={5} max={100} value={roleAssetDraft.age} addonAfter="岁" onChange={value => updateRoleDemographics(roleAssetDraft.gender, value ?? 35)} /></label></div>
+            <label><Flex justify="space-between" align="center"><Text strong>详细人物小传</Text><Button disabled={jobRunning} loading={profileGenerating} icon={<UserOutlined />} onClick={expandCharacterProfile}>AI 扩写详细小传</Button></Flex><Input.TextArea disabled={jobRunning} rows={9} value={roleDraft[3]} onChange={event => updateRoleDraft(3, event.target.value)} placeholder="建议覆盖身份、人物关系、外貌线索、经历、欲望与矛盾、性格、行为习惯、说话方式和叙事作用。未知信息应明确标注。" /><small>{roleDraft[3].length} 字符。调用外部模型前会发送该角色附近的稿件证据，请先确认系统配置和数据边界。</small></label>
 
-            <div className="editor-section-heading"><span>02 / Voice</span><strong>声音导演方案</strong><Text>预设适合快速选择。高级自定义直接交给 VoiceDesign，建议描述年龄感、声线、音高、共鸣、气息、吐字和情绪底色。</Text></div>
+            <div className="editor-section-heading"><span>02 / Portrait</span><strong>角色形象</strong><Text>角色形象以详细人物小传为主要依据，用于后续插图和视频关键帧中的稳定人物设计。</Text></div>
+            <div className="portrait-editor"><div className="portrait-editor-preview">{roleAssetDraft.portrait_url ? <img src={roleAssetDraft.portrait_url} alt={`${roleDraft[1]}角色形象预览`} /> : <div className="character-portrait-placeholder"><PictureOutlined /><span>尚未生成角色形象</span></div>}</div><div><Button type="primary" disabled={jobRunning || roleDraft[3].trim().length < 20} loading={portraitGenerating} icon={<PictureOutlined />} onClick={generateCharacterPortrait}>{roleAssetDraft.portrait_url ? '重新生成角色形象' : '生成角色形象'}</Button><Text>图像请求会使用当前名称、性别、年龄和人物小传。生成结果先进入当前卡片，应用设置并保存工程后完成关联。</Text>{roleAssetDraft.portrait_prompt && <Paragraph ellipsis={{ rows: 4 }} title={roleAssetDraft.portrait_prompt}>最近图像提示：{roleAssetDraft.portrait_prompt}</Paragraph>}</div></div>
+
+            <div className="editor-section-heading"><span>03 / Voice</span><strong>声音特征与频率目标</strong><Text>性别和年龄会产生建议基频区间。滑块设置目标基频中位数，VoiceDesign 会把它写入生成指令，并从多次候选中选择最接近目标的自然声音。</Text></div>
             <label><Text strong>音色生成方式</Text><Select disabled={jobRunning} value={roleVoiceMode} options={[{ value: 'preset', label: '使用可靠音色预设' }, { value: 'custom', label: '高级自定义声音导演' }]} onChange={value => updateRoleDraft(4, value === 'preset' ? '中性清晰' : '')} /></label>
             {roleVoiceMode === 'preset' ? <label><Text strong>音色预设</Text><Select disabled={jobRunning} value={roleDraft[4]} options={presets.voiceStyles.map(value => ({ value, label: `${value} · ${presets.voiceStylePrompts[value]}` }))} onChange={value => updateRoleDraft(4, value)} /></label> : <label><Text strong>高级声音导演提示</Text><Input.TextArea disabled={jobRunning} rows={4} value={roleDraft[4]} onChange={event => updateRoleDraft(4, event.target.value)} placeholder="例如：四十岁男性的中低音，胸腔共鸣明显，气息稳定，吐字略慢且边界清楚，基础情绪冷静克制。" /><small>这里写声音特征，人物经历放在上方人物小传中。</small></label>}
+            <label className="pitch-control"><Flex justify="space-between"><Text strong>目标基频中位数</Text><Text>{roleAssetDraft.pitch_target_hz} Hz</Text></Flex><Slider disabled={jobRunning} min={roleAssetDraft.pitch_min_hz} max={roleAssetDraft.pitch_max_hz} value={roleAssetDraft.pitch_target_hz} tooltip={{ formatter: value => `${value} Hz` }} onChange={value => { setRoleAssetDraft(current => current ? { ...current, pitch_target_hz: value } : current); updateRoleDraft(7, '是'); }} /><small>{recommendPitchRange(roleAssetDraft.gender, roleAssetDraft.age).label}。靠近下限更低沉，靠近上限更高亮。此值是自然发声目标，最终实测值会随模型生成结果变化。</small></label>
             <div className="editor-voice-controls"><label><Text strong>角色表达节奏</Text><Select disabled={jobRunning} value={roleDraft[6]} options={presets.rhythms.map(value => ({ value, label: `${value} · ${presets.rhythmPrompts[value]}` }))} onChange={value => updateRoleDraft(6, value)} /></label><label className="regenerate-control"><Text strong>下次生成处理</Text><div><Switch disabled={jobRunning} checked={roleDraft[7] === '是'} onChange={checked => updateRoleDraft(7, checked ? '是' : '否')} /><Text>{roleDraft[7] === '是' ? '重新生成并建立新签名' : '保持当前稳定音色'}</Text></div></label></div>
           </section>
           <aside className="voice-instruction-preview">
-            <div className="editor-section-heading"><span>03 / Preview</span><strong>AI 会参考什么</strong><Text>下列内容会组合成声音生成指令。修改人物小传、声音导演或节奏后，请打开重新生成。</Text></div>
-            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>原始导演补充</dt><dd>{project.guidance || '未填写'}</dd></div><div><dt>AI 语义分配</dt><dd>{routingCurrent ? `${guidanceRouting.model || '本地 AI'} 已把补充分配到明确轨道` : project.guidance ? '等待 AI 语义分配；未分配内容不会进入任何音色指令' : '没有需要分配的导演补充'}</dd></div><div><dt>本角色有效补充</dt><dd>{effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}{roleGuidanceAssignments.map(item => <small key={item.clause_index}><br />“{item.source_text}” → {item.target_role_names.join('、')}：{item.reason}</small>)}</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>声音性别硬约束</dt><dd>{genderLabel}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
+            <div className="editor-section-heading"><span>04 / Preview</span><strong>AI 会参考什么</strong><Text>下列内容会组合成声音生成指令。修改人物小传、年龄、性别、目标频率、声音导演或节奏后，请打开重新生成。</Text></div>
+            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>原始导演补充</dt><dd>{project.guidance || '未填写'}</dd></div><div><dt>AI 语义分配</dt><dd>{routingCurrent ? `${guidanceRouting.model || '本地 AI'} 已把补充分配到明确角色` : project.guidance ? '等待 AI 语义分配；未分配内容不会进入任何音色指令' : '没有需要分配的导演补充'}</dd></div><div><dt>本角色有效补充</dt><dd>{effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}{roleGuidanceAssignments.map(item => <small key={item.clause_index}><br />“{item.source_text}” → {item.target_role_names.join('、')}：{item.reason}</small>)}</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>年龄与性别</dt><dd>{roleAssetDraft.age} 岁 · {genderLabel}</dd></div><div><dt>建议与目标频率</dt><dd>{roleAssetDraft.pitch_min_hz} 至 {roleAssetDraft.pitch_max_hz} Hz · 目标 {roleAssetDraft.pitch_target_hz} Hz</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
             <Text strong>最终 VoiceDesign 指令预览</Text><p className="instruction-copy">{finalVoiceInstruction}</p>
             <div className="preview-current-voice"><Text strong>当前稳定音色</Text><VoicePreview voiceId={roleDraft[5]} /></div>
           </aside>

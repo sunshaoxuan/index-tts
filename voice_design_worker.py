@@ -34,9 +34,11 @@ def gender_pitch_matches(expected_gender: str, median_pitch: float | None) -> bo
     return True
 
 
-def gender_pitch_score(expected_gender: str, median_pitch: float | None) -> float:
+def gender_pitch_score(expected_gender: str, median_pitch: float | None, target_pitch: float | None = None) -> float:
     if median_pitch is None:
         return float("-inf")
+    if target_pitch is not None:
+        return -abs(median_pitch - target_pitch)
     if expected_gender == "female":
         return median_pitch
     if expected_gender == "male":
@@ -141,7 +143,8 @@ def generate_voice_design(
             },
         )
         expected_gender = str(job.get("expected_gender") or "unspecified")
-        max_attempts = int(payload.get("gender_max_attempts", 3)) if expected_gender in {"female", "male"} else 1
+        target_pitch = float(job["pitch_target_hz"]) if job.get("pitch_target_hz") is not None else None
+        max_attempts = int(payload.get("gender_max_attempts", 3)) if expected_gender in {"female", "male"} or target_pitch is not None else 1
         best_wav, best_sample_rate, best_pitch, best_score, attempts_used = None, None, None, float("-inf"), 0
         for attempt in range(max_attempts):
             candidate_seed = job_seed + attempt
@@ -167,13 +170,14 @@ def generate_voice_design(
                 repetition_penalty=float(payload.get("repetition_penalty", 1.05)),
                 max_new_tokens=int(payload.get("max_new_tokens", 1024)),
             )
-            median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} else None
-            score = gender_pitch_score(expected_gender, median_pitch)
+            median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
+            score = gender_pitch_score(expected_gender, median_pitch, target_pitch)
             if best_wav is None or score > best_score:
                 best_wav, best_sample_rate, best_pitch, best_score = wavs[0], sample_rate, median_pitch, score
             attempts_used = attempt + 1
             if gender_pitch_matches(expected_gender, median_pitch):
-                break
+                if target_pitch is None or (median_pitch is not None and abs(float(median_pitch) - target_pitch) <= max(15.0, target_pitch * 0.12)):
+                    break
         if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, best_pitch):
             label = "女性" if expected_gender == "female" else "男性"
             measured = "无法测量" if best_pitch is None else f"{best_pitch:.1f} Hz"
@@ -187,6 +191,7 @@ def generate_voice_design(
                 "path": str(output_path),
                 "expected_gender": expected_gender,
                 "median_pitch_hz": best_pitch,
+                "pitch_target_hz": target_pitch,
                 "generation_attempts": attempts_used,
             }
         )

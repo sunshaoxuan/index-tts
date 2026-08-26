@@ -192,6 +192,7 @@ class NovelProjectStore:
         segments: list[list[Any]],
         pronunciations: Any,
         voice_files: Iterable[str] | None,
+        character_assets: dict[str, Any] | None = None,
         director_history: list[dict[str, Any]] | None = None,
         director_memory: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -215,6 +216,8 @@ class NovelProjectStore:
             payload["director_history"] = director_history
         if director_memory is not None:
             payload["director_memory"] = director_memory
+        if character_assets is not None:
+            payload["character_assets"] = character_assets
         self._write(self.project_dir(project_id) / "project.json", payload)
         return payload
 
@@ -241,6 +244,10 @@ class NovelProjectStore:
             "model": str(model),
             "seed": int(seed),
             "expected_gender": str(job.get("expected_gender", "unspecified")),
+            "character_age": job.get("character_age"),
+            "pitch_min_hz": job.get("pitch_min_hz"),
+            "pitch_max_hz": job.get("pitch_max_hz"),
+            "pitch_target_hz": job.get("pitch_target_hz"),
             "median_pitch_hz": job.get("median_pitch_hz"),
             "gender_verified": bool(job.get("gender_verified", False)),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

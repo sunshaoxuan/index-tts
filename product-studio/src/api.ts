@@ -1,4 +1,4 @@
-import type { Presets, ProjectPayload } from './types';
+import type { AiMediaModelDiscovery, AiMediaSettings, CharacterAsset, Presets, ProjectPayload } from './types';
 
 export interface RuntimeHealth {
   status: string;
@@ -30,6 +30,9 @@ const emptyPost: RequestInit = { method: 'POST', body: JSON.stringify({}) };
 export const api = {
   health: () => request<RuntimeHealth>('/api/health'),
   presets: () => request<Presets>('/api/presets'),
+  aiMediaSettings: () => request<AiMediaSettings>('/api/settings/ai-media'),
+  testAiMediaSettings: (settings: { endpoint: string; apiKey?: string }) => request<AiMediaModelDiscovery>('/api/settings/ai-media/test', { method: 'POST', body: JSON.stringify(settings) }),
+  saveAiMediaSettings: (settings: { endpoint: string; apiKey?: string; clearApiKey?: boolean; textModel: string; imageModel: string }) => request<AiMediaSettings>('/api/settings/ai-media', { method: 'PUT', body: JSON.stringify(settings) }),
   activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
   projects: () => request<Array<{ label: string; value: string }>>('/api/projects'),
   createProject: (title: string, contentType: string) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType }) }),
@@ -44,5 +47,7 @@ export const api = {
   assemble: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/assemble`, emptyPost),
   regenerateSegment: (id: string, order: number) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/segments/${order}/regenerate`, emptyPost),
   voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),
+  expandCharacterProfile: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number }) => request<{ profile: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/expand-profile`, { method: 'POST', body: JSON.stringify(draft) }),
+  generateCharacterPortrait: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number; portraitPrompt?: string }) => request<{ portraitUrl: string; portraitPrompt: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/portrait`, { method: 'POST', body: JSON.stringify(draft) }),
   job: (id: string) => request<{ phase: string; fraction: number; message: string }>(`/api/jobs/${encodeURIComponent(id)}`),
 };

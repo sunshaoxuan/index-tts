@@ -658,7 +658,7 @@ class OllamaTextDirector:
 8. 人物必须使用稳定 ID。优先复用已有角色；旁白固定使用 narrator。
 9. {type_instruction}
 10. 用户导演补充：{guidance.strip() or '无'}。先进行语义拆分：作品级要求应用于全部轨道；点名角色、角色类型、主角、配角、身份描述或上下文指代的要求只应用于目标角色。把角色专属声音要求合并进目标角色的 voice_hint，把角色专属表演要求应用于该角色的 segments，禁止复制给无关角色。
-11. 每个角色的 profile 是人物小传，使用 50 到 180 个中文字符，根据原文概括身份、年龄阶段、人物关系、性格、经历和叙事作用。只写原文有依据的信息；原文未说明的维度明确写“原文未说明”，禁止只复制姓名。
+11. 每个角色的 profile 是详细人物小传，使用 300 到 600 个中文字符，根据原文覆盖身份与社会位置、年龄阶段、外貌线索、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式和叙事作用。只写原文有依据的信息；原文未说明的维度明确写“原文未说明”，禁止只复制姓名。小传需要同时支持声音设计、角色形象、插图和视频关键帧的一致人物设定。
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
 13. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
 
@@ -1434,8 +1434,9 @@ def build_voice_design_jobs(
     role_languages: dict[str, str] = {}
     for segment in document.get("segments", []):
         role_languages.setdefault(str(segment.get("speaker_id")), str(segment.get("language", "ZH")).upper())
-    jobs: list[dict[str, str]] = []
+    jobs: list[dict[str, Any]] = []
     context = project_context or {}
+    character_assets = context.get("character_assets") if isinstance(context.get("character_assets"), dict) else {}
     content_type = str(context.get("content_type") or document.get("content_type") or "novel")
     content_label = {"novel": "小说", "news": "新闻", "story": "故事体"}.get(content_type, "小说")
     guidance = str(context.get("guidance") or "").strip().rstrip("。！？!?；;")
@@ -1483,7 +1484,19 @@ def build_voice_design_jobs(
             for item in guidance_assignments
             if isinstance(item, dict) and role_id in item.get("target_role_ids", []) and str(item.get("instruction") or "").strip()
         )
-        expected_gender = infer_voice_gender(f"{voice_hint} {effective_guidance}", profile, name)
+        asset = character_assets.get(role_id) if isinstance(character_assets.get(role_id), dict) else {}
+        explicit_gender = str(asset.get("gender") or "")
+        expected_gender = explicit_gender if explicit_gender in {"female", "male", "unspecified"} else infer_voice_gender(f"{voice_hint} {effective_guidance}", profile, name)
+        age = max(5, min(100, int(asset.get("age") or 35)))
+        pitch_min_hz = float(asset.get("pitch_min_hz") or 0)
+        pitch_max_hz = float(asset.get("pitch_max_hz") or 0)
+        pitch_target_hz = float(asset.get("pitch_target_hz") or 0)
+        pitch_constraint = (
+            f"角色年龄设定：约 {age} 岁。建议基频区间：{pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz；"
+            f"目标基频中位数约 {pitch_target_hz:.0f} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。"
+            if pitch_min_hz > 0 and pitch_max_hz > pitch_min_hz and pitch_min_hz <= pitch_target_hz <= pitch_max_hz
+            else f"角色年龄设定：约 {age} 岁。"
+        )
         gender_constraint = {
             "female": "声音性别硬约束：女性；男性或中性偏男性嗓音不合格。",
             "male": "声音性别硬约束：男性；女性或中性偏女性嗓音不合格。",
@@ -1495,6 +1508,7 @@ def build_voice_design_jobs(
             f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
             f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
             f"{gender_constraint}"
+            f"{pitch_constraint}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
         )
@@ -1506,6 +1520,10 @@ def build_voice_design_jobs(
                 "text": VOICE_DESIGN_TEXT.get(language, VOICE_DESIGN_TEXT["ZH"]),
                 "instruct": instruct,
                 "expected_gender": expected_gender,
+                "character_age": age,
+                "pitch_min_hz": pitch_min_hz or None,
+                "pitch_max_hz": pitch_max_hz or None,
+                "pitch_target_hz": pitch_target_hz or None,
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
                 "seed": 42,
             }

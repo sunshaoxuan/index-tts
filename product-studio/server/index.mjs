@@ -39,6 +39,46 @@ function defaultRoleProfile(name, kind) {
   return `${name}是原文中已识别的${label}。当前文本证据尚不足以确定年龄、身份、人物关系、性格和经历，请结合全文补充后再生成音色。`;
 }
 
+function inferCharacterGender(...sources) {
+  const femaleTerms = ['女性', '女声', '女人', '妇人', '妻子', '母亲', '奶奶', '姐姐', '妹妹', '女儿', '少女', '女孩'];
+  const maleTerms = ['男性', '男声', '男人', '丈夫', '父亲', '爷爷', '哥哥', '弟弟', '儿子', '少年', '男孩'];
+  for (const source of sources.map(value => String(value || ''))) {
+    const female = femaleTerms.some(term => source.includes(term));
+    const male = maleTerms.some(term => source.includes(term));
+    if (female !== male) return female ? 'female' : 'male';
+  }
+  return 'unspecified';
+}
+
+export function recommendPitchRange(gender, age) {
+  const safeAge = Math.max(5, Math.min(100, Math.round(Number(age) || 35)));
+  let min;
+  let max;
+  if (safeAge < 13) [min, max] = gender === 'male' ? [190, 320] : gender === 'female' ? [210, 340] : [190, 340];
+  else if (safeAge < 20) [min, max] = gender === 'male' ? [120, 220] : gender === 'female' ? [175, 285] : [120, 285];
+  else if (safeAge < 60) [min, max] = gender === 'male' ? [85, 180] : gender === 'female' ? [165, 255] : [90, 270];
+  else [min, max] = gender === 'male' ? [75, 165] : gender === 'female' ? [135, 235] : [80, 250];
+  return { min, max, target: Math.round((min + max) / 2) };
+}
+
+function normalizeCharacterAsset(role, source = {}) {
+  const gender = ['female', 'male', 'unspecified'].includes(source.gender)
+    ? source.gender
+    : inferCharacterGender(role?.[4], role?.[3], role?.[1]);
+  const age = Math.max(5, Math.min(100, Math.round(Number(source.age) || 35)));
+  const suggested = recommendPitchRange(gender, age);
+  const min = Number.isFinite(Number(source.pitch_min_hz)) ? Number(source.pitch_min_hz) : suggested.min;
+  const max = Number.isFinite(Number(source.pitch_max_hz)) ? Number(source.pitch_max_hz) : suggested.max;
+  const requested = Number(source.pitch_target_hz);
+  const target = Number.isFinite(requested) ? Math.max(min, Math.min(max, Math.round(requested))) : suggested.target;
+  return {
+    gender, age, pitch_min_hz: min, pitch_max_hz: max, pitch_target_hz: target,
+    ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
+    ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
+    ...(source.profile_updated_by ? { profile_updated_by: String(source.profile_updated_by) } : {}),
+  };
+}
+
 function safeProjectId(value) {
   const id = String(value || '');
   if (!/^[\w\-.\u4e00-\u9fff]+$/u.test(id) || path.basename(id) !== id) throw new Error('小说工程 ID 无效');
@@ -83,6 +123,8 @@ function normalizeProject(payload) {
     updated[7] = ['是', 'true', '1'].includes(String(updated[7]).toLowerCase()) ? '是' : '否';
     return updated;
   }) : [];
+  const existingAssets = copy.character_assets && typeof copy.character_assets === 'object' ? copy.character_assets : {};
+  copy.character_assets = Object.fromEntries(copy.roles.map(role => [String(role[0]), normalizeCharacterAsset(role, existingAssets[role[0]])]));
   copy.segments = Array.isArray(copy.segments) ? copy.segments.map(row => {
     const updated = [...row];
     updated[7] = closestPreset(updated[7], presets.attitudes, [[/沉稳/, '沉稳叙述'], [/温和|亲切/, '温和交流'], [/紧张|警觉/, '紧张警觉'], [/克制|低沉/, '克制低沉'], [/悲伤|压抑/, '悲伤压抑'], [/喜悦|明快/, '喜悦明快'], [/愤怒|强烈/, '愤怒强烈'], [/恐惧|迟疑/, '恐惧迟疑'], [/威严|命令/, '威严命令']], '中性叙述');
@@ -100,7 +142,7 @@ function validateProject(payload, id) {
   const roleIds = new Set();
   payload.roles.forEach((row, index) => {
     if (!Array.isArray(row) || row.length < 8) throw new Error(`角色表第 ${index + 1} 行字段不足`);
-    if (roleIds.has(row[0])) throw new Error(`角色轨道重复 ${row[0]}`);
+    if (roleIds.has(row[0])) throw new Error(`角色 ID 重复 ${row[0]}`);
     roleIds.add(row[0]);
     if (!presets.roleKinds.includes(row[2])) throw new Error(`角色 ${row[1]} 的类型无效`);
     if (!String(row[3]).trim()) throw new Error(`角色 ${row[1]} 缺少人物小传`);
@@ -108,6 +150,15 @@ function validateProject(payload, id) {
     if (!presets.rhythms.includes(row[6])) throw new Error(`角色 ${row[1]} 的节奏预设无效`);
     if (!['是', '否'].includes(row[7])) throw new Error(`角色 ${row[1]} 的重新生成选项无效`);
   });
+  if (!payload.character_assets || typeof payload.character_assets !== 'object') payload.character_assets = {};
+  for (const row of payload.roles) {
+    const asset = payload.character_assets[row[0]] || normalizeCharacterAsset(row);
+    payload.character_assets[row[0]] = asset;
+    if (!['female', 'male', 'unspecified'].includes(asset.gender)) throw new Error(`角色 ${row[1]} 的性别设置无效`);
+    if (!Number.isInteger(asset.age) || asset.age < 5 || asset.age > 100) throw new Error(`角色 ${row[1]} 的年龄必须在 5 至 100 岁之间`);
+    if (![asset.pitch_min_hz, asset.pitch_max_hz, asset.pitch_target_hz].every(value => Number.isFinite(Number(value)))) throw new Error(`角色 ${row[1]} 的声音频率设置无效`);
+    if (asset.pitch_min_hz >= asset.pitch_max_hz || asset.pitch_target_hz < asset.pitch_min_hz || asset.pitch_target_hz > asset.pitch_max_hz) throw new Error(`角色 ${row[1]} 的目标频率超出建议区间`);
+  }
   payload.segments.forEach((row, index) => {
     if (!Array.isArray(row) || row.length < 12) throw new Error(`分句表第 ${index + 1} 行字段不足`);
     if (!roleIds.has(row[2])) throw new Error(`分句 ${row[0]} 引用了未知角色`);
@@ -132,6 +183,7 @@ function directorSnapshot(payload) {
   return {
     source_text: String(payload.source_text || ''),
     roles: structuredClone(payload.roles || []),
+    character_assets: structuredClone(payload.character_assets || {}),
     segments: structuredClone(payload.segments || []),
     pronunciations: structuredClone(payload.pronunciations || []),
   };
@@ -141,6 +193,7 @@ function directorChangeKinds(before, after) {
   const kinds = [];
   if (before.source_text !== after.source_text) kinds.push('稿件文字');
   if (JSON.stringify(before.roles) !== JSON.stringify(after.roles)) kinds.push('角色与音色');
+  if (JSON.stringify(before.character_assets) !== JSON.stringify(after.character_assets)) kinds.push('角色资产');
   if (JSON.stringify(before.segments.map(row => row.slice(0, 6))) !== JSON.stringify(after.segments.map(row => row.slice(0, 6)))) kinds.push('断句与角色分配');
   if (JSON.stringify(before.segments.map(row => row.slice(6))) !== JSON.stringify(after.segments.map(row => row.slice(6)))) kinds.push('合成文字与导演参数');
   if (JSON.stringify(before.pronunciations) !== JSON.stringify(after.pronunciations)) kinds.push('全篇纠音');
@@ -194,6 +247,18 @@ async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
   const changedRoleIds = new Set((current.roles || [])
     .filter(row => nextRoles.get(String(row?.[0] || '')) !== JSON.stringify(row || []))
     .map(row => String(row?.[0] || '')));
+  const currentAssets = current.character_assets || {};
+  const nextAssets = next.character_assets || {};
+  for (const roleId of new Set([...Object.keys(currentAssets), ...Object.keys(nextAssets)])) {
+    const voiceFields = asset => ({
+      gender: asset?.gender,
+      age: asset?.age,
+      pitch_min_hz: asset?.pitch_min_hz,
+      pitch_max_hz: asset?.pitch_max_hz,
+      pitch_target_hz: asset?.pitch_target_hz,
+    });
+    if (JSON.stringify(voiceFields(currentAssets[roleId])) !== JSON.stringify(voiceFields(nextAssets[roleId]))) changedRoleIds.add(roleId);
+  }
   const nextIdentities = new Set((next.segments || []).map(segmentIdentity));
   const invalidatedRows = (current.segments || []).filter(row => invalidateAll
     || pronunciationAffectedRows.has(row)
@@ -292,6 +357,117 @@ async function voiceRuntimeHealth(repoRoot) {
   }
 }
 
+function normalizeAiEndpoint(value) {
+  const text = String(value || '').trim().replace(/\/+$/u, '');
+  if (!text) return '';
+  const parsed = new URL(text);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('兼容服务 Endpoint 必须使用 HTTP 或 HTTPS');
+  return text;
+}
+
+function aiRoute(endpoint, route) {
+  return `${endpoint}${endpoint.endsWith('/v1') ? '' : '/v1'}${route}`;
+}
+
+async function readAiMediaSettings(file) {
+  try {
+    const stored = JSON.parse(await readFile(file, 'utf8'));
+    return {
+      endpoint: normalizeAiEndpoint(stored.endpoint),
+      api_key: String(stored.api_key || ''),
+      text_model: String(stored.text_model || 'gemini-2.5-pro'),
+      image_model: String(stored.image_model || 'gpt-image-1'),
+    };
+  } catch {
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', image_model: 'gpt-image-1' };
+  }
+}
+
+function publicAiMediaSettings(settings) {
+  return {
+    endpoint: settings.endpoint,
+    textModel: settings.text_model,
+    imageModel: settings.image_model,
+    hasApiKey: Boolean(settings.api_key),
+  };
+}
+
+async function callCompatibleJson(remoteFetch, url, settings, payload) {
+  const response = await remoteFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.api_key}` },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = {}; }
+  if (!response.ok) throw new Error(String(body?.error?.message || body?.message || `兼容服务请求失败 ${response.status}`));
+  return body;
+}
+
+async function discoverCompatibleModels(remoteFetch, endpoint, apiKey) {
+  const response = await remoteFetch(aiRoute(endpoint, '/models'), {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = {}; }
+  if (!response.ok) throw new Error(String(body?.error?.message || body?.message || `兼容服务模型列表请求失败 ${response.status}`));
+  const rows = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
+  const models = [...new Set(rows.map(item => String(item?.id || item?.name || '').trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  if (!models.length) throw new Error('兼容服务连接成功，但没有返回可选择的模型 ID');
+  return models;
+}
+
+function extractCompatibleText(body) {
+  const openAiText = body?.choices?.[0]?.message?.content;
+  if (typeof openAiText === 'string' && openAiText.trim()) return openAiText.trim();
+  const geminiText = body?.candidates?.[0]?.content?.parts?.map(part => part?.text || '').join('\n').trim();
+  if (geminiText) return geminiText;
+  throw new Error('兼容服务没有返回可用人物小传');
+}
+
+function characterEvidence(sourceText, name) {
+  const source = String(sourceText || '');
+  const lines = source.split(/(?<=[。！？!?\n])/u);
+  const indexes = lines.map((line, index) => line.includes(name) ? index : -1).filter(index => index >= 0);
+  const selected = new Set();
+  for (const index of indexes) for (let offset = -2; offset <= 2; offset += 1) if (lines[index + offset]) selected.add(index + offset);
+  const evidence = [...selected].sort((a, b) => a - b).map(index => lines[index]).join('').trim();
+  return (evidence || source).slice(0, 30000);
+}
+
+function portraitPrompt({ name, profile, gender, age, portraitPrompt }) {
+  const genderLabel = gender === 'female' ? '女性' : gender === 'male' ? '男性' : '性别以人物设定为准';
+  const custom = String(portraitPrompt || '').trim();
+  return [
+    `为长篇声音作品中的角色“${name}”创作统一角色设定图。`,
+    `人物设定：${profile}`,
+    `年龄：约 ${age} 岁。性别：${genderLabel}。`,
+    custom ? `补充视觉要求：${custom}` : '',
+    '单人半身角色肖像，面部清晰，服装、发型、神态和时代背景与人物小传一致。中性摄影棚背景，电影级自然光，写实而有叙事感。画面中不出现文字、水印、界面、边框或其他人物。保持适合后续插图和视频关键帧复用的稳定角色设计。',
+  ].filter(Boolean).join('\n');
+}
+
+async function decodeCompatibleImage(remoteFetch, item, settings) {
+  if (item?.b64_json) return Buffer.from(String(item.b64_json), 'base64');
+  if (item?.inline_data?.data) return Buffer.from(String(item.inline_data.data), 'base64');
+  if (item?.inlineData?.data) return Buffer.from(String(item.inlineData.data), 'base64');
+  if (item?.url) {
+    const response = await remoteFetch(String(item.url), { headers: { Authorization: `Bearer ${settings.api_key}` } });
+    if (!response.ok) throw new Error(`兼容服务图像下载失败 ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+  throw new Error('兼容服务没有返回图像数据');
+}
+
+function imageExtension(bytes) {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return '.png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return '.jpg';
+  if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp';
+  throw new Error('兼容服务返回了无法识别的图像格式');
+}
+
 function launchMp3Encoder(file) {
   return spawn('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-i', file, '-vn',
@@ -299,12 +475,13 @@ function launchMp3Encoder(file) {
   ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launchEncoder = launchMp3Encoder } = {}) {
+export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launchEncoder = launchMp3Encoder, remoteFetch = fetch } = {}) {
   const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
   const productVersion = (await readFile(path.join(repoRoot, 'VERSION'), 'utf8')).trim();
+  const aiMediaSettingsFile = path.join(repoRoot, 'runtime-output', 'product-settings.json');
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
   await mkdir(jobRoot, { recursive: true });
@@ -351,6 +528,34 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
     }
   });
   app.get('/api/presets', async () => presets);
+  app.get('/api/settings/ai-media', async () => publicAiMediaSettings(await readAiMediaSettings(aiMediaSettingsFile)));
+  app.post('/api/settings/ai-media/test', async (request, reply) => {
+    try {
+      const current = await readAiMediaSettings(aiMediaSettingsFile);
+      const endpoint = normalizeAiEndpoint(request.body?.endpoint || current.endpoint);
+      const apiKey = String(request.body?.apiKey || current.api_key || '').trim();
+      if (!endpoint) throw new Error('请先填写 OpenAI 兼容 Endpoint');
+      if (!apiKey) throw new Error('请先填写或保存 API Key');
+      const models = await discoverCompatibleModels(remoteFetch, endpoint, apiKey);
+      return { ok: true, endpoint, models, modelCount: models.length };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.put('/api/settings/ai-media', async (request, reply) => {
+    try {
+      const current = await readAiMediaSettings(aiMediaSettingsFile);
+      const endpoint = normalizeAiEndpoint(request.body?.endpoint);
+      const textModel = String(request.body?.textModel || '').trim();
+      const imageModel = String(request.body?.imageModel || '').trim();
+      const apiKey = request.body?.clearApiKey ? '' : String(request.body?.apiKey || current.api_key || '').trim();
+      if (endpoint && !textModel) throw new Error('请填写人物小传模型名称');
+      if (endpoint && !imageModel) throw new Error('请填写图像模型名称');
+      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', image_model: imageModel || 'gpt-image-1' };
+      const temporary = `${aiMediaSettingsFile}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
+      await rename(temporary, aiMediaSettingsFile);
+      return publicAiMediaSettings(stored);
+    } catch (error) { return reply.code(400).send({ error: error.message }); }
+  });
   app.get('/api/voices/:voiceId/audio', async (request, reply) => {
     try {
       const voiceId = safeProjectId(request.params.voiceId);
@@ -401,7 +606,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const dir = path.join(projectRoot, id);
       await Promise.all(['voices', 'process', 'renders', 'analysis'].map(name => mkdir(path.join(dir, name), { recursive: true })));
       const now = new Date().toISOString();
-      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: [], segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: [], segments: [], pronunciations: [] }, voice_files: [], created_at: now, updated_at: now };
+      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: [], character_assets: {}, segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: [], character_assets: {}, segments: [], pronunciations: [] }, voice_files: [], created_at: now, updated_at: now };
       await writeFile(path.join(dir, 'project.json'), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       return reply.code(201).send(payload);
     } catch (error) { return reply.code(400).send({ error: error.message }); }
@@ -420,7 +625,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       }
       const currentPath = path.join(projectRoot, id, 'project.json');
       await access(currentPath);
-      const current = JSON.parse(await readFile(currentPath, 'utf8'));
+      const current = normalizeProject(JSON.parse(await readFile(currentPath, 'utf8')));
       const payload = validateProject(request.body, id);
       const directorChanges = directorChangeKinds(directorSnapshot(current), directorSnapshot(payload));
       preserveDirectorOperations(current, payload);
@@ -431,6 +636,78 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       await rename(temporary, currentPath);
       return payload;
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/roles/:roleId/expand-profile', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      if (activeJob?.projectId === id) return reply.code(409).send({ error: `工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成` });
+      const settings = await readAiMediaSettings(aiMediaSettingsFile);
+      if (!settings.endpoint || !settings.api_key || !settings.text_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和人物小传模型');
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const role = project.roles.find(row => String(row[0]) === roleId);
+      if (!role) throw new Error('角色不存在');
+      const name = String(request.body?.name || role[1]).trim();
+      const currentProfile = String(request.body?.profile || role[3]).trim();
+      const gender = String(request.body?.gender || project.character_assets[roleId]?.gender || 'unspecified');
+      const age = Math.max(5, Math.min(100, Math.round(Number(request.body?.age) || project.character_assets[roleId]?.age || 35)));
+      const evidence = characterEvidence(project.source_text, name);
+      const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/chat/completions'), settings, {
+        model: settings.text_model,
+        temperature: 0.35,
+        messages: [
+          { role: 'system', content: '你是长篇声音作品的人物设定导演。只使用稿件证据与用户已确认设定，写一篇具体、可复用、适合声音设计和视觉形象生成的人物小传。未知信息明确写“稿件未说明”，不得虚构关键事实。输出纯中文正文，不使用标题、列表或 Markdown。' },
+          { role: 'user', content: `角色：${name}\n年龄设定：约 ${age} 岁\n性别设定：${gender}\n当前小传：${currentProfile}\n稿件相关证据：\n${evidence}\n\n请在 300 至 600 个中文字符内覆盖身份与社会位置、外貌线索、年龄气质、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式、叙事作用，并区分稿件事实与未知信息。` },
+        ],
+      });
+      const profile = extractCompatibleText(response);
+      if (profile.length < 80) throw new Error('兼容服务返回的人物小传过短，请检查模型配置');
+      return { profile, model: settings.text_model };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/roles/:roleId/portrait', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      if (activeJob?.projectId === id) return reply.code(409).send({ error: `工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成` });
+      const settings = await readAiMediaSettings(aiMediaSettingsFile);
+      if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const role = project.roles.find(row => String(row[0]) === roleId);
+      if (!role) throw new Error('角色不存在');
+      const draft = {
+        name: String(request.body?.name || role[1]).trim(),
+        profile: String(request.body?.profile || role[3]).trim(),
+        gender: String(request.body?.gender || project.character_assets[roleId]?.gender || 'unspecified'),
+        age: Math.max(5, Math.min(100, Math.round(Number(request.body?.age) || project.character_assets[roleId]?.age || 35))),
+        portraitPrompt: String(request.body?.portraitPrompt || '').trim(),
+      };
+      if (draft.profile.length < 20) throw new Error('人物小传至少填写 20 个字符后才能生成形象');
+      const prompt = portraitPrompt(draft);
+      const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
+        model: settings.image_model, prompt, size: '1024x1024', n: 1, response_format: 'b64_json',
+      });
+      const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+      const bytes = await decodeCompatibleImage(remoteFetch, item, settings);
+      if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的图像为空或超过 20 MB');
+      const extension = imageExtension(bytes);
+      const assetsDir = path.join(projectRoot, id, 'role-assets');
+      await mkdir(assetsDir, { recursive: true });
+      const filename = `${safeSlug(roleId)}-${Date.now()}${extension}`;
+      await writeFile(path.join(assetsDir, filename), bytes);
+      return { portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`, portraitPrompt: prompt, model: settings.image_model };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.get('/api/projects/:id/role-assets/:file', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const file = safeProjectId(request.params.file);
+      const assetPath = path.join(projectRoot, id, 'role-assets', file);
+      const info = await stat(assetPath);
+      const type = file.endsWith('.png') ? 'image/png' : file.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+      reply.type(type).header('Content-Length', info.size).header('Cache-Control', 'private, max-age=3600');
+      return reply.send(createReadStream(assetPath));
+    } catch { return reply.code(404).send({ error: '角色形象不存在' }); }
   });
   app.get('/api/projects/:id/latest-render', async (request) => {
     const id = safeProjectId(request.params.id);

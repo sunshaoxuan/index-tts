@@ -601,6 +601,25 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
             tables_to_script(role_rows, invalid_segments)
 
 
+def test_voice_design_jobs_include_explicit_character_age_and_pitch_target():
+    document = {
+        "content_type": "novel",
+        "characters": [_character("role_001", "林澈", "character")],
+        "segments": [_segment(1, "测试。", "测试。", role_id="role_001", name="林澈", kind="character")],
+    }
+    roles = [["role_001", "林澈", "character", "三十五岁的刑警，性格克制。", "低沉厚实", "voice.wav", "自然叙述", "是"]]
+    context = {
+        "content_type": "novel",
+        "character_assets": {"role_001": {"gender": "male", "age": 35, "pitch_min_hz": 85, "pitch_max_hz": 180, "pitch_target_hz": 105}},
+    }
+    job = build_voice_design_jobs(document, roles, context)[0]
+    assert job["expected_gender"] == "male"
+    assert job["character_age"] == 35
+    assert job["pitch_target_hz"] == 105
+    assert "建议基频区间：85 至 180 Hz" in job["instruct"]
+    assert "目标基频中位数约 105 Hz" in job["instruct"]
+
+
 def test_ai_routed_guidance_excludes_narrator_voice_from_characters_and_enforces_gender():
     document = {
         "characters": [_character(), _character("role_002", "老板娘", "character")],
@@ -686,8 +705,9 @@ def test_director_prompt_requires_evidence_grounded_biography_and_voice_directio
         previous_context="",
         guidance="旁白克制",
     )
-    assert "profile 是人物小传" in prompt
-    assert "身份、年龄阶段、人物关系、性格、经历和叙事作用" in prompt
+    assert "profile 是详细人物小传" in prompt
+    assert "身份与社会位置、年龄阶段、外貌线索、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式和叙事作用" in prompt
+    assert "300 到 600 个中文字符" in prompt
     assert "只写原文有依据的信息" in prompt
     assert "禁止只复制姓名" in prompt
     assert "voice_hint 是声音导演建议" in prompt

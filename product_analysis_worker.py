@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from character_assets import normalize_character_assets
 from novel_project import NovelProjectStore, pronunciation_rows
 from director_memory import reapply_director_memory
 from text_director import DirectorConfig, OllamaTextDirector, document_to_tables
@@ -40,6 +41,7 @@ def main() -> int:
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
+    character_assets = normalize_character_assets(roles, project.get("character_assets"))
     document["director_memory_reapply"] = memory_report
     write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
     document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
@@ -50,7 +52,7 @@ def main() -> int:
         "memory_report": memory_report,
     })
     memory_snapshot = {
-        "source_text": project["source_text"], "roles": roles, "segments": segments,
+        "source_text": project["source_text"], "roles": roles, "character_assets": character_assets, "segments": segments,
         "pronunciations": project.get("pronunciations") or [],
     }
     store.save(
@@ -59,6 +61,7 @@ def main() -> int:
         roles=roles, segments=segments, pronunciations=pronunciation_rows(project.get("pronunciations")),
         voice_files=project.get("voice_files") or [],
         director_history=history, director_memory=memory_snapshot,
+        character_assets=character_assets,
     )
     result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report}
     write_json(Path(args.result).resolve(), result)

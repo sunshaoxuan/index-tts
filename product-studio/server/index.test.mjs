@@ -36,6 +36,97 @@ test('serves presets and project data', async () => {
   await app.close();
 });
 
+test('stores AI media credentials locally without returning the API key', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:49530/v1/', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', imageModel: 'gpt-image', hasApiKey: true });
+  const loaded = await app.inject('/api/settings/ai-media');
+  assert.equal(loaded.json().hasApiKey, true);
+  assert.equal(JSON.stringify(loaded.json()).includes('secret-key'), false);
+  const stored = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-settings.json'), 'utf8'));
+  assert.equal(stored.api_key, 'secret-key');
+  await app.close();
+});
+
+test('tests the compatible service and returns selectable model ids without exposing the API key', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), authorization: options?.headers?.Authorization });
+    return new Response(JSON.stringify({ data: [{ id: 'gemini-2.5-flash' }, { id: 'gpt-image-1' }, { id: 'gemini-2.5-flash' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'old-model', imageModel: 'old-image' } });
+  const tested = await app.inject({ method: 'POST', url: '/api/settings/ai-media/test', payload: { endpoint: 'http://ai.example/v1' } });
+  assert.equal(tested.statusCode, 200);
+  assert.deepEqual(tested.json(), { ok: true, endpoint: 'http://ai.example/v1', models: ['gemini-2.5-flash', 'gpt-image-1'], modelCount: 2 });
+  assert.deepEqual(calls, [{ url: 'http://ai.example/v1/models', authorization: 'Bearer secret-key' }]);
+  assert.equal(JSON.stringify(tested.json()).includes('secret-key'), false);
+  await app.close();
+});
+
+test('expands a character profile and generates a locally served portrait through compatible APIs', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), authorization: options?.headers?.Authorization, body: options?.body ? JSON.parse(options.body) : undefined });
+    if (String(url).endsWith('/chat/completions')) return new Response(JSON.stringify({ choices: [{ message: { content: '这是一篇基于稿件证据扩写的详细人物小传，包含身份、年龄气质、人物关系、经历、欲望与矛盾、性格、行为习惯、说话方式和叙事作用。稿件未说明外貌细节，因此保留未知边界。'.repeat(2) } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://ai.example/v1', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
+  const profile = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/expand-profile', payload: { name: '旁白', profile: '负责全文叙事的人物设定。', gender: 'unspecified', age: 40 } });
+  assert.equal(profile.statusCode, 200);
+  assert.equal(profile.json().model, 'gemini-pro');
+  assert.ok(profile.json().profile.length >= 80);
+  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: profile.json().profile, gender: 'unspecified', age: 40 } });
+  assert.equal(portrait.statusCode, 200);
+  assert.equal(portrait.json().model, 'gpt-image');
+  const image = await app.inject(portrait.json().portraitUrl);
+  assert.equal(image.statusCode, 200);
+  assert.match(image.headers['content-type'], /^image\/png/);
+  assert.deepEqual(image.rawPayload, png);
+  assert.deepEqual(calls.map(call => call.url), ['http://ai.example/v1/chat/completions', 'http://ai.example/v1/images/generations']);
+  assert.ok(calls.every(call => call.authorization === 'Bearer secret-key'));
+  assert.equal(calls[1].body.model, 'gpt-image');
+  assert.match(calls[1].body.prompt, /稳定角色设计/);
+  await app.close();
+});
+
+test('keeps audio valid for portrait-only edits and invalidates the role after a pitch change', async () => {
+  const { root } = await fixture();
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-character');
+  const processDir = path.join(projectDir, 'process');
+  const cacheKey = '9'.repeat(64);
+  await mkdir(path.join(processDir, 'segment-cache'), { recursive: true });
+  await mkdir(renderDir, { recursive: true });
+  await writeFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), Buffer.from('RIFFcache'));
+  await writeFile(path.join(processDir, 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [cacheKey]: { speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文' } } }));
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('RIFFfull'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [{ speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文', cache_key: cacheKey }] }));
+  const app = await buildApp({ repoRoot: root });
+  const project = (await app.inject('/api/projects/demo')).json();
+  project.character_assets.narrator.portrait_url = '/api/projects/demo/role-assets/portrait.png';
+  const portraitSaved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(portraitSaved.statusCode, 200);
+  assert.deepEqual(portraitSaved.json().artifact_invalidation, { invalidatedCacheKeys: [], staleRenders: 0 });
+  await access(path.join(processDir, 'segment-cache', `${cacheKey}.wav`));
+  await assert.rejects(access(path.join(renderDir, '.stale.json')));
+
+  const pitchProject = portraitSaved.json();
+  pitchProject.character_assets.narrator.pitch_target_hz += 10;
+  const pitchSaved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: pitchProject });
+  assert.equal(pitchSaved.statusCode, 200);
+  assert.deepEqual(pitchSaved.json().artifact_invalidation, { invalidatedCacheKeys: [cacheKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(processDir, 'segment-cache', `${cacheKey}.wav`)));
+  assert.equal(JSON.parse(await readFile(path.join(renderDir, '.stale.json'), 'utf8')).stale, true);
+  await app.close();
+});
+
 test('serves the latest audio with stable media headers', async () => {
   const { root } = await fixture();
   const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-001');

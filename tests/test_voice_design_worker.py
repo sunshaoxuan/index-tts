@@ -18,6 +18,11 @@ def prepare_model(model_dir: Path) -> None:
     (model_dir / "model.safetensors").write_bytes(b"model")
 
 
+def test_pitch_score_prefers_the_candidate_closest_to_user_target():
+    assert worker.gender_pitch_score("male", 110.0, 105.0) > worker.gender_pitch_score("male", 150.0, 105.0)
+    assert worker.gender_pitch_score("female", 225.0, 220.0) > worker.gender_pitch_score("female", 180.0, 220.0)
+
+
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     calls = []
 
