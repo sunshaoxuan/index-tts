@@ -5,7 +5,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildApp } from './index.mjs';
+import { buildApp, wavDurationSeconds } from './index.mjs';
+
+function pcmWav(durationSeconds, sampleRate = 8000) {
+  const dataSize = Math.round(durationSeconds * sampleRate * 2);
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write('WAVEfmt ', 8, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(dataSize, 40);
+  return buffer;
+}
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'index-voice-product-'));
@@ -33,6 +51,29 @@ test('serves presets and project data', async () => {
   assert.equal(presetResponse.json().voiceStylePrompts['低沉厚实'], '低沉厚实，声音有支撑，气息稳定');
   assert.equal(presetResponse.json().rhythmPrompts['沉稳舒缓'], '沉稳舒缓，重音清晰，短语间自然停连');
   assert.equal((await app.inject('/api/projects/demo')).json().title, '测试');
+  await app.close();
+});
+
+test('returns delivery captions with real WAV duration and manifest pauses', async () => {
+  const { root } = await fixture();
+  const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-captioned');
+  const segmentsDir = path.join(renderDir, 'segments');
+  await mkdir(segmentsDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), pcmWav(3.75));
+  await writeFile(path.join(segmentsDir, '0001.wav'), pcmWav(1.25));
+  await writeFile(path.join(segmentsDir, '0002.wav'), pcmWav(2));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { order: 1, speaker_name: '旁白', source_text: '第一句。', text: '第一句。', pause_after_ms: 500, cache_key: 'a', audio: 'segments/0001.wav' },
+    { order: 2, speaker_name: '笹垣润三', source_text: '第二句。', text: '第二句。', pause_after_ms: 0, cache_key: 'b', audio: 'segments/0002.wav' },
+  ] }));
+
+  assert.equal(await wavDurationSeconds(path.join(segmentsDir, '0001.wav')), 1.25);
+  const app = await buildApp({ repoRoot: root });
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.deepEqual(latest.captions, [
+    { order: 1, speakerName: '旁白', text: '第一句。', durationSeconds: 1.25, pauseAfterMs: 500 },
+    { order: 2, speakerName: '笹垣润三', text: '第二句。', durationSeconds: 2, pauseAfterMs: 0 },
+  ]);
   await app.close();
 });
 

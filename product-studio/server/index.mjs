@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -420,6 +420,30 @@ async function latestRender(projectDir) {
     }))).filter(Boolean);
     return candidates.sort((a, b) => b.time - a.time)[0]?.name;
   } catch { return undefined; }
+}
+
+export async function wavDurationSeconds(filePath) {
+  const handle = await open(filePath, 'r');
+  try {
+    const info = await handle.stat();
+    const header = Buffer.alloc(Math.min(info.size, 65536));
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    if (bytesRead < 12 || header.toString('ascii', 0, 4) !== 'RIFF' || header.toString('ascii', 8, 12) !== 'WAVE') throw new Error('WAV 头无效');
+    let byteRate = 0;
+    let dataSize = 0;
+    for (let offset = 12; offset + 8 <= bytesRead;) {
+      const chunkId = header.toString('ascii', offset, offset + 4);
+      const chunkSize = header.readUInt32LE(offset + 4);
+      const dataOffset = offset + 8;
+      if (chunkId === 'fmt ' && chunkSize >= 12 && dataOffset + 12 <= bytesRead) byteRate = header.readUInt32LE(dataOffset + 8);
+      if (chunkId === 'data') { dataSize = chunkSize; break; }
+      offset = dataOffset + chunkSize + (chunkSize % 2);
+    }
+    if (!byteRate || !dataSize) throw new Error('WAV 时长信息缺失');
+    return dataSize / byteRate;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function voiceRuntimeHealth(repoRoot) {
@@ -973,17 +997,26 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
     if (!name) return { available: false };
     const base = `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}`;
     let fragments = [];
+    let captions = [];
     let stale;
     try { stale = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, '.stale.json'), 'utf8')); } catch {}
     try {
       const manifest = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, 'director-manifest.json'), 'utf8'));
       const invalidated = new Set(stale?.invalidated_cache_keys || []);
-      fragments = (manifest.segments || []).filter(item => !invalidated.has(item.cache_key)).map(item => ({
+      const manifestSegments = manifest.segments || [];
+      fragments = manifestSegments.filter(item => !invalidated.has(item.cache_key)).map(item => ({
         order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
         synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: Boolean(item.cache_reused),
         forcedRegeneration: Boolean(item.forced_regeneration), audio: `${base}/segments/${encodeURIComponent(path.basename(item.audio || ''))}`,
       }));
+      for (const item of manifestSegments) {
+        try {
+          const filename = path.basename(String(item.audio || '').replaceAll('\\', '/'));
+          const durationSeconds = await wavDurationSeconds(path.join(projectRoot, id, 'renders', name, 'segments', filename));
+          captions.push({ order: Number(item.order), speakerName: String(item.speaker_name || '').trim(), text: String(item.source_text || item.text || '').trim(), durationSeconds, pauseAfterMs: Math.max(0, Number(item.pause_after_ms) || 0) });
+        } catch {}
+      }
     } catch {}
     try {
       const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
@@ -996,7 +1029,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const draftKeys = new Set(draftFragments.map(item => `${item.sourceText}\u0000${item.synthesisText}`));
       fragments = [...fragments.filter(item => !draftKeys.has(`${item.sourceText}\u0000${item.synthesisText}`)), ...draftFragments];
     } catch {}
-    return { available: true, renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
+    return { available: true, renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, captions, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
   });
   app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {
     try {

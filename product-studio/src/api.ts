@@ -13,8 +13,13 @@ export interface RenderFragment {
   appliedPronunciations: string[]; cacheReused: boolean; forcedRegeneration: boolean; audio: string;
 }
 
+export interface RenderCaption {
+  order: number; speakerName: string; text: string; durationSeconds: number; pauseAfterMs: number;
+}
+
 export interface RenderInfo {
   available: boolean; renderId?: string; audio?: string; mp3?: string; package?: string; manifest?: string; fragments?: RenderFragment[];
+  captions?: RenderCaption[];
   stale?: boolean; staleAt?: string; staleReasons?: string[];
 }
 
