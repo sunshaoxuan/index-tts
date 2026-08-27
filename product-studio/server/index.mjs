@@ -684,6 +684,75 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
     project.voice_files = [...new Set(resolved)];
     return project.voice_files.length !== existing.length || project.voice_files.some((value, index) => value !== existing[index]);
   }
+
+  async function importLinkedProjectRoles(sourceProjectIds, importedAt) {
+    const requestedIds = Array.isArray(sourceProjectIds) ? sourceProjectIds : [];
+    const uniqueIds = [...new Set(requestedIds.map(value => safeProjectId(value)))];
+    if (uniqueIds.length > 20) throw new Error('一次最多关联 20 个来源工程');
+    const roles = [];
+    const characterAssets = {};
+    const voiceFiles = [];
+    const linkedProjects = [];
+    const usedRoleIds = new Set();
+
+    for (const sourceProjectId of uniqueIds) {
+      const sourcePath = path.join(projectRoot, sourceProjectId, 'project.json');
+      let source;
+      try {
+        const stored = JSON.parse(await readFile(sourcePath, 'utf8'));
+        const normalizedRoles = normalizeProject({
+          content_type: stored.content_type,
+          source_text: '',
+          roles: stored.roles,
+          character_assets: stored.character_assets,
+          segments: [],
+          pronunciations: [],
+        });
+        source = { title: stored.title, roles: normalizedRoles.roles, character_assets: normalizedRoles.character_assets };
+      }
+      catch { throw new Error(`关联来源工程不存在或无法读取：${sourceProjectId}`); }
+      const importedRoles = [];
+      for (const sourceRole of source.roles) {
+        const sourceRoleId = String(sourceRole[0]);
+        let targetRoleId = sourceRoleId;
+        let suffix = 2;
+        while (usedRoleIds.has(targetRoleId)) targetRoleId = `${sourceRoleId}-${suffix++}`;
+        usedRoleIds.add(targetRoleId);
+        const targetRole = structuredClone(sourceRole);
+        targetRole[0] = targetRoleId;
+        roles.push(targetRole);
+
+        const sourceAsset = structuredClone(source.character_assets?.[sourceRoleId] || normalizeCharacterAsset(sourceRole));
+        characterAssets[targetRoleId] = sourceAsset;
+        const voiceIds = [...new Set([
+          String(sourceRole[5] || '').trim().replace(/\.wav$/i, ''),
+          ...(sourceAsset.voice_candidates || []).map(candidate => String(candidate.voice_id || '').trim().replace(/\.wav$/i, '')),
+        ].filter(value => /^(voice-|legacy-)[\w-]+$/i.test(value)))];
+        const availableVoiceIds = [];
+        const missingVoiceIds = [];
+        for (const voiceId of voiceIds) {
+          const voiceFile = path.join(repoRoot, 'outputs', 'voice-library', `${voiceId}.wav`);
+          try { await access(voiceFile); voiceFiles.push(voiceFile); availableVoiceIds.push(voiceId); }
+          catch { missingVoiceIds.push(voiceId); }
+        }
+        importedRoles.push({
+          source_role_id: sourceRoleId,
+          target_role_id: targetRoleId,
+          name: String(sourceRole[1] || ''),
+          voice_ids: voiceIds,
+          available_voice_ids: availableVoiceIds,
+          missing_voice_ids: missingVoiceIds,
+        });
+      }
+      linkedProjects.push({
+        source_project_id: sourceProjectId,
+        source_project_title: String(source.title || sourceProjectId),
+        imported_at: importedAt,
+        roles: importedRoles,
+      });
+    }
+    return { roles, characterAssets, voiceFiles: [...new Set(voiceFiles)], linkedProjects };
+  }
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
   await mkdir(jobRoot, { recursive: true });
@@ -854,7 +923,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
     for (const entry of entries.filter(item => item.isDirectory())) {
       try {
         const payload = JSON.parse(await readFile(path.join(projectRoot, entry.name, 'project.json'), 'utf8'));
-        projects.push({ label: `${payload.title || entry.name}  ${entry.name}`, value: entry.name, updated: payload.updated_at || '' });
+        projects.push({ label: `${payload.title || entry.name}  ${entry.name}`, value: entry.name, roleCount: Array.isArray(payload.roles) ? payload.roles.length : 0, updated: payload.updated_at || '' });
       } catch {}
     }
     return projects.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
@@ -867,10 +936,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       if (!['novel', 'news', 'story'].includes(contentType)) throw new Error('作品体裁无效');
       const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
       const id = safeProjectId(`${stamp}-${safeSlug(title)}-${randomUUID().slice(0, 6)}`);
+      const now = new Date().toISOString();
+      const imported = await importLinkedProjectRoles(request.body?.source_project_ids, now);
       const dir = path.join(projectRoot, id);
       await Promise.all(['voices', 'process', 'renders', 'analysis'].map(name => mkdir(path.join(dir, name), { recursive: true })));
-      const now = new Date().toISOString();
-      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: [], character_assets: {}, segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: [], character_assets: {}, segments: [], pronunciations: [] }, voice_files: [], created_at: now, updated_at: now };
+      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: imported.roles, character_assets: imported.characterAssets, segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: structuredClone(imported.roles), character_assets: structuredClone(imported.characterAssets), segments: [], pronunciations: [] }, voice_files: imported.voiceFiles, linked_projects: imported.linkedProjects, created_at: now, updated_at: now };
       await writeFile(path.join(dir, 'project.json'), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       return reply.code(201).send(payload);
     } catch (error) { return reply.code(400).send({ error: error.message }); }

@@ -553,6 +553,66 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   await app.close();
 });
 
+test('creates a project linked to multiple sources and imports every role voice candidate with collision-safe role ids', async () => {
+  const { root } = await fixture();
+  const projectRoot = path.join(root, 'outputs', 'novel-projects');
+  const voiceRoot = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceRoot, { recursive: true });
+  for (const voiceId of ['voice-current', 'voice-candidate-a', 'voice-candidate-b']) {
+    await writeFile(path.join(voiceRoot, `${voiceId}.wav`), Buffer.from(`RIFF${voiceId}`));
+  }
+  const demoPath = path.join(projectRoot, 'demo', 'project.json');
+  const demo = JSON.parse(await readFile(demoPath, 'utf8'));
+  demo.roles[0][5] = 'voice-current';
+  demo.character_assets = { narrator: { voice_candidates: [
+    { voice_id: 'voice-current', seed: 1, selected: true, gender_verified: true },
+    { voice_id: 'voice-candidate-a', seed: 2, selected: false, gender_verified: true },
+    { voice_id: 'voice-missing', seed: 3, selected: false, gender_verified: true },
+  ] } };
+  await writeFile(demoPath, JSON.stringify(demo));
+  const secondDir = path.join(projectRoot, 'second');
+  await mkdir(secondDir, { recursive: true });
+  await writeFile(path.join(secondDir, 'project.json'), JSON.stringify({
+    ...demo,
+    project_id: 'second',
+    title: '第二工程',
+    roles: [['narrator', '第二旁白', 'narrator', '第二工程旁白。', '中性清晰', 'voice-candidate-b', '自然叙述', '否']],
+    character_assets: { narrator: { voice_candidates: [{ voice_id: 'voice-candidate-b', seed: 4, selected: true, gender_verified: true }] } },
+  }));
+  demo.director_history = [{ snapshot: { source_text: '大体积历史不应进入角色导入规范化', segments: Array.from({ length: 500 }, (_, index) => [index + 1, '正文']) } }];
+  await writeFile(demoPath, JSON.stringify(demo));
+  const app = await buildApp({ repoRoot: root });
+
+  const created = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '关联工程', content_type: 'novel', source_project_ids: ['demo', 'second', 'demo'] } });
+
+  assert.equal(created.statusCode, 201);
+  const payload = created.json();
+  assert.deepEqual(payload.roles.map(role => role[0]), ['narrator', 'narrator-2']);
+  assert.deepEqual(payload.character_assets.narrator.voice_candidates.map(candidate => candidate.voice_id), ['voice-current', 'voice-candidate-a', 'voice-missing']);
+  assert.deepEqual(payload.voice_files.map(file => path.basename(file)).sort(), ['voice-candidate-a.wav', 'voice-candidate-b.wav', 'voice-current.wav']);
+  assert.deepEqual(payload.linked_projects.map(link => link.source_project_id), ['demo', 'second']);
+  assert.deepEqual(payload.linked_projects[0].roles[0].available_voice_ids, ['voice-current', 'voice-candidate-a']);
+  assert.deepEqual(payload.linked_projects[0].roles[0].missing_voice_ids, ['voice-missing']);
+  assert.deepEqual(payload.director_memory.roles, payload.roles);
+  const reopened = (await app.inject(`/api/projects/${payload.project_id}`)).json();
+  assert.deepEqual(reopened.linked_projects, payload.linked_projects);
+  await app.close();
+});
+
+test('rejects an unreadable linked source before creating a project directory', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const before = (await app.inject('/api/projects')).json().map(item => item.value).sort();
+
+  const response = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '错误关联', content_type: 'novel', source_project_ids: ['missing-project'] } });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /关联来源工程不存在或无法读取/);
+  const after = (await app.inject('/api/projects')).json().map(item => item.value).sort();
+  assert.deepEqual(after, before);
+  await app.close();
+});
+
 test('invalidates changed segment audio and marks complete renders stale without deleting them', async () => {
   const { root, project } = await fixture();
   const cacheKey = 'b'.repeat(64);

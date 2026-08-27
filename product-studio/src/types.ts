@@ -75,6 +75,12 @@ export interface ProjectPayload {
   document?: Record<string, unknown>;
   director_history?: Array<{ operation_id: string; recorded_at: string; actor: string; changes: string[]; memory_report?: Record<string, unknown> }>;
   director_memory?: { source_text: string; roles: RoleRow[]; character_assets?: Record<string, CharacterAsset>; segments: SegmentRow[]; pronunciations: ProjectPayload['pronunciations'] };
+  linked_projects?: Array<{
+    source_project_id: string;
+    source_project_title: string;
+    imported_at: string;
+    roles: Array<{ source_role_id: string; target_role_id: string; name: string; voice_ids: string[]; available_voice_ids: string[]; missing_voice_ids: string[] }>;
+  }>;
 }
 
 export interface AiMediaSettings {

@@ -2,6 +2,12 @@
 
 本文件记录 IndexVoiceStudio 的产品版本。版本格式遵循 [Semantic Versioning](https://semver.org/)。IndexTTS 推理引擎保留独立版本号。
 
+## [Unreleased]
+
+### Added
+
+* 新建声音工程时可多选关联已有工程，导入来源工程的全部角色资料、当前音色和全部候选音色。新工程保存来源工程、角色 ID 映射、可用音色和缺失音色回执，多个来源中的同名角色 ID 会分配独立目标 ID，导入完成后各工程独立维护。
+
 ## [1.1.0] 2026-08-27
 
 ### Added

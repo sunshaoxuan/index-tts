@@ -55,8 +55,8 @@ export const api = {
   testDirectorSettings: (settings: { directorProvider: 'ollama' | 'compatible'; ollamaEndpoint: string; endpoint: string; apiKey?: string; instanceId: string; allowInsecureHttp: boolean }) => request<AiMediaModelDiscovery>('/api/settings/ai-media/director-test', { method: 'POST', body: JSON.stringify(settings) }),
   saveAiMediaSettings: (settings: { endpoint: string; apiKey?: string; clearApiKey?: boolean; textModel: string; directorProvider: 'ollama' | 'compatible'; directorModel: string; ollamaEndpoint: string; directorMaxChunkChars: number; imageModel: string; instanceId: string; textApi: 'responses' | 'chat_completions'; allowInsecureHttp: boolean }) => request<AiMediaSettings>('/api/settings/ai-media', { method: 'PUT', body: JSON.stringify(settings) }),
   activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
-  projects: () => request<Array<{ label: string; value: string }>>('/api/projects'),
-  createProject: (title: string, contentType: string) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType }) }),
+  projects: () => request<Array<{ label: string; value: string; roleCount: number }>>('/api/projects'),
+  createProject: (title: string, contentType: string, sourceProjectIds: string[]) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType, source_project_ids: sourceProjectIds }) }),
   project: (id: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}`),
   save: (project: ProjectPayload) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(project.project_id)}`, {
     method: 'PUT', body: JSON.stringify(project),

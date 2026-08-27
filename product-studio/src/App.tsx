@@ -144,7 +144,7 @@ function VoicePreview({ voiceId }: { voiceId: string }) {
 function Studio() {
   const { message } = AntApp.useApp();
   const [presets, setPresets] = useState<Presets>();
-  const [projects, setProjects] = useState<Array<{ label: string; value: string }>>([]);
+  const [projects, setProjects] = useState<Array<{ label: string; value: string; roleCount: number }>>([]);
   const [projectId, setProjectId] = useState<string>();
   const [project, setProject] = useState<ProjectPayload>();
   const [dirty, setDirty] = useState(false);
@@ -168,6 +168,7 @@ function Studio() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newContentType, setNewContentType] = useState('novel');
+  const [newSourceProjectIds, setNewSourceProjectIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState('source');
   const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
   const [roleDraft, setRoleDraft] = useState<RoleRow>();
@@ -473,10 +474,12 @@ function Studio() {
   const createProject = async () => {
     if (jobRunning) return;
     try {
-      const created = await api.createProject(newTitle, newContentType);
+      const created = await api.createProject(newTitle, newContentType, newSourceProjectIds);
       const list = await api.projects();
-      setProjects(list); setProjectId(created.project_id); setCreateOpen(false); setNewTitle('');
-      message.success('新工程已经建立，请粘贴全文并保存');
+      setProjects(list); setProjectId(created.project_id); setCreateOpen(false); setNewTitle(''); setNewSourceProjectIds([]);
+      const importedRoleCount = created.linked_projects?.reduce((total, item) => total + item.roles.length, 0) || 0;
+      const importedVoiceCount = created.linked_projects?.reduce((total, item) => total + item.roles.reduce((roleTotal, role) => roleTotal + role.available_voice_ids.length, 0), 0) || 0;
+      message.success(importedRoleCount ? `新工程已经建立，已导入 ${importedRoleCount} 个角色和 ${importedVoiceCount} 个可用音色` : '新工程已经建立，请粘贴全文并保存');
     } catch (error) { message.error((error as Error).message); }
   };
 
@@ -938,7 +941,7 @@ function Studio() {
           <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>
         </Space>
       </Modal>
-      <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => setCreateOpen(false)}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div></Space></Modal>
+      <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => { setCreateOpen(false); setNewSourceProjectIds([]); }}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} /></div><div><Text strong>关联已有工程并导入角色音色</Text><Select disabled={jobRunning} mode="multiple" allowClear showSearch value={newSourceProjectIds} onChange={setNewSourceProjectIds} options={projects.map(item => ({ value: item.value, label: `${item.label} · ${item.roleCount} 个角色` }))} placeholder="可多选，留空则建立空工程" /><Text type="secondary">建立时导入角色资料、当前音色和全部候选音色，并在新工程保存来源与角色映射。后续修改彼此独立。</Text></div></Space></Modal>
       <Modal className="split-segment-modal" width={760} title={splitRow ? `拆分第 ${splitRow[0]} 条分句` : '拆分分句'} open={Boolean(splitEditor && splitRow)} okText="在光标处拆分" cancelText="取消" okButtonProps={{ disabled: jobRunning || !splitValid }} onOk={applySplit} onCancel={() => setSplitEditor(undefined)}>
         <Alert type="info" showIcon message="点击原文中的目标位置放置光标。拆分后两条继承当前角色和导演参数，前半句使用 250 ms 短停顿，后半句保留原停顿。" />
         <label className="split-source-field"><Text strong>在原文中选择拆分位置</Text><textarea ref={splitSourceRef} readOnly aria-label="选择分句拆分位置" value={splitSource} onSelect={event => setSplitEditor(current => current ? { ...current, offset: event.currentTarget.selectionStart } : current)} /></label>
