@@ -19,6 +19,7 @@ import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion'
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
+import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
 import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
 
 const { Header, Content } = Layout;
@@ -167,6 +168,8 @@ function Studio() {
   const [availableDirectorModels, setAvailableDirectorModels] = useState<string[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string>();
   const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
+  const [segmentPage, setSegmentPage] = useState(1);
+  const [segmentPageSize, setSegmentPageSize] = useState(20);
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
@@ -187,6 +190,7 @@ function Studio() {
   useEffect(() => {
     if (!projectId) return;
     setSelectedSegmentOrders([]);
+    setSegmentPage(1);
     setSplitEditor(undefined);
     Promise.all([api.project(projectId), api.latestRender(projectId)]).then(([data, latest]) => {
       setProject(data); setRender(latest); setDirty(false);
@@ -214,6 +218,10 @@ function Studio() {
   useEffect(() => {
     setActiveRoleId(current => normalizeActiveRoleId(project?.roles ?? [], current));
   }, [project?.project_id, project?.roles]);
+
+  useEffect(() => {
+    setSegmentPage(current => clampSegmentPage(current, project?.segments.length ?? 0, segmentPageSize));
+  }, [project?.segments.length, segmentPageSize]);
 
   useEffect(() => {
     if (!job || ['complete', 'error'].includes(job.phase)) return;
@@ -694,20 +702,26 @@ function Studio() {
   const segmentColumns = useMemo<ColumnsType<SegmentRow>>(() => {
     if (!presets) return [];
     return [
-      { title: '序号', dataIndex: 0, width: 70, fixed: 'left' },
-      { title: '章节', dataIndex: 1, width: 130, fixed: 'left' },
-      { title: '角色', dataIndex: 2, width: 190, render: (v, row) => <Select disabled={jobRunning} showSearch value={v} options={roleOptions} onChange={(x) => setSegment(row[0], 2, x)} /> },
-      { title: '语言', dataIndex: 4, width: 100, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.languages.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 4, x)} /> },
-      { title: '原文', dataIndex: 5, width: 300, render: (v) => <Text>{v}</Text> },
-      { title: '合成文本', dataIndex: 6, width: 320, render: (v, row) => <Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={v} onChange={(e) => setSegment(row[0], 6, e.target.value)} /> },
-      { title: '态度', dataIndex: 7, width: 160, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 7, x)} /> },
-      { title: '情绪', dataIndex: 8, width: 130, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 8, x)} /> },
-      { title: '强度', dataIndex: 9, width: 110, render: (v, row) => <InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={v} onChange={(x) => setSegment(row[0], 9, x ?? 0.5)} /> },
-      { title: '句内节奏', dataIndex: 10, width: 150, render: (v, row) => <Select disabled={jobRunning} value={v} options={presets.paces.map(value => ({ value, label: value }))} onChange={(x) => setSegment(row[0], 10, x)} /> },
-      { title: '停顿 ms', dataIndex: 11, width: 130, render: (v, row) => <InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={v} onChange={(x) => setSegment(row[0], 11, x ?? 0)} /> },
-      { title: '已生成片断', key: 'fragment', width: 310, render: (_v, row) => {
+      { title: '分句内容与导演参数', key: 'director-row', render: (_v, row) => {
         const fragment = findMatchingFragment(render.fragments, row);
-        return <div className="segment-fragment-cell">{fragment ? <><audio controls preload="metadata" src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>重新生成本分句</Button></div>;
+        return <div className="segment-row-layout">
+          <div className="segment-row-primary">
+            <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
+            <div className="segment-field"><span>章节</span><strong>{row[1]}</strong></div>
+            <label className="segment-field"><span>角色</span><Select disabled={jobRunning} showSearch value={row[2]} options={roleOptions} onChange={(value) => setSegment(row[0], 2, value)} /></label>
+            <label className="segment-field"><span>语言</span><Select disabled={jobRunning} value={row[4]} options={presets.languages.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 4, value)} /></label>
+            <label className="segment-field"><span>态度</span><Select disabled={jobRunning} value={row[7]} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 7, value)} /></label>
+            <label className="segment-field"><span>情绪</span><Select disabled={jobRunning} value={row[8]} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 8, value)} /></label>
+          </div>
+          <div className="segment-row-secondary">
+            <div className="segment-field segment-source-field"><span>原文</span><Text>{row[5]}</Text></div>
+            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
+            <label className="segment-field"><span>强度</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.5)} /></label>
+            <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
+            <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
+            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><audio controls preload="metadata" src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>重新生成本分句</Button></div></div>
+          </div>
+        </div>;
       } },
     ];
   }, [presets, roleOptions, project, jobRunning, render.fragments]);
@@ -847,7 +861,7 @@ function Studio() {
         <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
-        <div><Tabs size="large" activeKey={activeTab} onChange={key => { setActiveTab(key); setProjectActionsExpanded(true); }} items={[
+        <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={key => { setActiveTab(key); setProjectActionsExpanded(true); }} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
           { key: 'scenes', label: `场景分析 ${sceneRows.length}`, children: <Card title="场景连续性与低置信度复核"><Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '当前没有低于 0.7 的说话人归属'} description="场景数据来自最近一次 AI 全文分析。可在这里修订地点、时间、参与人物、叙事视角和基调；说话人归属请在分句导演表中修改。" />{sceneRows.length ? <div className="scene-card-grid">{sceneRows.map((scene, index) => { const sceneId = String(scene.id || `scene_${index + 1}`); return <Card key={sceneId} size="small" title={`${sceneId} · ${String(scene.location || '未说明')}`}><Space direction="vertical" size="middle" className="scene-fields"><div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label></div><label><Text strong>参与人物 ID</Text><Input disabled={jobRunning} value={Array.isArray(scene.participants) ? scene.participants.join('、') : ''} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean))} /></label><div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div><Text type="secondary">判断证据：{String(scene.evidence || '未记录')}</Text></Space></Card>; })}</div> : <Empty description="当前工程没有场景结构。使用全局 AI 设置选择模型后重新分析全文即可生成。" />}{lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}</Card> },
           { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}>
@@ -872,7 +886,7 @@ function Studio() {
               })}
             </div>
           </Card> },
-          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={project.segments} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 2260, y: 560 }} /></Card> },
+          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={project.segments} pagination={{ current: segmentPage, pageSize: segmentPageSize, pageSizeOptions: [...SEGMENT_PAGE_SIZE_OPTIONS], showSizeChanger: { showSearch: false }, showTotal: (total, range) => `第 ${range[0]} 至 ${range[1]} 条，共 ${total} 条`, onChange: (page, pageSize) => { setSegmentPageSize(pageSize); setSegmentPage(clampSegmentPage(page, project.segments.length, pageSize)); } }} scroll={{ y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} captions={render.captions} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>
