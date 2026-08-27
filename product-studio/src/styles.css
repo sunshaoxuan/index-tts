@@ -639,10 +639,20 @@ body * { box-shadow: none !important; }
 .delivery-captions header { display: flex; justify-content: space-between; align-items: center; padding: 14px 2px 10px; color: rgba(255, 237, 215, .58); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
 .delivery-captions header strong { color: var(--cream); font-variant-numeric: tabular-nums; }
 .delivery-caption-scroll { height: 220px; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; scrollbar-color: var(--cork) transparent; }
-.delivery-caption { display: grid; grid-template-columns: minmax(88px, 132px) minmax(0, 1fr); gap: 18px; padding: 13px 10px 13px 2px; border-top: 1px dashed rgba(64, 55, 46, .54); opacity: .42; transition: opacity .2s ease, background-color .2s ease, padding-left .2s ease; }
-.delivery-caption > span { color: var(--orange); font-size: 10px; font-weight: 650; }
-.delivery-caption p { margin: 0; color: var(--cream); font-size: 13px; line-height: 1.65; }
-.delivery-caption-active { padding-left: 14px; background: rgba(188, 86, 34, .1); opacity: 1; }
+.delivery-caption { display: grid; grid-template-columns: minmax(88px, 132px) minmax(0, 1fr); gap: 18px; padding: 13px 10px 13px 2px; border-top: 1px dashed rgba(64, 55, 46, .54); opacity: .42; transform-origin: left center; transition: opacity .2s ease, background-color .2s ease, padding-left .2s ease; }
+.delivery-caption > span { color: var(--orange); font-size: 10px; font-weight: 650; transition: color .2s ease, font-size .2s ease; }
+.delivery-caption p { margin: 0; color: var(--cream); font-size: 13px; line-height: 1.65; transition: color .2s ease, font-size .2s ease, font-weight .2s ease; }
+.delivery-caption-active { padding-left: 14px; background: rgba(188, 86, 34, .1); opacity: 1; animation: delivery-caption-focus 400ms cubic-bezier(.22, .8, .32, 1); }
+.delivery-caption-active > span { color: #ff9c63; font-size: 12px; font-weight: 750; }
+.delivery-caption-active p { font-size: 16px; font-weight: 620; line-height: 1.55; }
+@keyframes delivery-caption-focus {
+  0% { transform: scale(.985); }
+  58% { transform: scale(1.018); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .delivery-caption-active { animation: none; }
+}
 .voice-preview {
   width: 100%;
   min-width: 268px;
@@ -748,6 +758,7 @@ body * { box-shadow: none !important; }
   .split-segment-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; }
   .split-preview { grid-template-columns: minmax(0, 1fr); }
   .voice-instruction-preview { padding: 16px; }
+  .delivery-caption { grid-template-columns: minmax(0, 1fr); gap: 5px; }
 }
 
 @media (max-width: 720px) {
