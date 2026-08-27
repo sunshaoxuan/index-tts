@@ -25,3 +25,10 @@ test('adjacent segment records use strong alternating surfaces and an inset seco
   assert.match(styles, /tr:nth-child\(even\) > \.ant-table-cell \{ background: rgba\(80, 45, 24, \.5\)/);
   assert.match(styles, /\.segment-row-secondary \{[^}]*background: rgba\(16, 9, 4, \.3\)/s);
 });
+
+test('segment labels and values remain readable at production viewport sizes', () => {
+  assert.match(styles, /\.segment-field > span:first-child \{[^}]*font-size: 12px;[^}]*font-weight: 650/s);
+  assert.match(styles, /\.segment-field > strong \{[^}]*font-size: 14px/s);
+  assert.match(styles, /\.segment-source-field \.ant-typography \{[^}]*font-size: 14px/s);
+  assert.match(styles, /\.segment-fragment-cell > \.ant-typography \{[^}]*font-size: 12px/s);
+});
