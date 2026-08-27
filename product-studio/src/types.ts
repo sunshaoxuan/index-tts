@@ -80,6 +80,10 @@ export interface ProjectPayload {
 export interface AiMediaSettings {
   endpoint: string;
   textModel: string;
+  directorProvider: 'ollama' | 'compatible';
+  directorModel: string;
+  ollamaEndpoint: string;
+  directorMaxChunkChars: number;
   imageModel: string;
   instanceId: string;
   textApi: 'responses' | 'chat_completions';
@@ -90,6 +94,7 @@ export interface AiMediaSettings {
 
 export interface AiMediaModelDiscovery {
   ok: boolean;
+  provider?: 'ollama' | 'compatible';
   endpoint: string;
   instanceId: string;
   models: string[];

@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 import requests
 
@@ -122,7 +123,7 @@ SEGMENT_HEADERS = [
 DIRECTOR_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["content_type", "title", "characters", "segments"],
+    "required": ["content_type", "title", "characters", "scenes", "segments"],
     "properties": {
         "content_type": {"type": "string", "enum": ["novel", "news", "story"]},
         "title": {"type": "string"},
@@ -131,13 +132,33 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["id", "name", "kind", "profile", "voice_hint"],
+                "required": ["id", "name", "kind", "aliases", "profile", "voice_hint", "confidence", "evidence"],
                 "properties": {
                     "id": {"type": "string"},
                     "name": {"type": "string"},
                     "kind": {"type": "string", "enum": sorted(ROLE_KINDS)},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
                     "profile": {"type": "string"},
                     "voice_hint": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "evidence": {"type": "string"},
+                },
+            },
+        },
+        "scenes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "location", "time", "participants", "narrative_perspective", "mood", "evidence"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "location": {"type": "string"},
+                    "time": {"type": "string"},
+                    "participants": {"type": "array", "items": {"type": "string"}},
+                    "narrative_perspective": {"type": "string"},
+                    "mood": {"type": "string"},
+                    "evidence": {"type": "string"},
                 },
             },
         },
@@ -152,6 +173,10 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
                     "speaker_id",
                     "speaker_name",
                     "speaker_kind",
+                    "speaker_candidates",
+                    "speaker_confidence",
+                    "speaker_evidence",
+                    "scene_id",
                     "language",
                     "source_text",
                     "text",
@@ -167,13 +192,17 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
                     "speaker_id": {"type": "string"},
                     "speaker_name": {"type": "string"},
                     "speaker_kind": {"type": "string", "enum": sorted(ROLE_KINDS)},
+                    "speaker_candidates": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+                    "speaker_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "speaker_evidence": {"type": "string"},
+                    "scene_id": {"type": "string"},
                     "language": {"type": "string", "enum": sorted(LANGUAGES)},
                     "source_text": {"type": "string"},
                     "text": {"type": "string"},
-                    "attitude": {"type": "string"},
+                    "attitude": {"type": "string", "enum": sorted(ATTITUDE_PRESETS)},
                     "emotion": {"type": "string", "enum": sorted(EMOTIONS)},
                     "intensity": {"type": "number", "minimum": 0, "maximum": 1},
-                    "pace": {"type": "string", "enum": sorted(PACES)},
+                    "pace": {"type": "string", "enum": sorted(PACE_PRESETS)},
                     "pause_after_ms": {"type": "integer", "minimum": 0, "maximum": 3000},
                 },
             },
@@ -201,6 +230,18 @@ GUIDANCE_ROUTING_SCHEMA: dict[str, Any] = {
                 },
             },
         }
+    },
+}
+
+CONTEXT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["content_type", "title", "characters", "scenes"],
+    "properties": {
+        "content_type": deepcopy(DIRECTOR_SCHEMA["properties"]["content_type"]),
+        "title": deepcopy(DIRECTOR_SCHEMA["properties"]["title"]),
+        "characters": deepcopy(DIRECTOR_SCHEMA["properties"]["characters"]),
+        "scenes": deepcopy(DIRECTOR_SCHEMA["properties"]["scenes"]),
     },
 }
 
@@ -234,6 +275,12 @@ class DirectorConfig:
     model: str = "qwen3:8b"
     timeout_seconds: int = 300
     max_chunk_chars: int = 1400
+    provider: str = "ollama"
+    api_key: str = ""
+    instance_id: str = ""
+    text_api: str = "chat_completions"
+    allow_insecure_http: bool = False
+    staged_analysis: bool = False
 
 
 def _notify(progress: Callable[..., Any] | None, fraction: float, description: str) -> None:
@@ -418,21 +465,48 @@ class OllamaTextDirector:
     def __init__(self, config: DirectorConfig):
         self.config = config
         self.base_url = config.base_url.rstrip("/")
+        if config.provider not in {"ollama", "compatible"}:
+            raise DirectorError(f"不支持的 AI Provider：{config.provider}")
+        if config.text_api not in {"chat_completions", "responses"}:
+            raise DirectorError(f"不支持的文本接口：{config.text_api}")
+        parsed = urlparse(self.base_url)
+        if config.provider == "compatible" and parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "localhost", "::1"} and not config.allow_insecure_http:
+            raise DirectorError("兼容 Endpoint 使用公网 HTTP，必须改用 HTTPS 或在全局设置中明确允许该传输风险")
+
+    def _compatible_route(self, route: str) -> str:
+        return f"{self.base_url}{'' if self.base_url.endswith('/v1') else '/v1'}{route}"
+
+    def _compatible_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+            **({"X-Cockpit-Instance-Id": self.config.instance_id} if self.config.instance_id else {}),
+        }
 
     def list_models(self) -> list[str]:
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=10)
+            if self.config.provider == "ollama":
+                response = requests.get(f"{self.base_url}/api/tags", timeout=10)
+            else:
+                response = requests.get(
+                    self._compatible_route("/models"),
+                    headers=self._compatible_headers(),
+                    timeout=10,
+                )
             response.raise_for_status()
         except requests.RequestException as exc:
-            raise DirectorError(f"无法连接本地 AI 服务 {self.base_url}：{exc}") from exc
-        return [str(item.get("name", "")) for item in response.json().get("models", []) if item.get("name")]
+            raise DirectorError(f"无法连接 AI 服务 {self.base_url}：{exc}") from exc
+        payload = response.json()
+        rows = payload.get("models", []) if self.config.provider == "ollama" else payload.get("data", payload.get("models", []))
+        return sorted({str(item.get("name") or item.get("id") or "").strip() for item in rows if item.get("name") or item.get("id")})
 
     def health_summary(self) -> str:
         models = self.list_models()
         if self.config.model not in models:
             available = "、".join(models) if models else "无"
             raise DirectorError(f"AI 模型 {self.config.model} 不可用。当前模型：{available}")
-        return f"本地 AI 已连接｜{self.config.model}｜{self.base_url}"
+        provider_label = "本地 Ollama" if self.config.provider == "ollama" else "兼容 Endpoint"
+        return f"{provider_label} 已连接｜{self.config.model}｜{self.base_url}"
 
     def analyze_document(
         self,
@@ -452,6 +526,7 @@ class OllamaTextDirector:
             raise DirectorError("输入文字没有可处理内容。")
 
         global_characters: list[dict[str, Any]] = []
+        global_scenes: list[dict[str, Any]] = []
         global_segments: list[dict[str, Any]] = []
         detected_type: str | None = None
         title = "未命名内容"
@@ -461,7 +536,23 @@ class OllamaTextDirector:
             "duration_seconds": 0.0,
             "chunks": 0,
             "fallback_chunks": 0,
+            "context_requests": 0,
+            "context_fallback": 0,
         }
+        if self.config.staged_analysis:
+            _notify(progress, 0.01, "AI 正在建立全文角色与场景注册表")
+            try:
+                global_characters, global_scenes, context_metrics = self._analyze_context(source, content_type, guidance)
+                metrics["prompt_tokens"] += context_metrics["prompt_tokens"]
+                metrics["output_tokens"] += context_metrics["output_tokens"]
+                metrics["duration_seconds"] += context_metrics["duration_seconds"]
+                metrics["context_requests"] = context_metrics["requests"]
+            except (DirectorError, ValueError, TypeError, json.JSONDecodeError):
+                metrics["context_fallback"] = 1
+                global_characters = []
+                global_scenes = []
+                _notify(progress, 0.02, "全文角色与场景注册未通过校验，继续使用逐块识别并标记待复核")
+        self._scene_registry = global_scenes
         previous_context = ""
         index = 0
         while index < len(chunks):
@@ -526,7 +617,7 @@ class OllamaTextDirector:
             if detected_type is None:
                 detected_type = result["content_type"]
                 title = result["title"].strip() or title
-            self._merge_chunk(result, global_characters, global_segments)
+            self._merge_chunk(result, global_characters, global_segments, global_scenes)
             previous_context = chunk[-400:]
             index += 1
 
@@ -535,17 +626,101 @@ class OllamaTextDirector:
 
         _notify(progress, 1.0, "AI 文本导演完成")
         return {
-            "version": 1,
-            "provider": "ollama",
+            "version": 2,
+            "provider": self.config.provider,
             "model": self.config.model,
             "content_type": detected_type or (content_type if content_type != "auto" else "story"),
             "title": title,
             "original_text": source,
             "cleaned_text": "\n".join(segment["text"] for segment in global_segments),
             "characters": global_characters,
+            "scenes": global_scenes,
             "segments": global_segments,
             "metrics": metrics,
         }
+
+    def _analyze_context(self, source: str, requested_type: str, guidance: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        context_chunks = split_document(source, max(4000, min(12000, self.config.max_chunk_chars * 3)))
+        characters: list[dict[str, Any]] = []
+        scenes: list[dict[str, Any]] = []
+        metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0, "requests": 0}
+        for index, chunk in enumerate(context_chunks, start=1):
+            prompt = f"""
+你是长篇有声作品的全文角色与场景注册导演。当前处理注册阶段第 {index}/{len(context_chunks)} 块。
+
+只完成角色和场景注册，不进行分句，不写详细人物小传，不生成声音参数。
+1. 人物使用稳定 ID，旁白固定为 narrator。姓名、职称、外貌称谓和关系称谓写入同一角色 aliases。
+2. 描述短语含副词或动作词时不得作为人物名称。新增人物必须提供 evidence 和 confidence。
+3. 场景记录地点、时间、参与角色 ID、叙事视角、基调和证据。场景转换需要时间、地点、人物集合或叙事视角变化依据。
+4. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
+5. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
+6. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
+
+本块原文：
+<<<SOURCE
+{chunk}
+SOURCE
+""".strip()
+            result, current_metrics = self._request_structured(
+                prompt,
+                CONTEXT_SCHEMA,
+                system="你只输出严格符合 JSON Schema 的全文角色与场景注册结果。",
+                schema_name="director_context",
+                context_tokens=8192,
+                keep_alive="30m",
+            )
+            raw_characters = result.get("characters")
+            raw_scenes = result.get("scenes")
+            if not isinstance(raw_characters, list) or not isinstance(raw_scenes, list):
+                raise DirectorValidationError("全文角色与场景注册结果缺少 characters 或 scenes")
+            self._merge_context_registry(raw_characters, raw_scenes, characters, scenes)
+            metrics["prompt_tokens"] += current_metrics["prompt_tokens"]
+            metrics["output_tokens"] += current_metrics["output_tokens"]
+            metrics["duration_seconds"] += current_metrics["duration_seconds"]
+            metrics["requests"] += 1
+        return characters, scenes, metrics
+
+    @classmethod
+    def _merge_context_registry(
+        cls,
+        raw_characters: list[Any],
+        raw_scenes: list[Any],
+        characters: list[dict[str, Any]],
+        scenes: list[dict[str, Any]],
+    ) -> None:
+        alias_index: dict[str, dict[str, Any]] = {}
+        for character in characters:
+            for value in [character["name"], *character.get("aliases", [])]:
+                alias_index[str(value).strip().casefold()] = character
+        local_to_global: dict[str, str] = {}
+        for raw in raw_characters:
+            if not isinstance(raw, dict):
+                continue
+            candidate = cls._normalize_character(raw)
+            keys = [candidate["name"], *candidate.get("aliases", [])]
+            existing = next((alias_index.get(str(value).strip().casefold()) for value in keys if str(value).strip()), None)
+            if existing is None:
+                candidate["id"] = "narrator" if candidate["kind"] == "narrator" else f"role_{len([item for item in characters if item['kind'] != 'narrator']) + 1:03d}"
+                characters.append(candidate)
+                existing = candidate
+            else:
+                existing_aliases = set(existing.get("aliases", []))
+                existing_aliases.update(value for value in keys if value != existing["name"])
+                existing["aliases"] = sorted(existing_aliases)
+                if candidate.get("confidence", 0) > existing.get("confidence", 0):
+                    for field in ("profile", "voice_hint", "confidence", "evidence"):
+                        existing[field] = candidate.get(field, existing.get(field))
+            for value in [existing["name"], *existing.get("aliases", [])]:
+                alias_index[str(value).strip().casefold()] = existing
+            local_to_global[candidate["id"]] = existing["id"]
+            local_to_global[str(raw.get("id", ""))] = existing["id"]
+        for raw in raw_scenes:
+            if not isinstance(raw, dict):
+                continue
+            scene = cls._normalize_scene(raw, len(scenes) + 1)
+            scene["id"] = f"scene_{len(scenes) + 1:03d}"
+            scene["participants"] = [local_to_global.get(item, item) for item in scene["participants"]]
+            scenes.append(scene)
 
     def _analyze_chunk(
         self,
@@ -597,13 +772,17 @@ class OllamaTextDirector:
                 "speaker_id": "narrator",
                 "speaker_name": "旁白",
                 "speaker_kind": "narrator",
+                "speaker_candidates": ["narrator"],
+                "speaker_confidence": 0.5,
+                "speaker_evidence": "确定性安全分段没有执行人物归属判断",
+                "scene_id": "scene_001",
                 "language": "ZH",
                 "source_text": source_text,
                 "text": source_text.strip().strip("“”‘’\"'"),
-                "attitude": "中性安全分段",
+                "attitude": "中性叙述",
                 "emotion": "calm",
                 "intensity": 0.4,
-                "pace": "medium",
+                "pace": "自然",
                 "pause_after_ms": 300,
             }
             for index, source_text in enumerate(split_exact_sentences(chunk), start=1)
@@ -617,10 +796,14 @@ class OllamaTextDirector:
                         "id": "narrator",
                         "name": "旁白",
                         "kind": "narrator",
+                        "aliases": ["旁白", "叙述者"],
                         "profile": "全篇叙事视角，负责环境、动作、心理活动与说话归属；不对应具体人物，声音需要在章节之间保持稳定。",
                         "voice_hint": "成熟中性的叙事声线，音高适中，共鸣稳定，吐字清楚，情绪克制并保留讲述感。",
+                        "confidence": 1.0,
+                        "evidence": "确定性安全分段",
                     }
                 ],
+                "scenes": [{"id": "scene_001", "location": "未判断", "time": "未判断", "participants": ["narrator"], "narrative_perspective": "旁白", "mood": "中性", "evidence": "确定性安全分段"}],
                 "segments": segments,
             },
             chunk,
@@ -644,6 +827,7 @@ class OllamaTextDirector:
             "story": "体裁固定为 story。旁白具有讲述感，人物台词保持可辨识的态度变化。",
         }[requested_type]
         roster = json.dumps(existing_characters, ensure_ascii=False, separators=(",", ":"))
+        scene_registry = json.dumps(getattr(self, "_scene_registry", []), ensure_ascii=False, separators=(",", ":"))
         schema_text = json.dumps(DIRECTOR_SCHEMA, ensure_ascii=False, separators=(",", ":"))
         return f"""
 你是专业有声内容导演和中文文本编辑。处理第 {chunk_index}/{chunk_count} 个连续文本块。
@@ -654,16 +838,19 @@ class OllamaTextDirector:
 3. 拆句前先由你结合完整句、相邻句、人物表和说话动作，判断每组引号的语义功能属于人物对白、心理活动、句内引用或普通叙述，再决定 segment 边界和角色轨道。不要输出中间推理。旁白和说话归属文字也必须保留并单独成句。例如“李明说：”属于旁白，不能只保留引号内台词。名称、招牌文字、术语和标题等句内短引用属于所在叙述句的句法成分，不得仅因引号独立拆句。例如“店门挂着‘烤乌贼饼’的招牌”应保持为同一条旁白 segment。
 4. 每条 source_text 必须从本次原文中按顺序逐字复制。全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
 5. text 是对应 source_text 的可朗读清洗稿。去除只用于排版的外层引号，不得遗漏可朗读信息。
-6. 标注具体态度语气、八类情绪、0 到 1 情绪强度、slow/medium/fast 语速和 0 到 3000 毫秒句后停顿。
+6. 态度只能使用：{'、'.join(ATTITUDE_PRESETS)}。句内节奏只能使用：{'、'.join(PACE_PRESETS)}。另标注八类情绪、0 到 1 情绪强度和 0 到 3000 毫秒句后停顿。态度表示人物对听者或事件的姿态，情绪表示人物内在状态，句内节奏表示本句推进方式，三个字段分别判断。
 7. 每条 segment 标注 ZH、EN、JA、ES、AR 之一。混合语言按主要朗读语言拆句。
-8. 人物必须使用稳定 ID。优先复用已有角色；旁白固定使用 narrator。
+8. 人物必须使用稳定 ID。优先复用已有角色及 aliases；旁白固定使用 narrator。描述短语含副词或动作词时不得作为人物名称。新增人物需要 evidence 和 confidence。证据不足时把最多三个候选放入 speaker_candidates，并降低 speaker_confidence。
 9. {type_instruction}
 10. 用户导演补充：{guidance.strip() or '无'}。先进行语义拆分：作品级要求应用于全部轨道；点名角色、角色类型、主角、配角、身份描述或上下文指代的要求只应用于目标角色。把角色专属声音要求合并进目标角色的 voice_hint，把角色专属表演要求应用于该角色的 segments，禁止复制给无关角色。
-11. 每个角色的 profile 是详细人物小传，使用 300 到 600 个中文字符，根据原文覆盖身份与社会位置、年龄阶段、外貌线索、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式和叙事作用。只写原文有依据的信息；原文未说明的维度明确写“原文未说明”，禁止只复制姓名。小传需要同时支持声音设计、角色形象、插图和视频关键帧的一致人物设定。
+11. 每个角色的 profile 在本阶段只写 40 到 120 个中文字符，记录当前原文明确支持的身份、关系、行为和说话方式。详细人物小传由独立功能扩写，不能占用分句请求的输出预算。
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
 13. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
+14. 先识别本块 scene，记录地点、时间、参与人物、叙事视角、情绪基调和原文证据。每条 segment 必须引用本块 scenes 中的 scene_id。场景转换需要时间、地点、人物集合或叙事视角变化证据。
+15. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
 
 已有角色表：{roster or '[]'}
+全文场景注册表：{scene_registry or '[]'}。优先复用其中的 scene id；当前块出现有证据的新场景时可以新增。
 上一文本块结尾，仅用于人物连续性，不要重复输出：{previous_context or '无'}
 
 本次原文开始：
@@ -700,43 +887,24 @@ JSON Schema：{schema_text}
 原子补充：
 {json.dumps([{"clause_index": index + 1, "source_text": clause} for index, clause in enumerate(clauses)], ensure_ascii=False, separators=(',', ':'))}
 """.strip()
-        body = {
-            "model": self.config.model,
-            "stream": False,
-            "think": False,
-            "keep_alive": 0,
-            "format": GUIDANCE_ROUTING_SCHEMA,
-            "messages": [
-                {"role": "system", "content": "你只输出严格符合 JSON Schema 的导演补充语义分配。"},
-                {"role": "user", "content": prompt},
-            ],
-            "options": {"temperature": 0, "seed": 42, "num_ctx": 4096},
-        }
         last_error: Exception | None = None
-        prior_content = ""
         for attempt in range(2):
-            current_body = deepcopy(body)
+            current_prompt = prompt
             if attempt:
-                current_body["messages"].extend(
-                    [
-                        {"role": "assistant", "content": prior_content},
-                        {"role": "user", "content": f"上一次分配未通过程序校验：{last_error}。请重新输出完整 assignments，明确点名某个轨道的片段绝对不能使用 global。"},
-                    ]
+                current_prompt += (
+                    f"\n\n上一次分配未通过程序校验：{last_error}。"
+                    "请重新输出完整 assignments，明确点名某个轨道的片段绝对不能使用 global。"
                 )
             try:
-                response = requests.post(f"{self.base_url}/api/chat", json=current_body, timeout=self.config.timeout_seconds)
-                response.raise_for_status()
-            except requests.Timeout as exc:
-                raise DirectorTimeout(f"本地 AI 在 {self.config.timeout_seconds} 秒内未完成导演补充语义分配") from exc
-            except requests.RequestException as exc:
-                raise DirectorServiceError(f"导演补充语义分配调用失败：{exc}") from exc
-            payload = response.json()
-            content = payload.get("message", {}).get("content")
-            if not isinstance(content, str) or not content.strip():
-                raise DirectorServiceError("导演补充语义分配返回空结果。")
-            prior_content = content
-            try:
-                assignments = validate_guidance_assignments(json.loads(content), clauses, roster)
+                result, _ = self._request_structured(
+                    current_prompt,
+                    GUIDANCE_ROUTING_SCHEMA,
+                    system="你只输出严格符合 JSON Schema 的导演补充语义分配。",
+                    schema_name="guidance_routing",
+                    context_tokens=4096,
+                    keep_alive=0,
+                )
+                assignments = validate_guidance_assignments(result, clauses, roster)
                 return {
                     "guidance": guidance,
                     "model": self.config.model,
@@ -744,49 +912,105 @@ JSON Schema：{schema_text}
                     "assignments": assignments,
                     "resolved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 }
-            except (DirectorValidationError, json.JSONDecodeError) as exc:
+            except (DirectorValidationError, DirectorServiceError, json.JSONDecodeError) as exc:
                 last_error = exc
         raise DirectorValidationError(f"AI 连续两次未生成可验证的导演补充语义分配：{last_error}")
 
-    def _chat(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        body = {
-            "model": self.config.model,
-            "stream": False,
-            "think": False,
-            "keep_alive": "30m",
-            "format": DIRECTOR_SCHEMA,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你只输出严格符合 JSON Schema 的有声导演结果，完整保留原文可朗读信息。",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "options": {"temperature": 0, "seed": 42, "num_ctx": 8192},
-        }
+    @staticmethod
+    def _compatible_text(payload: dict[str, Any]) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            content = choices[0].get("message", {}).get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+        output = payload.get("output")
+        if isinstance(output, list):
+            for item in output:
+                for content in item.get("content", []) if isinstance(item, dict) else []:
+                    if isinstance(content, dict) and isinstance(content.get("text"), str):
+                        return content["text"]
+        return ""
+
+    def _request_structured(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        system: str,
+        schema_name: str,
+        context_tokens: int,
+        keep_alive: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = time.perf_counter()
+        if self.config.provider == "ollama":
+            url = f"{self.base_url}/api/chat"
+            headers: dict[str, str] = {}
+            body = {
+                "model": self.config.model,
+                "stream": False,
+                "think": False,
+                "keep_alive": keep_alive,
+                "format": schema,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                "options": {"temperature": 0, "seed": 42, "num_ctx": context_tokens},
+            }
+        elif self.config.text_api == "responses":
+            url = self._compatible_route("/responses")
+            headers = self._compatible_headers()
+            body = {
+                "model": self.config.model,
+                "instructions": system,
+                "input": prompt,
+                "stream": False,
+                "text": {"format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema}},
+            }
+        else:
+            url = self._compatible_route("/chat/completions")
+            headers = self._compatible_headers()
+            body = {
+                "model": self.config.model,
+                "stream": False,
+                "temperature": 0,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}},
+            }
         try:
-            response = requests.post(
-                f"{self.base_url}/api/chat",
-                json=body,
-                timeout=self.config.timeout_seconds,
-            )
+            request_kwargs = {"json": body, "timeout": self.config.timeout_seconds}
+            if headers:
+                request_kwargs["headers"] = headers
+            response = requests.post(url, **request_kwargs)
             response.raise_for_status()
         except requests.Timeout as exc:
-            raise DirectorTimeout(f"本地 AI 在 {self.config.timeout_seconds} 秒内未完成当前文本块") from exc
+            raise DirectorTimeout(f"AI 在 {self.config.timeout_seconds} 秒内未完成当前请求") from exc
         except requests.RequestException as exc:
-            raise DirectorServiceError(f"本地 AI 调用失败：{exc}") from exc
+            raise DirectorServiceError(f"AI 调用失败：{exc}") from exc
         payload = response.json()
-        content = payload.get("message", {}).get("content")
+        content = payload.get("message", {}).get("content") if self.config.provider == "ollama" else self._compatible_text(payload)
         if not isinstance(content, str) or not content.strip():
-            raise DirectorServiceError("本地 AI 返回了空结果。")
+            raise DirectorServiceError("AI 返回了空结果。")
         result = json.loads(content)
+        usage = payload.get("usage") or {}
         metrics = {
-            "prompt_tokens": int(payload.get("prompt_eval_count") or 0),
-            "output_tokens": int(payload.get("eval_count") or 0),
+            "prompt_tokens": int(payload.get("prompt_eval_count") or usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+            "output_tokens": int(payload.get("eval_count") or usage.get("output_tokens") or usage.get("completion_tokens") or 0),
             "duration_seconds": round(time.perf_counter() - started, 3),
         }
         return result, metrics
+
+    def _chat(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        return self._request_structured(
+            prompt,
+            DIRECTOR_SCHEMA,
+            system="你只输出严格符合 JSON Schema 的有声导演结果，完整保留原文可朗读信息。",
+            schema_name="audio_director",
+            context_tokens=8192,
+            keep_alive="30m",
+        )
 
     def _validate_chunk(self, result: dict[str, Any], source: str) -> dict[str, Any]:
         if not isinstance(result, dict):
@@ -795,6 +1019,7 @@ JSON Schema：{schema_text}
         if content_type not in {"novel", "news", "story"}:
             raise DirectorError("AI 结果缺少有效体裁。")
         raw_characters = result.get("characters")
+        raw_scenes = result.get("scenes", [])
         raw_segments = result.get("segments")
         if not isinstance(raw_characters, list) or not isinstance(raw_segments, list) or not raw_segments:
             raise DirectorError("AI 结果缺少角色或分句。")
@@ -810,11 +1035,22 @@ JSON Schema：{schema_text}
             character_ids.add(character["id"])
             characters.append(character)
 
+        scenes = [
+            self._normalize_scene(raw, index)
+            for index, raw in enumerate(raw_scenes, start=1)
+            if isinstance(raw, dict)
+        ]
+        if not scenes:
+            scenes = [{"id": "scene_001", "location": "未判断", "time": "未判断", "participants": [], "narrative_perspective": "未判断", "mood": "中性", "evidence": "旧版结果未提供场景数据"}]
+        scene_ids = {scene["id"] for scene in scenes}
+
         segments: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_segments, start=1):
             if not isinstance(raw, dict):
                 raise DirectorError(f"第 {index} 条分句格式无效。")
             segment = self._normalize_segment(raw, index)
+            if segment["scene_id"] not in scene_ids:
+                segment["scene_id"] = scenes[0]["id"]
             if segment["speaker_kind"] == "character" and is_speech_attribution(segment["source_text"]):
                 segment["speaker_id"] = "narrator"
                 segment["speaker_name"] = "旁白"
@@ -854,6 +1090,7 @@ JSON Schema：{schema_text}
             "content_type": content_type,
             "title": str(result.get("title", "")).strip() or "未命名内容",
             "characters": characters,
+            "scenes": scenes,
             "segments": segments,
         }
 
@@ -1133,12 +1370,31 @@ JSON Schema：{schema_text}
         if kind == "narrator":
             role_id = "narrator"
             name = "旁白"
-        return {
+        normalized = {
             "id": role_id,
             "name": name,
             "kind": kind,
             "profile": str(raw.get("profile", "")).strip(),
             "voice_hint": str(raw.get("voice_hint", "")).strip(),
+        }
+        if any(key in raw for key in ("aliases", "confidence", "evidence")):
+            normalized.update({
+                "aliases": [str(item).strip() for item in raw.get("aliases", []) if str(item).strip() and str(item).strip() != name],
+                "confidence": round(max(0.0, min(1.0, float(raw.get("confidence", 1.0)))), 2),
+                "evidence": str(raw.get("evidence", "")).strip(),
+            })
+        return normalized
+
+    @staticmethod
+    def _normalize_scene(raw: dict[str, Any], default_index: int) -> dict[str, Any]:
+        return {
+            "id": str(raw.get("id", "")).strip() or f"scene_{default_index:03d}",
+            "location": str(raw.get("location", "未说明")).strip() or "未说明",
+            "time": str(raw.get("time", "未说明")).strip() or "未说明",
+            "participants": [str(item).strip() for item in raw.get("participants", []) if str(item).strip()],
+            "narrative_perspective": str(raw.get("narrative_perspective", "未说明")).strip() or "未说明",
+            "mood": str(raw.get("mood", "中性")).strip() or "中性",
+            "evidence": str(raw.get("evidence", "")).strip(),
         }
 
     @staticmethod
@@ -1161,7 +1417,7 @@ JSON Schema：{schema_text}
             raise DirectorError(f"第 {default_order} 条分句缺少原文、合成文本或态度。")
         if len(text) > 1200:
             raise DirectorError(f"第 {default_order} 条合成文本超过 1200 字符。")
-        if emotion not in EMOTIONS or pace not in PACES or language not in LANGUAGES:
+        if emotion not in EMOTIONS or pace not in PACES | set(PACE_PRESETS) or language not in LANGUAGES:
             raise DirectorError(f"第 {default_order} 条分句的情绪、语速或语言无效。")
         intensity = max(0.0, min(1.0, float(raw.get("intensity", 0.65))))
         pause_after_ms = max(0, min(3000, int(raw.get("pause_after_ms", 400))))
@@ -1171,13 +1427,19 @@ JSON Schema：{schema_text}
             "speaker_id": speaker_id,
             "speaker_name": speaker_name,
             "speaker_kind": speaker_kind,
+            "speaker_candidates": [str(item).strip() for item in raw.get("speaker_candidates", []) if str(item).strip()][:3] or [speaker_id],
+            "speaker_confidence": round(max(0.0, min(1.0, float(raw.get("speaker_confidence", 1.0)))), 2),
+            "speaker_evidence": str(raw.get("speaker_evidence", "")).strip(),
+            "scene_id": str(raw.get("scene_id", "")).strip() or "scene_001",
             "language": language,
             "source_text": source_text,
             "text": text,
-            "attitude": attitude,
+            "attitude": ATTITUDE_PRESETS.get(attitude, attitude),
+            "attitude_preset": migrate_attitude_preset(attitude),
             "emotion": emotion,
             "intensity": round(intensity, 2),
-            "pace": pace,
+            "pace": PACE_PRESETS[pace][0] if pace in PACE_PRESETS else pace,
+            "pace_preset": migrate_pace_preset(pace),
             "pause_after_ms": pause_after_ms,
         }
 
@@ -1186,11 +1448,12 @@ JSON Schema：{schema_text}
         result: dict[str, Any],
         global_characters: list[dict[str, Any]],
         global_segments: list[dict[str, Any]],
+        global_scenes: list[dict[str, Any]],
     ) -> None:
-        role_by_key = {
-            (item["kind"], "旁白" if item["kind"] == "narrator" else item["name"].strip().casefold()): item
-            for item in global_characters
-        }
+        role_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in global_characters:
+            for value in [item["name"], *item.get("aliases", [])]:
+                role_by_key[(item["kind"], "旁白" if item["kind"] == "narrator" else str(value).strip().casefold())] = item
         local_to_global: dict[str, str] = {}
         for character in result["characters"]:
             key = (
@@ -1218,8 +1481,22 @@ JSON Schema：{schema_text}
                         existing[field] = candidate
             local_to_global[character["id"]] = existing["id"]
 
+        local_scene_to_global: dict[str, str] = {}
+        scene_by_id = {scene["id"]: scene for scene in global_scenes}
+        for scene in result.get("scenes", []):
+            existing_scene = scene_by_id.get(scene["id"])
+            if existing_scene is None:
+                created_scene = deepcopy(scene)
+                created_scene["id"] = f"scene_{len(global_scenes) + 1:03d}"
+                created_scene["participants"] = [local_to_global.get(item, item) for item in scene.get("participants", [])]
+                global_scenes.append(created_scene)
+                existing_scene = created_scene
+            local_scene_to_global[scene["id"]] = existing_scene["id"]
+
         for segment in result["segments"]:
             merged = deepcopy(segment)
+            merged["scene_id"] = local_scene_to_global.get(merged.get("scene_id", ""), global_scenes[-1]["id"] if global_scenes else "scene_001")
+            merged["speaker_candidates"] = [local_to_global.get(item, item) for item in merged.get("speaker_candidates", [])]
             role_key = (
                 merged["speaker_kind"],
                 "旁白" if merged["speaker_kind"] == "narrator" else merged["speaker_name"].strip().casefold(),
@@ -1392,10 +1669,10 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
             segment["language"],
             segment["source_text"],
             segment["text"],
-            migrate_attitude_preset(segment["attitude"]),
+            segment.get("attitude_preset") or migrate_attitude_preset(segment["attitude"]),
             migrate_emotion_label(segment["emotion"]),
             segment["intensity"],
-            migrate_pace_preset(segment["pace"]),
+            segment.get("pace_preset") or migrate_pace_preset(segment["pace"]),
             segment["pause_after_ms"],
         ]
         for segment in document.get("segments", [])

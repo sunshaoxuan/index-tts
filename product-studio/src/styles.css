@@ -491,6 +491,10 @@ body * { box-shadow: none !important; }
 .pitch-control .ant-slider-track { background: var(--cream) !important; }
 .pitch-control .ant-slider-handle::after { box-shadow: 0 0 0 2px var(--cream) !important; background: var(--bark) !important; }
 .ai-media-settings label { display: grid; gap: 8px; }
+.scene-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 18px; }
+.scene-fields { width: 100%; }
+.scene-fields label { display: grid; gap: 7px; }
+.low-confidence-card { margin-top: 18px; }
 .clear-key-control { grid-template-columns: max-content 1fr; align-items: center; }
 .role-table .role-focus-row { cursor: pointer; outline: 0; }
 .role-table .role-focus-row > .ant-table-cell { transition: background-color .18s ease, border-color .18s ease; }

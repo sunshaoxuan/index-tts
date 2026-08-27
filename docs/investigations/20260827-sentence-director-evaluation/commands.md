@@ -31,3 +31,15 @@ rg --files "outputs/novel-projects/20260825-104455-白夜行01-869866"
 ## 5. 安全说明
 
 报告与命令记录不包含 API Key。外部 Endpoint 只执行模型发现，本轮没有发送小说正文。
+
+## 6. 实施验证命令
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -m "not gpu" -q
+pnpm --dir product-studio test
+pnpm --dir product-studio run build
+.\scripts\start_indextts25_windows.ps1 -SkipBuild
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:7864/api/settings/ai-media/director-test
+```
+
+页面验收使用内置浏览器访问 `http://127.0.0.1:7864/`，依次检查全局 AI 设置、角色删除确认和场景分析页，并读取 Console。

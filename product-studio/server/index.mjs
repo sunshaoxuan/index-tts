@@ -449,6 +449,13 @@ function normalizeAiEndpoint(value) {
   return text;
 }
 
+function normalizeOllamaEndpoint(value) {
+  const text = String(value || 'http://127.0.0.1:11434').trim().replace(/\/+$/u, '');
+  const parsed = new URL(text);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Ollama Endpoint 必须使用 HTTP 或 HTTPS');
+  return text;
+}
+
 function aiRoute(endpoint, route) {
   return `${endpoint}${endpoint.endsWith('/v1') ? '' : '/v1'}${route}`;
 }
@@ -481,13 +488,17 @@ async function readAiMediaSettings(file) {
       endpoint: normalizeAiEndpoint(stored.endpoint),
       api_key: String(stored.api_key || ''),
       text_model: String(stored.text_model || 'gemini-2.5-pro'),
+      director_provider: stored.director_provider === 'compatible' ? 'compatible' : 'ollama',
+      director_model: String(stored.director_model || 'qwen3:8b'),
+      ollama_endpoint: normalizeOllamaEndpoint(stored.ollama_endpoint),
+      director_max_chunk_chars: Math.max(320, Math.min(12000, Math.round(Number(stored.director_max_chunk_chars) || 1400))),
       image_model: String(stored.image_model || 'gpt-image-1'),
       instance_id: String(stored.instance_id || ''),
       text_api: stored.text_api === 'responses' ? 'responses' : 'chat_completions',
       allow_insecure_http: Boolean(stored.allow_insecure_http),
     };
   } catch {
-    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:8b', ollama_endpoint: 'http://127.0.0.1:11434', director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
   }
 }
 
@@ -495,6 +506,10 @@ function publicAiMediaSettings(settings) {
   return {
     endpoint: settings.endpoint,
     textModel: settings.text_model,
+    directorProvider: settings.director_provider,
+    directorModel: settings.director_model,
+    ollamaEndpoint: settings.ollama_endpoint,
+    directorMaxChunkChars: settings.director_max_chunk_chars,
     imageModel: settings.image_model,
     instanceId: settings.instance_id,
     textApi: settings.text_api,
@@ -530,6 +545,18 @@ async function discoverCompatibleModels(remoteFetch, settings) {
   const rows = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
   const models = [...new Set(rows.map(item => String(item?.id || item?.name || '').trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   if (!models.length) throw new Error('兼容服务连接成功，但没有返回可选择的模型 ID');
+  return models;
+}
+
+async function discoverOllamaModels(remoteFetch, endpoint) {
+  const response = await remoteFetch(`${normalizeOllamaEndpoint(endpoint)}/api/tags`);
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = {}; }
+  if (!response.ok) throw new Error(String(body?.error || body?.message || `Ollama 模型列表请求失败 ${response.status}`));
+  const rows = Array.isArray(body?.models) ? body.models : [];
+  const models = [...new Set(rows.map(item => String(item?.name || item?.model || '').trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  if (!models.length) throw new Error('Ollama 已连接，但没有返回可选择的模型');
   return models;
 }
 
@@ -712,11 +739,38 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       return { ok: true, endpoint, instanceId: settings.instance_id, models, modelCount: models.length };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.post('/api/settings/ai-media/director-test', async (request, reply) => {
+    try {
+      const current = await readAiMediaSettings(aiMediaSettingsFile);
+      const provider = ['ollama', 'compatible'].includes(request.body?.directorProvider) ? request.body.directorProvider : current.director_provider;
+      if (provider === 'ollama') {
+        const endpoint = normalizeOllamaEndpoint(request.body?.ollamaEndpoint || current.ollama_endpoint);
+        const models = await discoverOllamaModels(remoteFetch, endpoint);
+        return { ok: true, provider, endpoint, models, modelCount: models.length };
+      }
+      const endpoint = normalizeAiEndpoint(request.body?.endpoint || current.endpoint);
+      const apiKey = String(request.body?.apiKey || current.api_key || '').trim();
+      if (!endpoint || !apiKey) throw new Error('兼容全文分析需要 Endpoint 和 API Key');
+      const settings = {
+        ...current,
+        endpoint,
+        api_key: apiKey,
+        instance_id: String(request.body?.instanceId ?? current.instance_id ?? '').trim(),
+        allow_insecure_http: Boolean(request.body?.allowInsecureHttp ?? current.allow_insecure_http),
+      };
+      const models = await discoverCompatibleModels(remoteFetch, settings);
+      return { ok: true, provider, endpoint, models, modelCount: models.length };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
   app.put('/api/settings/ai-media', async (request, reply) => {
     try {
       const current = await readAiMediaSettings(aiMediaSettingsFile);
       const endpoint = normalizeAiEndpoint(request.body?.endpoint);
       const textModel = String(request.body?.textModel || '').trim();
+      const directorProvider = request.body?.directorProvider === 'compatible' ? 'compatible' : 'ollama';
+      const directorModel = String(request.body?.directorModel || '').trim() || 'qwen3:8b';
+      const ollamaEndpoint = normalizeOllamaEndpoint(request.body?.ollamaEndpoint);
+      const directorMaxChunkChars = Math.max(320, Math.min(12000, Math.round(Number(request.body?.directorMaxChunkChars) || 1400)));
       const imageModel = String(request.body?.imageModel || '').trim();
       const instanceId = String(request.body?.instanceId || '').trim();
       const textApi = request.body?.textApi === 'responses' ? 'responses' : 'chat_completions';
@@ -724,7 +778,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const apiKey = request.body?.clearApiKey ? '' : String(request.body?.apiKey || current.api_key || '').trim();
       if (endpoint && !textModel) throw new Error('请填写人物小传模型名称');
       if (endpoint && !imageModel) throw new Error('请填写图像模型名称');
-      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', image_model: imageModel || 'gpt-image-1', instance_id: instanceId, text_api: textApi, allow_insecure_http: allowInsecureHttp };
+      if (directorProvider === 'compatible' && (!endpoint || !apiKey)) throw new Error('兼容全文分析需要 Endpoint 和 API Key');
+      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', director_provider: directorProvider, director_model: directorModel, ollama_endpoint: ollamaEndpoint, director_max_chunk_chars: directorMaxChunkChars, image_model: imageModel || 'gpt-image-1', instance_id: instanceId, text_api: textApi, allow_insecure_http: allowInsecureHttp };
       const temporary = `${aiMediaSettingsFile}.tmp`;
       await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
       await rename(temporary, aiMediaSettingsFile);
@@ -982,7 +1037,25 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const result = path.join(dir, 'result.json');
       const worker = kind === 'analyze' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
       const payload = { root: repoRoot, project_id: id, ...options };
-      if (kind === 'analyze') payload.config = { base_url: 'http://127.0.0.1:11434', model: 'qwen3:8b', timeout_seconds: 300, max_chunk_chars: 1400 };
+      if (kind === 'analyze') {
+        const settings = await readAiMediaSettings(aiMediaSettingsFile);
+        if (settings.director_provider === 'compatible') {
+          if (!settings.endpoint || !settings.api_key) throw new Error('兼容全文分析需要先在全局 AI 设置中保存 Endpoint 和 API Key');
+          assertEndpointTransport(settings);
+        }
+        payload.config = {
+          provider: settings.director_provider,
+          base_url: settings.director_provider === 'compatible' ? settings.endpoint : settings.ollama_endpoint,
+          model: settings.director_model,
+          instance_id: settings.instance_id,
+          text_api: settings.text_api,
+          allow_insecure_http: settings.allow_insecure_http,
+          timeout_seconds: 300,
+          max_chunk_chars: settings.director_max_chunk_chars,
+          staged_analysis: true,
+          settings_file: aiMediaSettingsFile,
+        };
+      }
       await writeFile(input, JSON.stringify(payload), 'utf8');
       await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
       await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');

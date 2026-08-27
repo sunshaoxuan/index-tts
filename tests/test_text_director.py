@@ -14,6 +14,8 @@ from text_director import (
     DirectorTimeout,
     DirectorValidationError,
     OllamaTextDirector,
+    ATTITUDE_PRESETS,
+    PACE_PRESETS,
     ROLE_HEADERS,
     RHYTHM_PRESETS,
     SEGMENT_HEADERS,
@@ -119,6 +121,9 @@ def test_schema_requires_lossless_source_and_directing_fields():
         "pace",
         "pause_after_ms",
     } <= required
+    assert DIRECTOR_SCHEMA["properties"]["segments"]["items"]["properties"]["attitude"]["enum"] == sorted(ATTITUDE_PRESETS)
+    assert DIRECTOR_SCHEMA["properties"]["segments"]["items"]["properties"]["pace"]["enum"] == sorted(PACE_PRESETS)
+    assert "scenes" in DIRECTOR_SCHEMA["required"]
 
 
 def test_split_document_preserves_every_non_whitespace_character():
@@ -570,6 +575,17 @@ def test_legacy_natural_language_directing_values_migrate_to_presets():
     assert migrate_emotion_label("melancholic") == "低落"
 
 
+def test_product_level_ai_attitude_and_pace_presets_survive_document_conversion():
+    document = {
+        "characters": [_character()],
+        "segments": [{**_segment(1, "请注意。", "请注意。"), "attitude": "威严命令", "pace": "强调"}],
+    }
+    normalized = OllamaTextDirector(DirectorConfig())._validate_chunk({"content_type": "novel", "title": "预设", **document}, "请注意。")
+    _, rows = document_to_tables(normalized, ["voice_05.wav"])
+    assert rows[0][7] == "威严命令"
+    assert rows[0][10] == "强调"
+
+
 def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_prompt():
     document = {
         "characters": [_character()],
@@ -731,7 +747,7 @@ def test_guidance_router_validator_rejects_global_scope_for_an_explicit_role():
         validate_guidance_assignments(raw, ["旁白缓慢"], roster)
 
 
-def test_director_prompt_requires_evidence_grounded_biography_and_voice_direction():
+def test_director_prompt_keeps_detailed_biography_out_of_the_segmentation_budget():
     director = OllamaTextDirector(DirectorConfig())
     prompt = director._build_prompt(
         chunk="笹垣是负责案件调查的刑警。",
@@ -742,11 +758,10 @@ def test_director_prompt_requires_evidence_grounded_biography_and_voice_directio
         previous_context="",
         guidance="旁白克制",
     )
-    assert "profile 是详细人物小传" in prompt
-    assert "身份与社会位置、年龄阶段、外貌线索、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式和叙事作用" in prompt
-    assert "300 到 600 个中文字符" in prompt
-    assert "只写原文有依据的信息" in prompt
-    assert "禁止只复制姓名" in prompt
+    assert "profile 在本阶段只写 40 到 120 个中文字符" in prompt
+    assert "详细人物小传由独立功能扩写" in prompt
+    assert "speaker_candidates" in prompt
+    assert "全文场景注册表" in prompt
     assert "voice_hint 是声音导演建议" in prompt
     assert "音高、共鸣位置、气息、吐字方式和基础情绪" in prompt
     assert "根据角色内容选择" in prompt
@@ -756,6 +771,96 @@ def test_director_prompt_requires_evidence_grounded_biography_and_voice_directio
     assert "相邻句、人物表和说话动作" in prompt
     assert "纯标点" in prompt
     assert "必须包含可朗读文字" in prompt
+
+
+def test_compatible_chat_completions_uses_structured_output_without_exposing_credentials(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": json.dumps(_valid_response(), ensure_ascii=False)}}], "usage": {"prompt_tokens": 12, "completion_tokens": 34}}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr("text_director.requests.post", fake_post)
+    director = OllamaTextDirector(DirectorConfig(provider="compatible", base_url="https://ai.example/v1", api_key="secret", instance_id=".director-agent", model="gpt-test"))
+    result, metrics = director._chat("测试")
+
+    assert result["title"] == "雨夜"
+    assert captured["url"] == "https://ai.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert captured["headers"]["X-Cockpit-Instance-Id"] == ".director-agent"
+    assert captured["json"]["response_format"]["type"] == "json_schema"
+    assert captured["json"]["response_format"]["json_schema"]["strict"] is True
+    assert metrics["prompt_tokens"] == 12
+    assert metrics["output_tokens"] == 34
+
+
+def test_compatible_responses_uses_strict_structured_output_and_instance_header(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"output_text": json.dumps(_valid_response(), ensure_ascii=False), "usage": {"input_tokens": 21, "output_tokens": 55}}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr("text_director.requests.post", fake_post)
+    director = OllamaTextDirector(DirectorConfig(provider="compatible", base_url="https://ai.example/v1", api_key="secret", instance_id=".director-agent", text_api="responses", model="gpt-test"))
+    result, metrics = director._chat("测试")
+
+    assert result["title"] == "雨夜"
+    assert captured["url"] == "https://ai.example/v1/responses"
+    assert captured["headers"]["X-Cockpit-Instance-Id"] == ".director-agent"
+    assert captured["json"]["text"]["format"]["type"] == "json_schema"
+    assert captured["json"]["text"]["format"]["strict"] is True
+    assert metrics["prompt_tokens"] == 21
+    assert metrics["output_tokens"] == 55
+
+
+def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segments():
+    class StagedDirector(OllamaTextDirector):
+        def _request_structured(self, prompt, schema, **kwargs):
+            assert kwargs["schema_name"] == "director_context"
+            return ({
+                "content_type": "novel",
+                "title": "白夜行",
+                "characters": [
+                    {**_character(), "aliases": ["叙述者"], "confidence": 1, "evidence": "叙事文本"},
+                    {**_character("local-owner", "中年妇人", "character"), "aliases": ["老板娘", "胖女人"], "confidence": 0.92, "evidence": "老板娘说"},
+                ],
+                "scenes": [{"id": "local-scene", "location": "小吃店", "time": "傍晚", "participants": ["local-owner"], "narrative_perspective": "第三人称", "mood": "克制", "evidence": "店内对话"}],
+            }, {"prompt_tokens": 20, "output_tokens": 30, "duration_seconds": 0.2})
+
+        def _chat(self, prompt):
+            response = _valid_response()
+            response["characters"][1] = _character("shopkeeper", "老板娘", "character")
+            response["segments"][1]["speaker_id"] = "shopkeeper"
+            response["segments"][1]["speaker_name"] = "老板娘"
+            response["segments"][2]["speaker_id"] = "shopkeeper"
+            response["segments"][2]["speaker_name"] = "老板娘"
+            response["scenes"] = [{"id": "scene_001", "location": "小吃店", "time": "傍晚", "participants": ["shopkeeper"], "narrative_perspective": "第三人称", "mood": "克制", "evidence": "店内对话"}]
+            for segment in response["segments"]:
+                segment["scene_id"] = "scene_001"
+            return response, {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
+
+    result = StagedDirector(DirectorConfig(model="fake", staged_analysis=True)).analyze_document("雨夜。李明说：“你终于来了。”", content_type="novel")
+
+    owner = next(item for item in result["characters"] if item["name"] == "中年妇人")
+    assert "老板娘" in owner["aliases"]
+    assert result["scenes"][0]["location"] == "小吃店"
+    assert result["metrics"]["context_requests"] == 1
+    assert result["metrics"]["context_fallback"] == 0
 
 
 def test_quoted_speaker_inference_does_not_treat_low_voice_as_a_name():

@@ -13,6 +13,7 @@ import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updat
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { isProjectWorkspaceVisible, nextProjectActionsExpanded } from './projectActionVisibility';
+import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
@@ -127,10 +128,12 @@ function Studio() {
   const [portraitGenerating, setPortraitGenerating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
-  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
+  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:8b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsTesting, setSettingsTesting] = useState(false);
+  const [directorTesting, setDirectorTesting] = useState(false);
   const [availableAiModels, setAvailableAiModels] = useState<string[]>([]);
+  const [availableDirectorModels, setAvailableDirectorModels] = useState<string[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string>();
   const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
@@ -142,7 +145,7 @@ function Studio() {
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
       setPresets(p); setProjects(list); setRuntimeHealth(health); setAiMediaSettings(mediaSettings);
-      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, imageModel: mediaSettings.imageModel, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
+      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, directorProvider: mediaSettings.directorProvider, directorModel: mediaSettings.directorModel, ollamaEndpoint: mediaSettings.ollamaEndpoint, directorMaxChunkChars: mediaSettings.directorMaxChunkChars, imageModel: mediaSettings.imageModel, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
       if (active.available && active.jobId && active.kind && active.projectId) {
         setProjectId(active.projectId);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
@@ -465,9 +468,9 @@ function Studio() {
     try {
       const saved = await api.saveAiMediaSettings(settingsDraft);
       setAiMediaSettings(saved);
-      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, imageModel: saved.imageModel, instanceId: saved.instanceId, textApi: saved.textApi, allowInsecureHttp: saved.allowInsecureHttp, clearApiKey: false });
+      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, directorProvider: saved.directorProvider, directorModel: saved.directorModel, ollamaEndpoint: saved.ollamaEndpoint, directorMaxChunkChars: saved.directorMaxChunkChars, imageModel: saved.imageModel, instanceId: saved.instanceId, textApi: saved.textApi, allowInsecureHttp: saved.allowInsecureHttp, clearApiKey: false });
       setSettingsOpen(false);
-      message.success('AI 人物与图像服务配置已保存在本机运行目录');
+      message.success('全局 AI 设置已保存在本机运行目录');
     } catch (error) { message.error((error as Error).message); }
     finally { setSettingsSaving(false); }
   };
@@ -484,6 +487,17 @@ function Studio() {
     finally { setSettingsTesting(false); }
   };
 
+  const testDirectorSettings = async () => {
+    setDirectorTesting(true);
+    try {
+      const result = await api.testDirectorSettings({ directorProvider: settingsDraft.directorProvider, ollamaEndpoint: settingsDraft.ollamaEndpoint, endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp });
+      setAvailableDirectorModels(result.models);
+      if (settingsDraft.directorModel && !result.models.includes(settingsDraft.directorModel)) message.warning(`全文分析服务已连接。当前模型 ${settingsDraft.directorModel} 不在可用列表中`);
+      else message.success(`全文分析服务已连接，加载了 ${result.modelCount} 个模型`);
+    } catch (error) { setAvailableDirectorModels([]); message.error((error as Error).message); }
+    finally { setDirectorTesting(false); }
+  };
+
   const applyRoleDraft = () => {
     if (!project || roleEditorIndex === undefined || !roleDraft || !roleAssetDraft || jobRunning) return;
     if (!roleDraft[1].trim()) { message.error('请填写角色名称'); return; }
@@ -498,13 +512,24 @@ function Studio() {
 
   const removeRole = (roleId: string) => {
     if (!project || jobRunning) return;
-    if (project.segments.some(row => row[2] === roleId)) { message.error('该角色仍被分句引用，请先调整分句归属'); return; }
-    const roles = project.roles.filter(row => row[0] !== roleId);
-    const characterAssets = { ...project.character_assets };
-    delete characterAssets[roleId];
-    setProject({ ...project, roles, character_assets: characterAssets });
+    try {
+      const result = deleteProjectRole(project, roleId);
+      setProject(result.project);
+      setDirty(true);
+      setActiveRoleId(current => normalizeActiveRoleId(result.project.roles, current));
+      message.success(result.reassignedSegments ? `已删除角色“${result.removedRoleName}”，${result.reassignedSegments} 条分句已重分配到旁白，请保存工程` : `已删除角色“${result.removedRoleName}”，请保存工程`);
+    } catch (error) { message.error((error as Error).message); }
+  };
+
+  const updateScene = (sceneId: string, field: string, value: string | string[]) => {
+    if (!project || jobRunning) return;
+    const document = { ...(project.document ?? {}) };
+    const scenes = (Array.isArray(document.scenes) ? document.scenes : []).map(item => {
+      const scene = item as Record<string, unknown>;
+      return String(scene.id || '') === sceneId ? { ...scene, [field]: value } : item;
+    });
+    setProject({ ...project, document: { ...document, scenes } });
     setDirty(true);
-    setActiveRoleId(current => normalizeActiveRoleId(roles, current));
   };
 
   const save = async (): Promise<boolean> => {
@@ -558,9 +583,13 @@ function Studio() {
   const activeRole = project?.roles.find(row => row[0] === activeRoleId);
   const matchingFragmentCount = countMatchingFragments(render.fragments, project?.segments ?? []);
   const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel, settingsDraft.imageModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel, settingsDraft.imageModel]);
+  const directorModelOptions = useMemo(() => [...new Set([...availableDirectorModels, settingsDraft.directorModel].filter(Boolean))].map(value => ({ value })), [availableDirectorModels, settingsDraft.directorModel]);
   const textModelUnavailable = Boolean(availableAiModels.length && settingsDraft.textModel && !availableAiModels.includes(settingsDraft.textModel));
   const imageModelUnavailable = Boolean(availableAiModels.length && settingsDraft.imageModel && !availableAiModels.includes(settingsDraft.imageModel));
+  const directorModelUnavailable = Boolean(availableDirectorModels.length && settingsDraft.directorModel && !availableDirectorModels.includes(settingsDraft.directorModel));
   const insecurePublicEndpoint = isPublicHttpEndpoint(settingsDraft.endpoint);
+  const sceneRows = (Array.isArray(project?.document?.scenes) ? project.document.scenes : []) as Array<Record<string, unknown>>;
+  const lowConfidenceSegments = (Array.isArray(project?.document?.segments) ? project.document.segments : []).filter(item => Number((item as Record<string, unknown>).speaker_confidence ?? 1) < 0.7) as Array<Record<string, unknown>>;
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
     { value: 'reporter', label: '记者' }, { value: 'interviewee', label: '采访对象' },
@@ -652,6 +681,7 @@ function Studio() {
         <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
           <div className="project-select"><Text strong>打开声音工程</Text><Select disabled={jobRunning} showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
+          <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
           <Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
           <Popconfirm disabled={jobRunning || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>
             <Button disabled={jobRunning || !project} loading={deletingProject} danger icon={<DeleteOutlined />}>删除工程</Button>
@@ -670,12 +700,14 @@ function Studio() {
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Space wrap><Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>AI 人物与图像服务</Button><Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button></Space>}>
+          { key: 'scenes', label: `场景分析 ${sceneRows.length}`, children: <Card title="场景连续性与低置信度复核"><Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '当前没有低于 0.7 的说话人归属'} description="场景数据来自最近一次 AI 全文分析。可在这里修订地点、时间、参与人物、叙事视角和基调；说话人归属请在分句导演表中修改。" />{sceneRows.length ? <div className="scene-card-grid">{sceneRows.map((scene, index) => { const sceneId = String(scene.id || `scene_${index + 1}`); return <Card key={sceneId} size="small" title={`${sceneId} · ${String(scene.location || '未说明')}`}><Space direction="vertical" size="middle" className="scene-fields"><div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label></div><label><Text strong>参与人物 ID</Text><Input disabled={jobRunning} value={Array.isArray(scene.participants) ? scene.participants.join('、') : ''} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean))} /></label><div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div><Text type="secondary">判断证据：{String(scene.evidence || '未记录')}</Text></Space></Card>; })}</div> : <Empty description="当前工程没有场景结构。使用全局 AI 设置选择模型后重新分析全文即可生成。" />}{lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}</Card> },
+          { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}>
             <Alert type="info" showIcon message="每个人物使用一张独立卡片。打开卡片即可编辑身份、性别、年龄、详细小传、声音特征、目标频率和角色形象。音色仍是可试听、可重新生成的声音样本。" />
             <div className="role-focus-summary" aria-live="polite"><span>Current Character / 当前人物</span><strong>{activeRole ? `${activeRole[1]} · ${activeRole[0]}` : '打开任意角色卡片'}</strong><Text>{activeRole ? '角色卡片集中保存人物设定、视觉资产和声音样本' : '选择后会保持卡片高亮，便于在人物较多时定位'}</Text></div>
             <div className="character-card-grid">
               {project.roles.map((row, index) => {
                 const asset = normalizeCharacterAsset(row, project.character_assets?.[row[0]]);
+                const referencedSegments = project.segments.filter(segment => segment[2] === row[0]).length;
                 const incomplete = String(row[3]).trim().length < 80 || /请.*补充|证据尚不足/.test(String(row[3]));
                 const gender = asset.gender === 'female' ? '女性' : asset.gender === 'male' ? '男性' : '性别待定';
                 return <Card key={row[0]} hoverable className={`character-card ${roleRowClassName(row[0], activeRoleId)}`} tabIndex={0} aria-selected={row[0] === activeRoleId} onClick={() => { setActiveRoleId(row[0]); openRoleEditor(index); }} onFocus={() => setActiveRoleId(row[0])} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRoleEditor(index); } }}>
@@ -685,7 +717,7 @@ function Studio() {
                     <Paragraph ellipsis={{ rows: 4 }} title={row[3]}>{row[3]}</Paragraph>
                     <div className="pitch-summary"><span>建议基频</span><strong>{asset.pitch_min_hz} 至 {asset.pitch_max_hz} Hz</strong></div>
                     <VoicePreview voiceId={row[5]} />
-                    <div className="character-card-actions"><Button disabled={jobRunning} type="primary" icon={<EditOutlined />} onClick={event => { event.stopPropagation(); openRoleEditor(index); }}>打开角色卡片</Button><Popconfirm disabled={jobRunning} title="删除角色" description="仅可删除未被分句引用的角色" onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} onClick={event => event.stopPropagation()} /></Popconfirm></div>
+                    <div className="character-card-actions"><Button disabled={jobRunning} type="primary" icon={<EditOutlined />} onClick={event => { event.stopPropagation(); openRoleEditor(index); }}>打开角色卡片</Button><span onClick={stopRoleDeleteCardActivation} onKeyDown={stopRoleDeleteCardActivation}><Popconfirm disabled={jobRunning || row[0] === 'narrator'} title={`删除角色“${row[1]}”`} description={referencedSegments ? `该角色当前引用 ${referencedSegments} 条分句。确认后这些分句会重分配到旁白，角色设置和工程内关联会移除。` : '该角色没有分句引用。确认后角色设置和工程内关联会移除。'} okText="确认删除角色" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning || row[0] === 'narrator'} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm></span></div>
                   </div>
                 </Card>;
               })}
@@ -696,17 +728,23 @@ function Studio() {
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>
       </>}
-      <Modal width={720} title="AI 人物与图像服务" open={settingsOpen} okText="保存本机配置" cancelText="取消" confirmLoading={settingsSaving} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
+      <Modal width={760} title="全局 AI 设置" open={settingsOpen} okText="保存全局设置" cancelText="取消" confirmLoading={settingsSaving} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
         <Space direction="vertical" size="large" className="modal-fields ai-media-settings">
-          <Alert type="warning" showIcon message="外部内容传输提示" description="点击 AI 扩写人物小传时，会把该角色附近的稿件证据发送到你配置的服务。生成形象时，只发送角色名称、性别、年龄、人物小传和视觉提示。API Key 只保存在本机 runtime-output，不写入工程、Git 或浏览器回读内容。" />
-          <Alert type="info" showIcon message="入口能力彼此独立" description="模型列表和调用能力只来自当前 Endpoint。本机 Cockpit、远端节点及其 API Key、OAuth 账号和模型映射互不继承。" />
+          <Alert type="warning" showIcon message="全局作用范围与外部传输" description="这里统一控制全文分析、人物小传和角色图像。全文分析选择兼容 Endpoint 时会发送当前工程原文；人物小传只发送角色附近证据；角色图像只发送人物设定。API Key 只保存在本机 runtime-output，不写入工程、Git 或浏览器回读内容。" />
+          <div className="editor-section-heading"><span>01 / Director</span><strong>全文分句导演</strong><Text>选择本地 Ollama 或已配置的兼容 Endpoint。所有工程共用该选择。</Text></div>
+          <div className="editor-two-column"><label><Text strong>全文分析 Provider</Text><Select value={settingsDraft.directorProvider} options={[{ value: 'ollama', label: '本地 Ollama' }, { value: 'compatible', label: 'OpenAI 兼容 Endpoint' }]} onChange={value => { setSettingsDraft(current => ({ ...current, directorProvider: value })); setAvailableDirectorModels([]); }} /></label><label><Text strong>Ollama Endpoint</Text><Input disabled={settingsDraft.directorProvider !== 'ollama'} value={settingsDraft.ollamaEndpoint} onChange={event => setSettingsDraft(current => ({ ...current, ollamaEndpoint: event.target.value }))} /></label></div>
+          <div className="editor-two-column"><label><Text strong>全文分析模型</Text><AutoComplete status={directorModelUnavailable ? 'warning' : undefined} value={settingsDraft.directorModel} options={directorModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, directorModel: value }))} placeholder="测试服务后选择模型" /></label><label><Text strong>分析块长度</Text><InputNumber min={320} max={12000} step={100} value={settingsDraft.directorMaxChunkChars} onChange={value => setSettingsDraft(current => ({ ...current, directorMaxChunkChars: value ?? 1400 }))} addonAfter="字符" /></label></div>
+          <Button icon={<ReloadOutlined />} loading={directorTesting} onClick={testDirectorSettings}>测试全文分析服务并加载模型</Button>
+          {availableDirectorModels.length > 0 && <Alert type={directorModelUnavailable ? 'warning' : 'success'} showIcon message={`全文分析服务返回 ${availableDirectorModels.length} 个模型`} description={directorModelUnavailable ? '当前全文分析模型不在服务返回列表中，请重新选择。' : `当前使用 ${settingsDraft.directorModel}`} />}
+          <div className="editor-section-heading"><span>02 / Compatible Endpoint</span><strong>人物小传与角色图像</strong><Text>兼容 Endpoint 也可供全文分析使用。模型列表与调用能力来自当前服务。</Text></div>
           <label><Text strong>OpenAI 兼容 Endpoint</Text><Input value={settingsDraft.endpoint} onChange={event => setSettingsDraft(current => ({ ...current, endpoint: event.target.value, allowInsecureHttp: isPublicHttpEndpoint(event.target.value) ? current.allowInsecureHttp : false }))} placeholder="例如：http://127.0.0.1:39452/v1" /></label>
           {insecurePublicEndpoint && <Alert type="error" showIcon message="公网 HTTP 会明文传输 Bearer Key" description="推荐先为远端节点配置有效 TLS。启用下方风险开关后才允许测试连接、扩写人物小传或生成图像。" />}
           <label><Text strong>API Key</Text><Input.Password value={settingsDraft.apiKey} onChange={event => setSettingsDraft(current => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} placeholder={aiMediaSettings?.hasApiKey ? '已保存，留空表示继续使用当前 Key' : '填写兼容服务 API Key'} /></label>
           {aiMediaSettings?.hasApiKey && <label className="clear-key-control"><Switch checked={settingsDraft.clearApiKey} onChange={checked => setSettingsDraft(current => ({ ...current, clearApiKey: checked, apiKey: '' }))} /><Text>清除当前保存的 API Key</Text></label>}
           {insecurePublicEndpoint && <label className="clear-key-control"><Switch checked={settingsDraft.allowInsecureHttp} onChange={checked => setSettingsDraft(current => ({ ...current, allowInsecureHttp: checked }))} /><Text>我了解风险，允许通过公网 HTTP 发送当前 API Key</Text></label>}
-          <div className="editor-two-column"><label><Text strong>Cockpit Instance ID（可选）</Text><Input value={settingsDraft.instanceId} onChange={event => setSettingsDraft(current => ({ ...current, instanceId: event.target.value }))} placeholder="例如：.codex-gemini-agent" /></label><label><Text strong>人物小传文本接口</Text><Select value={settingsDraft.textApi} onChange={value => setSettingsDraft(current => ({ ...current, textApi: value }))} options={[{ value: 'responses', label: 'Responses API · /v1/responses' }, { value: 'chat_completions', label: 'Chat Completions · /v1/chat/completions' }]} /></label></div>
-          <Button icon={<ReloadOutlined />} loading={settingsTesting} onClick={testAiMediaSettings}>测试连接并加载模型</Button>
+          <div className="editor-two-column"><label><Text strong>Cockpit Instance ID（可选）</Text><Input value={settingsDraft.instanceId} onChange={event => setSettingsDraft(current => ({ ...current, instanceId: event.target.value }))} placeholder="例如：.codex-gemini-agent" /></label><label><Text strong>兼容文本接口</Text><Select value={settingsDraft.textApi} onChange={value => setSettingsDraft(current => ({ ...current, textApi: value }))} options={[{ value: 'responses', label: 'Responses API · /v1/responses' }, { value: 'chat_completions', label: 'Chat Completions · /v1/chat/completions' }]} /></label></div>
+          <Text type="secondary">全文分析选择兼容 Endpoint 时与人物小传共用该文本接口；本地 Ollama 全文分析不受此项影响。</Text>
+          <Button icon={<ReloadOutlined />} loading={settingsTesting} onClick={testAiMediaSettings}>测试兼容 Endpoint 并加载模型</Button>
           {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型`} description={textModelUnavailable || imageModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请从下拉列表重新选择。' : '人物小传模型和角色图像模型都在当前可用列表中。'} />}
           <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>
         </Space>

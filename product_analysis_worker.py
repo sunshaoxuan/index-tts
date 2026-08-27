@@ -31,8 +31,13 @@ def main() -> int:
     status_path = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(payload["project_id"])
-    director = OllamaTextDirector(DirectorConfig(**payload["config"]))
-    write_json(status_path, {"phase": "connecting", "fraction": 0.01, "message": "正在连接本地 AI"})
+    director_config = dict(payload["config"])
+    settings_file = Path(director_config.pop("settings_file", root / "runtime-output" / "product-settings.json"))
+    if director_config.get("provider") == "compatible":
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        director_config["api_key"] = str(settings.get("api_key") or "")
+    director = OllamaTextDirector(DirectorConfig(**director_config))
+    write_json(status_path, {"phase": "connecting", "fraction": 0.01, "message": "正在连接全局 AI 文本导演"})
     director.health_summary()
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})

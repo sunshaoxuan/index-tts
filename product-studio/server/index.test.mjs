@@ -109,7 +109,7 @@ test('stores AI media credentials locally without returning the API key', async 
   const app = await buildApp({ repoRoot: root });
   const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:49530/v1/', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
   assert.equal(saved.statusCode, 200);
-  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
+  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', directorProvider: 'ollama', directorModel: 'qwen3:8b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
   const loaded = await app.inject('/api/settings/ai-media');
   assert.equal(loaded.json().hasApiKey, true);
   assert.equal(JSON.stringify(loaded.json()).includes('secret-key'), false);
@@ -132,6 +132,49 @@ test('tests the compatible service and returns selectable model ids without expo
   assert.deepEqual(tested.json(), { ok: true, endpoint: 'http://ai.example/v1', instanceId: '', models: ['gemini-2.5-flash', 'gpt-image-1'], modelCount: 2 });
   assert.deepEqual(calls, [{ url: 'http://ai.example/v1/models', authorization: 'Bearer secret-key' }]);
   assert.equal(JSON.stringify(tested.json()).includes('secret-key'), false);
+  await app.close();
+});
+
+test('stores and tests the global text director independently from role assets', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const remoteFetch = async (url) => {
+    calls.push(String(url));
+    return new Response(JSON.stringify({ models: [{ name: 'qwen3:8b' }, { name: 'qwen3:14b' }] }), { status: 200 });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { directorProvider: 'ollama', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434/', directorMaxChunkChars: 2200, endpoint: '', textModel: 'profile-model', imageModel: 'image-model' } });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().directorProvider, 'ollama');
+  assert.equal(saved.json().directorModel, 'qwen3:14b');
+  assert.equal(saved.json().directorMaxChunkChars, 2200);
+  const tested = await app.inject({ method: 'POST', url: '/api/settings/ai-media/director-test', payload: { directorProvider: 'ollama', ollamaEndpoint: 'http://127.0.0.1:11434' } });
+  assert.equal(tested.statusCode, 200);
+  assert.deepEqual(tested.json().models, ['qwen3:14b', 'qwen3:8b']);
+  assert.deepEqual(calls, ['http://127.0.0.1:11434/api/tags']);
+  await app.close();
+});
+
+test('writes global compatible director configuration to the analysis worker without copying the API key', async () => {
+  const { root } = await fixture();
+  let child;
+  let launch;
+  const app = await buildApp({ repoRoot: root, launchWorker: details => {
+    launch = details;
+    child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); return child;
+  } });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'director-secret', instanceId: '.director-agent', directorProvider: 'compatible', directorModel: 'gpt-5.6-terra', directorMaxChunkChars: 2400, textApi: 'responses', textModel: 'gpt-5.6-luna', imageModel: 'gpt-image-2' } });
+  const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} });
+  assert.equal(started.statusCode, 202);
+  const input = JSON.parse(await readFile(launch.args[2], 'utf8'));
+  assert.equal(input.config.provider, 'compatible');
+  assert.equal(input.config.model, 'gpt-5.6-terra');
+  assert.equal(input.config.text_api, 'responses');
+  assert.equal(input.config.instance_id, '.director-agent');
+  assert.equal(input.config.max_chunk_chars, 2400);
+  assert.equal(input.config.staged_analysis, true);
+  assert.equal(JSON.stringify(input).includes('director-secret'), false);
+  child.emit('close', 0);
   await app.close();
 });
 

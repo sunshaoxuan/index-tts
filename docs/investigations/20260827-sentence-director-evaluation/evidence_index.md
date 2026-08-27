@@ -54,3 +54,14 @@
 3. 场景没有结构化字段，无法直接计算场景准确率。
 4. 本轮没有向外部 Endpoint 发送小说正文，因此没有 GPT 模型质量结果。
 5. 64 项测试验证结构与规则稳定性，没有验证真实小说导演质量。
+
+## 6. 实施证据
+
+| 结论 | 代码与运行证据 | 置信度 | 限制 |
+|---|---|---|---|
+| AI 设置属于产品全局范围 | `product-studio/src/App.tsx` 工程控制区入口；`product-studio/server/index.mjs` 本机设置读写 | 高 | 设置保存在当前机器 |
+| 全文导演支持 Ollama 与兼容 Endpoint | `text_director.py` 的 Provider 路由；`product_analysis_worker.py` 的本机密钥读取；服务端测试 | 高 | 本轮没有向外部 Endpoint 发送小说正文 |
+| 角色删除清理活动引用并回退旁白 | `product-studio/src/roleDeletion.ts`、对应单元测试和浏览器确认框 | 高 | 当前真实角色未执行删除 |
+| 角色与场景注册及低置信度字段已进入契约 | `text_director.py` 的 `CONTEXT_SCHEMA`、`DIRECTOR_SCHEMA` 和 staged analysis 测试 | 高 | 当前旧工程尚未重新分析，因此场景页显示空状态 |
+| UI 运行正常 | 三张最终截图、浏览器 DOM、Console 0 warning 和 0 error | 高 | 截图为当前桌面视口 |
+| 当前本地模型可发现 | `POST /api/settings/ai-media/director-test` 返回 3 个 Ollama 模型 | 高 | 只验证模型发现，没有运行新版全文质量盲测 |

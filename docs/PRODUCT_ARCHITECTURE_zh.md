@@ -105,6 +105,12 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。图像路由使用 `/v1/images/generations`，兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
 
+该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。
+
+文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。逐块分句请求复用全文注册表，每条分句保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
+
+角色删除在前端以纯函数同步处理工程中的四组活动引用。角色表和 `character_assets` 移除目标 ID；分句表及 `document.segments` 的目标引用改为 narrator；`document.characters` 和 `director_memory` 移除目标角色；旁白禁止删除。历史导演操作和永久音色库保持原状。用户保存工程后，现有 PUT 校验、导演历史和成果失效链继续生效。
+
 设置窗口通过 `POST /api/settings/ai-media/test` 触发模型发现。Node 使用当前保存或请求中待保存的 Endpoint 与 API Key 请求兼容 `/v1/models`，去重并排序模型 ID 后回传浏览器。响应不包含密钥。前端把模型 ID 用作两个可搜索下拉框的数据源，并继续允许手工模型名，以兼容模型列表延迟或服务端自定义路由。
 
 本机 Cockpit 和远端节点没有继承关系。Node 只向当前配置 Endpoint 发送请求；可选 `instance_id` 作为 `X-Cockpit-Instance-Id` 同时应用于模型发现、文本和同源图像请求。回环 HTTP 视为本机传输；公网 HTTP 在 `allow_insecure_http` 未明确启用时于发出请求前停止，从而避免默认明文发送 Bearer Key。远程图像 URL 只有与 Endpoint 同源时才携带认证头。
