@@ -822,6 +822,26 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       return payload;
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.delete('/api/projects/:id', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      if (activeJob?.projectId === id) {
+        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+        error.statusCode = 409;
+        throw error;
+      }
+      const projectsDir = path.resolve(projectRoot);
+      const target = path.resolve(projectRoot, id);
+      if (path.dirname(target) !== projectsDir) throw new Error('工程路径无效');
+      const info = await stat(path.join(target, 'project.json'));
+      if (!info.isFile()) throw new Error('工程记录无效');
+      await rm(target, { recursive: true, force: false });
+      return { deleted: true, projectId: id };
+    } catch (error) {
+      const statusCode = error.statusCode || (error.code === 'ENOENT' ? 404 : 400);
+      return reply.code(statusCode).send({ error: error.code === 'ENOENT' ? '工程不存在' : error.message });
+    }
+  });
   app.post('/api/projects/:id/roles/:roleId/expand-profile', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);

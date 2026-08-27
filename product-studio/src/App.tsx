@@ -109,6 +109,7 @@ function Studio() {
   const [project, setProject] = useState<ProjectPayload>();
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [render, setRender] = useState<RenderInfo>({ available: false });
   const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>();
@@ -341,6 +342,28 @@ function Studio() {
       setProjects(list); setProjectId(created.project_id); setCreateOpen(false); setNewTitle('');
       message.success('新工程已经建立，请粘贴全文并保存');
     } catch (error) { message.error((error as Error).message); }
+  };
+
+  const deleteProject = async () => {
+    if (!project || jobRunning) return;
+    setDeletingProject(true);
+    try {
+      const deletedId = project.project_id;
+      await api.deleteProject(deletedId);
+      const list = await api.projects();
+      const nextProjectId = list[0]?.value;
+      setProjects(list);
+      setProjectId(nextProjectId);
+      setDirty(false);
+      setSelectedSegmentOrders([]);
+      setSplitEditor(undefined);
+      if (!nextProjectId) {
+        setProject(undefined);
+        setRender({ available: false });
+      }
+      message.success(`工程“${project.title}”已删除`);
+    } catch (error) { message.error((error as Error).message); }
+    finally { setDeletingProject(false); }
   };
 
   const addRole = () => {
@@ -603,6 +626,9 @@ function Studio() {
         <Flex gap={16} align="end" wrap>
           <div className="project-select"><Text strong>打开声音工程</Text><Select disabled={jobRunning} showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
           <Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
+          <Popconfirm disabled={jobRunning || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>
+            <Button disabled={jobRunning || !project} loading={deletingProject} danger icon={<DeleteOutlined />}>删除工程</Button>
+          </Popconfirm>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={jobRunning || !dirty} onClick={save}>保存当前工程</Button>
           <Button disabled={jobRunning || !project?.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
           <Button disabled={jobRunning || !project?.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>

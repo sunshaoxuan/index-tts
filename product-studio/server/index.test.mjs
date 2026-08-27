@@ -82,6 +82,28 @@ test('loading a legacy project atomically persists missing current role voice as
   await app.close();
 });
 
+test('deletes one confirmed project directory and preserves the permanent voice library', async () => {
+  const { root } = await fixture();
+  const voiceDir = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceDir, { recursive: true });
+  const permanentVoice = path.join(voiceDir, 'voice-shared.wav');
+  await writeFile(permanentVoice, Buffer.from('RIFFshared'));
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  await mkdir(path.join(projectDir, 'renders', 'render-001'), { recursive: true });
+  await writeFile(path.join(projectDir, 'renders', 'render-001', 'full-audio.wav'), Buffer.from('RIFFrender'));
+  const app = await buildApp({ repoRoot: root });
+
+  const deleted = await app.inject({ method: 'DELETE', url: '/api/projects/demo' });
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual(deleted.json(), { deleted: true, projectId: 'demo' });
+  await assert.rejects(access(projectDir));
+  await access(permanentVoice);
+  assert.deepEqual((await app.inject('/api/projects')).json(), []);
+  assert.equal((await app.inject('/api/projects/demo')).statusCode, 404);
+  assert.equal((await app.inject({ method: 'DELETE', url: '/api/projects/demo' })).statusCode, 404);
+  await app.close();
+});
+
 test('stores AI media credentials locally without returning the API key', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });
@@ -718,6 +740,10 @@ test('allows one worker at a time and records a failed worker as error', async (
   const lockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(lockedSave.statusCode, 409);
   assert.match(lockedSave.json().error, /工程版本已被任务.*锁定/);
+  const lockedDelete = await app.inject({ method: 'DELETE', url: '/api/projects/demo' });
+  assert.equal(lockedDelete.statusCode, 409);
+  assert.match(lockedDelete.json().error, /工程版本已被任务.*锁定/);
+  await access(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'));
   const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
   assert.equal(rejected.statusCode, 409);
   child.stderr.write('fixture worker failed');
