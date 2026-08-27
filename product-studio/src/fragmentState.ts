@@ -8,3 +8,7 @@ export function findMatchingFragment(fragments: RenderFragment[] | undefined, se
 export function countMatchingFragments(fragments: RenderFragment[] | undefined, segments: SegmentRow[]): number {
   return segments.filter(segment => Boolean(findMatchingFragment(fragments, segment))).length;
 }
+
+export function filterSegmentsWithoutMatchingFragments(fragments: RenderFragment[] | undefined, segments: SegmentRow[]): SegmentRow[] {
+  return segments.filter(segment => !findMatchingFragment(fragments, segment));
+}

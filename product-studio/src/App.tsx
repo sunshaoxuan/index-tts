@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
-  Alert, App as AntApp, AutoComplete, Button, Card, Empty, Flex, Input, InputNumber, Layout, Modal,
+  Alert, App as AntApp, AutoComplete, Button, Card, Checkbox, Empty, Flex, Input, InputNumber, Layout, Modal,
   Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
@@ -8,7 +8,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
-import { countMatchingFragments, findMatchingFragment } from './fragmentState';
+import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
@@ -186,6 +186,7 @@ function Studio() {
   const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
   const [segmentPage, setSegmentPage] = useState(1);
   const [segmentPageSize, setSegmentPageSize] = useState(20);
+  const [showMissingSegmentsOnly, setShowMissingSegmentsOnly] = useState(false);
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
@@ -193,6 +194,9 @@ function Studio() {
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
   const voiceTelemetry = job?.telemetry?.voiceRuntime;
   const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (job.kind !== 'voice' || voiceTelemetry?.processAlive));
+  const matchingFragmentCount = useMemo(() => countMatchingFragments(render.fragments, project?.segments ?? []), [render.fragments, project?.segments]);
+  const missingFragmentCount = (project?.segments.length ?? 0) - matchingFragmentCount;
+  const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
 
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
@@ -209,6 +213,7 @@ function Studio() {
     if (!projectId) return;
     setSelectedSegmentOrders([]);
     setSegmentPage(1);
+    setShowMissingSegmentsOnly(false);
     setSplitEditor(undefined);
     Promise.all([api.project(projectId), api.latestRender(projectId)]).then(([data, latest]) => {
       setProject(data); setRender(latest); setDirty(false);
@@ -238,8 +243,8 @@ function Studio() {
   }, [project?.project_id, project?.roles]);
 
   useEffect(() => {
-    setSegmentPage(current => clampSegmentPage(current, project?.segments.length ?? 0, segmentPageSize));
-  }, [project?.segments.length, segmentPageSize]);
+    setSegmentPage(current => clampSegmentPage(current, visibleSegments.length, segmentPageSize));
+  }, [visibleSegments.length, segmentPageSize]);
 
   useEffect(() => {
     if (!job || ['complete', 'error'].includes(job.phase)) return;
@@ -688,7 +693,6 @@ function Studio() {
 
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];
   const activeRole = project?.roles.find(row => row[0] === activeRoleId);
-  const matchingFragmentCount = countMatchingFragments(render.fragments, project?.segments ?? []);
   const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel, settingsDraft.imageModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel, settingsDraft.imageModel]);
   const directorModelOptions = useMemo(() => [...new Set([...availableDirectorModels, settingsDraft.directorModel].filter(Boolean))].map(value => ({ value })), [availableDirectorModels, settingsDraft.directorModel]);
   const textModelUnavailable = Boolean(availableAiModels.length && settingsDraft.textModel && !availableAiModels.includes(settingsDraft.textModel));
@@ -908,7 +912,7 @@ function Studio() {
               })}
             </div>
           </Card> },
-          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={project.segments} pagination={{ current: segmentPage, pageSize: segmentPageSize, pageSizeOptions: [...SEGMENT_PAGE_SIZE_OPTIONS], showSizeChanger: { showSearch: false }, showTotal: (total, range) => `第 ${range[0]} 至 ${range[1]} 条，共 ${total} 条`, onChange: (page, pageSize) => { setSegmentPageSize(pageSize); setSegmentPage(clampSegmentPage(page, project.segments.length, pageSize)); } }} scroll={{ y: 560 }} /></Card> },
+          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : showMissingSegmentsOnly ? `当前显示 ${visibleSegments.length} 条待生成分句` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button><Checkbox checked={showMissingSegmentsOnly} onChange={event => { setShowMissingSegmentsOnly(event.target.checked); setSelectedSegmentOrders([]); setSegmentPage(1); }}>只显示尚无片断</Checkbox><Tag color={missingFragmentCount ? 'orange' : 'green'}>待生成 {missingFragmentCount} 条</Tag></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={visibleSegments} locale={{ emptyText: showMissingSegmentsOnly ? '当前没有缺失片断' : '暂无分句' }} pagination={{ current: segmentPage, pageSize: segmentPageSize, pageSizeOptions: [...SEGMENT_PAGE_SIZE_OPTIONS], showSizeChanger: { showSearch: false }, showTotal: (total, range) => `第 ${range[0]} 至 ${range[1]} 条，共 ${total} 条`, onChange: (page, pageSize) => { setSegmentPageSize(pageSize); setSegmentPage(clampSegmentPage(page, visibleSegments.length, pageSize)); } }} scroll={{ y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} captions={render.captions} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>

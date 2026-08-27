@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countMatchingFragments, findMatchingFragment } from './fragmentState.ts';
+import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState.ts';
 import type { RenderFragment } from './api.ts';
 import type { SegmentRow } from './types.ts';
 
@@ -21,4 +21,13 @@ test('marks the fragment stale after synthesis text is edited', () => {
   const edited = [...current] as SegmentRow;
   edited[6] = '人工改写朗读。';
   assert.equal(findMatchingFragment([matching], edited), undefined);
+});
+
+test('filters to missing fragments while preserving current segment order', () => {
+  const second: SegmentRow = [2, '正文', 'narrator', '旁白', 'ZH', '需要生成的第二句。', '需要生成的第二句。', '中性叙述', '平静', 0.5, '自然', 300];
+  const fourth: SegmentRow = [4, '正文', 'narrator', '旁白', 'ZH', '需要生成的第四句。', '需要生成的第四句。', '中性叙述', '平静', 0.5, '自然', 300];
+
+  assert.deepEqual(filterSegmentsWithoutMatchingFragments([matching], [current, second, fourth]).map(row => row[0]), [2, 4]);
+  const generatedSecond: RenderFragment = { ...matching, sourceText: second[5], synthesisText: second[6], effectiveText: second[6], audio: '/second.wav' };
+  assert.deepEqual(filterSegmentsWithoutMatchingFragments([matching, generatedSecond], [current, second, fourth]).map(row => row[0]), [4]);
 });
