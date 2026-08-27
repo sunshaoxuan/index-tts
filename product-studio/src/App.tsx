@@ -4,7 +4,7 @@ import {
   Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
+  AudioOutlined, CaretLeftOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type RenderInfo, type RuntimeHealth } from './api';
@@ -12,7 +12,7 @@ import { countMatchingFragments, findMatchingFragment } from './fragmentState';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
-import { isProjectWorkspaceVisible } from './projectActionVisibility';
+import { isProjectWorkspaceVisible, nextProjectActionsExpanded } from './projectActionVisibility';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
@@ -111,7 +111,8 @@ function Studio() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
-  const [projectActionsVisible, setProjectActionsVisible] = useState(false);
+  const [projectActionsExpanded, setProjectActionsExpanded] = useState(false);
+  const projectWorkspaceVisibleRef = useRef(false);
   const [render, setRender] = useState<RenderInfo>({ available: false });
   const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>();
@@ -247,7 +248,11 @@ function Studio() {
   useEffect(() => {
     const section = document.getElementById('project');
     if (!section) return;
-    const updateVisibility = () => setProjectActionsVisible(isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight));
+    const updateVisibility = () => {
+      const workspaceVisible = isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight);
+      setProjectActionsExpanded(expanded => nextProjectActionsExpanded(projectWorkspaceVisibleRef.current, workspaceVisible, expanded));
+      projectWorkspaceVisibleRef.current = workspaceVisible;
+    };
     updateVisibility();
     window.addEventListener('scroll', updateVisibility, { passive: true });
     window.addEventListener('resize', updateVisibility);
@@ -635,12 +640,12 @@ function Studio() {
         <div className="hero-serial">Index Voice 01 / 2026</div>
         <a className="scroll-cue" href="#project">Scroll To Continue</a>
       </section>
-      {projectActionsVisible && project && <aside className="project-actions-float" aria-label="项目生成操作">
-        <span>Project Actions / 项目操作</span>
+      {project && (projectActionsExpanded ? <aside className="project-actions-float" aria-label="项目生成操作">
+        <div className="project-actions-head"><span>Project Actions / 项目操作</span><button type="button" className="project-actions-collapse" aria-label="收缩项目操作" title="收缩到右侧" onClick={() => setProjectActionsExpanded(false)}><CaretRightOutlined /></button></div>
         <Button disabled={jobRunning || !project.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
         <Button disabled={jobRunning || !project.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
         <Button disabled={jobRunning || !project.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
-      </aside>}
+      </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="展开项目操作" onClick={() => setProjectActionsExpanded(true)}><CaretLeftOutlined /><SoundOutlined /></button>)}
       <section className="project-section" id="project">
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>

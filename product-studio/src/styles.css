@@ -276,15 +276,52 @@ body * { box-shadow: none !important; }
   backdrop-filter: blur(18px) saturate(.78);
   transform: translateY(-50%);
 }
-.project-actions-float > span {
+.project-actions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding-bottom: 4px;
+}
+.project-actions-head > span {
   color: rgba(255, 237, 215, .72);
   font-size: 9px;
   font-weight: 500;
   letter-spacing: .04em;
   text-transform: uppercase;
 }
+.project-actions-collapse {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px dashed rgba(255, 237, 215, .48);
+  border-radius: 999px;
+  color: var(--cream);
+  background: transparent;
+  cursor: pointer;
+}
 .project-actions-float .ant-btn { width: 100%; justify-content: flex-start; }
+.project-actions-trigger {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  z-index: 55;
+  display: grid;
+  gap: 5px;
+  place-items: center;
+  width: 42px;
+  height: 68px;
+  padding: 0;
+  border: 1px dashed rgba(255, 237, 215, .68);
+  border-right: 0;
+  border-radius: 12px 0 0 12px;
+  color: var(--cream);
+  background: rgba(56, 36, 22, .92);
+  backdrop-filter: blur(18px) saturate(.78);
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+.project-actions-trigger:hover, .project-actions-trigger:focus-visible, .project-actions-collapse:hover, .project-actions-collapse:focus-visible { outline: 1px solid var(--cream); outline-offset: 2px; }
 .job-progress-float {
   position: fixed;
   top: 24px;
@@ -596,8 +633,9 @@ body * { box-shadow: none !important; }
   .project-section { padding: 88px 12px 45px; background: linear-gradient(180deg, rgba(56, 36, 22, .78) 0%, rgba(56, 36, 22, .62) 18%, rgba(56, 36, 22, .54) 100%); }
   .project-bar { padding: 18px; }
   .project-actions-float { right: 8px; width: 164px; padding: 10px; }
-  .project-actions-float > span { font-size: 8px; }
+  .project-actions-head > span { font-size: 8px; }
   .project-actions-float .ant-btn { height: 34px; padding-inline: 10px; font-size: 10px; }
+  .project-actions-trigger { width: 36px; height: 60px; }
   .job-progress-float { top: 12px; width: calc(100vw - 24px); padding: 16px; }
   .job-progress-head strong { font-size: 18px; }
   .job-progress-head b { font-size: 32px; }
