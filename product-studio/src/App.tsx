@@ -12,6 +12,7 @@ import { countMatchingFragments, findMatchingFragment } from './fragmentState';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
+import { isProjectWorkspaceVisible } from './projectActionVisibility';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
@@ -110,6 +111,7 @@ function Studio() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
+  const [projectActionsVisible, setProjectActionsVisible] = useState(false);
   const [render, setRender] = useState<RenderInfo>({ available: false });
   const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>();
@@ -240,6 +242,14 @@ function Studio() {
       window.removeEventListener('resize', updateHeroDepth);
       document.body.classList.remove('workbench-active');
     };
+  }, []);
+
+  useEffect(() => {
+    const section = document.getElementById('project');
+    if (!section) return;
+    const observer = new IntersectionObserver(([entry]) => setProjectActionsVisible(isProjectWorkspaceVisible(entry)), { threshold: 0 });
+    observer.observe(section);
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -620,6 +630,12 @@ function Studio() {
         <div className="hero-serial">Index Voice 01 / 2026</div>
         <a className="scroll-cue" href="#project">Scroll To Continue</a>
       </section>
+      {projectActionsVisible && project && <aside className="project-actions-float" aria-label="项目生成操作">
+        <span>Project Actions / 项目操作</span>
+        <Button disabled={jobRunning || !project.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
+        <Button disabled={jobRunning || !project.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
+        <Button disabled={jobRunning || !project.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
+      </aside>}
       <section className="project-section" id="project">
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
@@ -630,9 +646,6 @@ function Studio() {
             <Button disabled={jobRunning || !project} loading={deletingProject} danger icon={<DeleteOutlined />}>删除工程</Button>
           </Popconfirm>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={jobRunning || !dirty} onClick={save}>保存当前工程</Button>
-          <Button disabled={jobRunning || !project?.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
-          <Button disabled={jobRunning || !project?.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
-          <Button disabled={jobRunning || !project?.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
           {dirty ? <span className="project-state">有未保存修改，请点击保存</span> : <span className="project-state">所有修改已保存</span>}
           <span className={`model-state${runtimeHealth?.voiceModel.modelLoaded ? ' model-state-hot' : ''}`} title={runtimeHealth?.voiceModel.pid ? `VoiceDesign Runtime PID ${runtimeHealth.voiceModel.pid}` : '首次生成音色时按需加载'}>{runtimeHealth?.voiceModel.modelLoaded ? 'Voice Model Hot / 音色模型已驻留' : 'Voice Model Cold / 首次使用时加载'}</span>
         </Flex>

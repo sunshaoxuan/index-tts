@@ -260,6 +260,31 @@ body * { box-shadow: none !important; }
   text-transform: uppercase;
 }
 .model-state-hot { border-color: var(--cream); color: var(--cream); background: rgba(56, 36, 22, .54); }
+.project-actions-float {
+  position: fixed;
+  top: 50%;
+  right: 18px;
+  z-index: 55;
+  display: grid;
+  gap: 9px;
+  width: 190px;
+  padding: 14px;
+  border: 1px dashed rgba(255, 237, 215, .68);
+  border-radius: 12px;
+  color: var(--cream);
+  background: rgba(56, 36, 22, .92);
+  backdrop-filter: blur(18px) saturate(.78);
+  transform: translateY(-50%);
+}
+.project-actions-float > span {
+  padding-bottom: 4px;
+  color: rgba(255, 237, 215, .72);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.project-actions-float .ant-btn { width: 100%; justify-content: flex-start; }
 .job-progress-float {
   position: fixed;
   top: 24px;
@@ -570,6 +595,9 @@ body * { box-shadow: none !important; }
   .scroll-cue { z-index: 3; right: 16px; bottom: 18px; }
   .project-section { padding: 88px 12px 45px; background: linear-gradient(180deg, rgba(56, 36, 22, .78) 0%, rgba(56, 36, 22, .62) 18%, rgba(56, 36, 22, .54) 100%); }
   .project-bar { padding: 18px; }
+  .project-actions-float { right: 8px; width: 164px; padding: 10px; }
+  .project-actions-float > span { font-size: 8px; }
+  .project-actions-float .ant-btn { height: 34px; padding-inline: 10px; font-size: 10px; }
   .job-progress-float { top: 12px; width: calc(100vw - 24px); padding: 16px; }
   .job-progress-head strong { font-size: 18px; }
   .job-progress-head b { font-size: 32px; }
