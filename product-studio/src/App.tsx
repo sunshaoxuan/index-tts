@@ -9,6 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState';
+import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
@@ -65,6 +66,44 @@ function formatJobBytes(value?: number) {
 
 function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
+}
+
+function FragmentAudioPlayer({ src }: { src: string }) {
+  const [retry, setRetry] = useState(0);
+  const [status, setStatus] = useState<FragmentAudioStatus>('loading');
+  const [message, setMessage] = useState('正在加载片断元数据');
+  const retrySrc = fragmentAudioRetryUrl(src, retry);
+  useEffect(() => {
+    setRetry(0);
+    setStatus('loading');
+    setMessage('正在加载片断元数据');
+  }, [src]);
+  const markReady = (duration: number) => {
+    if (validFragmentAudioDuration(duration)) {
+      setStatus('ready');
+      setMessage('片断已加载，可以播放');
+    } else {
+      setStatus('error');
+      setMessage('音频时长无效，请重新加载或重新生成片断');
+    }
+  };
+  return <div className={`fragment-audio-player fragment-audio-${status}`}>
+    <audio
+      key={retrySrc}
+      controls
+      preload="metadata"
+      src={retrySrc}
+      onLoadStart={() => { setStatus('loading'); setMessage('正在加载片断元数据'); }}
+      onLoadedMetadata={(event) => markReady(event.currentTarget.duration)}
+      onCanPlay={(event) => markReady(event.currentTarget.duration)}
+      onWaiting={() => { setStatus('buffering'); setMessage('正在缓冲片断音频'); }}
+      onError={(event) => { setStatus('error'); setMessage(fragmentAudioErrorMessage(event.currentTarget.error?.code)); }}
+    />
+    <div className="fragment-audio-actions" aria-live="polite">
+      <span className="fragment-audio-status">{message}</span>
+      <Button size="small" icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>重新加载片断</Button>
+    </div>
+  </div>;
 }
 
 function isPublicHttpEndpoint(value: string) {
@@ -744,7 +783,7 @@ function Studio() {
             <label className="segment-field"><span>强度</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.5)} /></label>
             <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
             <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><audio controls preload="metadata" src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>重新生成本分句</Button></div></div>
+            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>重新生成本分句</Button></div></div>
           </div>
         </div>;
       } },

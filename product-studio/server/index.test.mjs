@@ -68,7 +68,7 @@ test('returns delivery captions with real WAV duration and manifest pauses', asy
   await writeFile(path.join(segmentsDir, '0001.wav'), pcmWav(1.25));
   await writeFile(path.join(segmentsDir, '0002.wav'), pcmWav(2));
   await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
-    { order: 1, speaker_name: '旁白', source_text: '第一句。', text: '第一句。', pause_after_ms: 500, cache_key: 'a', audio: 'segments/0001.wav' },
+    { order: 1, speaker_name: '旁白', source_text: '第一句。', text: '第一句。', pause_after_ms: 500, cache_key: 'a', audio: 'segments\\0001.wav' },
     { order: 2, speaker_name: '笹垣润三', source_text: '第二句。', text: '第二句。', pause_after_ms: 0, cache_key: 'b', audio: 'segments/0002.wav' },
   ] }));
 
@@ -79,6 +79,12 @@ test('returns delivery captions with real WAV duration and manifest pauses', asy
     { order: 1, speakerName: '旁白', text: '第一句。', durationSeconds: 1.25, pauseAfterMs: 500 },
     { order: 2, speakerName: '笹垣润三', text: '第二句。', durationSeconds: 2, pauseAfterMs: 0 },
   ]);
+  assert.match(latest.fragments[0].audio, /\/segments\/0001\.wav$/);
+  assert.ok(!latest.fragments[0].audio.includes('%5C'));
+  const fragmentAudio = await app.inject(latest.fragments[0].audio);
+  assert.equal(fragmentAudio.statusCode, 200);
+  assert.equal(fragmentAudio.headers['content-type'], 'audio/wav');
+  assert.equal(Number(fragmentAudio.headers['content-length']), pcmWav(1.25).length);
   await app.close();
 });
 

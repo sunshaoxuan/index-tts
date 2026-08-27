@@ -1088,7 +1088,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
         synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: Boolean(item.cache_reused),
-        forcedRegeneration: Boolean(item.forced_regeneration), audio: `${base}/segments/${encodeURIComponent(path.basename(item.audio || ''))}`,
+        forcedRegeneration: Boolean(item.forced_regeneration), audio: `${base}/segments/${encodeURIComponent(path.basename(String(item.audio || '').replaceAll('\\', '/')))}`,
       }));
       for (const item of manifestSegments) {
         try {

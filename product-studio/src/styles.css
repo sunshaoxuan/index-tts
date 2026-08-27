@@ -486,6 +486,16 @@ body * { box-shadow: none !important; }
 .segment-fragment-cell audio { width: 100%; max-width: 100%; height: 32px; }
 .segment-fragment-cell > .ant-typography { max-width: 100%; overflow: hidden; color: rgba(255, 237, 215, .82) !important; font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .segment-fragment-cell .ant-btn { width: 100%; }
+.fragment-audio-player { min-width: 0; display: grid; gap: 6px; }
+.fragment-audio-actions { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fragment-audio-status { min-width: 0; color: rgba(255, 237, 215, .82); font-size: 12px; line-height: 1.4; }
+.fragment-audio-ready .fragment-audio-status { color: #9fd6a3; }
+.fragment-audio-error .fragment-audio-status { color: #ffb3a7; }
+.segment-fragment-cell .fragment-audio-actions .ant-btn { width: auto; flex: 0 0 auto; }
+@media (max-width: 520px) {
+  .fragment-audio-actions { align-items: stretch; flex-direction: column; }
+  .segment-fragment-cell .fragment-audio-actions .ant-btn { width: 100%; }
+}
 .split-segment-modal .ant-modal-body { display: grid; gap: 18px; }
 .split-source-field { display: grid; gap: 9px; }
 .split-source-field textarea { width: 100%; min-height: 150px; padding: 14px 0; resize: vertical; border: 0; border-bottom: 1px solid var(--cream); border-radius: 0; outline: 0; color: var(--cream); background: transparent; font: inherit; font-size: 14px; font-weight: 400; line-height: 1.8; text-transform: none; }
