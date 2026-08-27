@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Button, Card, Empty, Flex, Input, InputNumber, Layout, Modal,
   Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretLeftOutlined, CaretRightOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
+  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
@@ -13,6 +13,7 @@ import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
+import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
 import { isProjectWorkspaceVisible, nextProjectActionsExpanded } from './projectActionVisibility';
 import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
@@ -22,6 +23,8 @@ import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, Project
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
+const PROJECT_ACTION_IDLE_COLLAPSE_MS = 10_000;
+const PROJECT_ACTION_DOCK_STORAGE_KEY = 'index-voice-project-action-dock-v1';
 
 const VOICE_TRAIT_CONTROLS: Array<{ key: Exclude<keyof VoiceTraits, 'accent'>; label: string; low: string; high: string }> = [
   { key: 'weight', label: '声音重量', low: '轻薄', high: '厚重' },
@@ -131,7 +134,17 @@ function Studio() {
   const [saving, setSaving] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [projectActionsExpanded, setProjectActionsExpanded] = useState(false);
+  const [projectActionDragging, setProjectActionDragging] = useState(false);
+  const [projectActionFreePosition, setProjectActionFreePosition] = useState<{ left: number; top: number }>();
+  const [projectActionDock, setProjectActionDock] = useState<ProjectActionDockPlacement>(() => {
+    try { return normalizeProjectActionDockPlacement(JSON.parse(localStorage.getItem(PROJECT_ACTION_DOCK_STORAGE_KEY) || 'null'), window.innerWidth, window.innerHeight); }
+    catch { return normalizeProjectActionDockPlacement(undefined, window.innerWidth, window.innerHeight); }
+  });
   const projectWorkspaceVisibleRef = useRef(false);
+  const projectActionDockRef = useRef<HTMLDivElement>(null);
+  const projectActionDragRef = useRef<{ pointerId: number; startX: number; startY: number; originLeft: number; originTop: number; width: number; height: number } | null>(null);
+  const projectActionDragAbortRef = useRef<AbortController | null>(null);
+  const projectActionDragMovedRef = useRef(false);
   const [render, setRender] = useState<RenderInfo>({ available: false });
   const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>();
@@ -269,20 +282,70 @@ function Studio() {
   useEffect(() => {
     const section = document.getElementById('project');
     if (!section) return;
-    const updateVisibility = () => {
+    const updateVisibility = (revealFromScroll = false) => {
       const workspaceVisible = isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight);
       const wasWorkspaceVisible = projectWorkspaceVisibleRef.current;
       projectWorkspaceVisibleRef.current = workspaceVisible;
-      setProjectActionsExpanded(expanded => nextProjectActionsExpanded(wasWorkspaceVisible, workspaceVisible, expanded));
+      setProjectActionsExpanded(expanded => revealFromScroll && workspaceVisible ? true : nextProjectActionsExpanded(wasWorkspaceVisible, workspaceVisible, expanded));
     };
     updateVisibility();
-    window.addEventListener('scroll', updateVisibility, { passive: true });
-    window.addEventListener('resize', updateVisibility);
+    const revealOnScroll = () => updateVisibility(true);
+    const updateOnResize = () => updateVisibility(false);
+    window.addEventListener('scroll', revealOnScroll, { passive: true });
+    window.addEventListener('resize', updateOnResize);
     return () => {
-      window.removeEventListener('scroll', updateVisibility);
-      window.removeEventListener('resize', updateVisibility);
+      window.removeEventListener('scroll', revealOnScroll);
+      window.removeEventListener('resize', updateOnResize);
     };
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(PROJECT_ACTION_DOCK_STORAGE_KEY, JSON.stringify(projectActionDock)); }
+    catch { /* Local persistence is optional. */ }
+  }, [projectActionDock]);
+
+  useEffect(() => () => projectActionDragAbortRef.current?.abort(), []);
+
+  useEffect(() => {
+    let frame = 0;
+    const clampToViewport = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const dock = projectActionDockRef.current;
+        if (!dock || projectActionDragging) return;
+        const rect = dock.getBoundingClientRect();
+        setProjectActionDock(current => clampProjectActionDockPlacement(current, window.innerWidth, window.innerHeight, rect.width, rect.height));
+      });
+    };
+    clampToViewport();
+    window.addEventListener('resize', clampToViewport);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', clampToViewport);
+    };
+  }, [project, projectActionsExpanded, projectActionDragging]);
+
+  useEffect(() => {
+    if (!project || !projectActionsExpanded || projectActionDragging) return;
+    let timer = window.setTimeout(() => setProjectActionsExpanded(false), PROJECT_ACTION_IDLE_COLLAPSE_MS);
+    const restartTimer = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setProjectActionsExpanded(false), PROJECT_ACTION_IDLE_COLLAPSE_MS);
+    };
+    window.addEventListener('pointerdown', restartTimer, { passive: true });
+    window.addEventListener('keydown', restartTimer);
+    window.addEventListener('scroll', restartTimer, { passive: true });
+    window.addEventListener('resize', restartTimer);
+    document.addEventListener('visibilitychange', restartTimer);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', restartTimer);
+      window.removeEventListener('keydown', restartTimer);
+      window.removeEventListener('scroll', restartTimer);
+      window.removeEventListener('resize', restartTimer);
+      document.removeEventListener('visibilitychange', restartTimer);
+    };
+  }, [project, projectActionsExpanded, projectActionDragging, activeTab]);
 
   useEffect(() => {
     const containSelectWheel = (event: WheelEvent) => {
@@ -666,8 +729,70 @@ function Studio() {
 
   const openWorkspace = (key: string) => {
     setActiveTab(key);
+    setProjectActionsExpanded(true);
     window.requestAnimationFrame(() => document.getElementById('project')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
+
+  const beginProjectActionDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest('.project-actions-collapse'))) return;
+    const dock = projectActionDockRef.current;
+    if (!dock) return;
+    const rect = dock.getBoundingClientRect();
+    const drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originLeft: rect.left, originTop: rect.top, width: rect.width, height: rect.height };
+    projectActionDragAbortRef.current?.abort();
+    const controller = new AbortController();
+    projectActionDragAbortRef.current = controller;
+    projectActionDragRef.current = drag;
+    projectActionDragMovedRef.current = false;
+    setProjectActionFreePosition({ left: rect.left, top: rect.top });
+    setProjectActionDragging(true);
+    const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== drag.pointerId) return;
+      const deltaX = pointer.clientX - drag.startX;
+      const deltaY = pointer.clientY - drag.startY;
+      if (Math.hypot(deltaX, deltaY) > 4) projectActionDragMovedRef.current = true;
+      const gap = 8;
+      setProjectActionFreePosition({
+        left: Math.min(window.innerWidth - drag.width - gap, Math.max(gap, drag.originLeft + deltaX)),
+        top: Math.min(window.innerHeight - drag.height - gap, Math.max(gap, drag.originTop + deltaY)),
+      });
+    };
+    const finish = (pointer: PointerEvent, commit: boolean) => {
+      if (pointer.pointerId !== drag.pointerId) return;
+      if (commit) {
+        const edge = nearestProjectActionDockEdge(pointer.clientX, pointer.clientY, window.innerWidth, window.innerHeight);
+        setProjectActionDock(clampProjectActionDockPlacement(
+          { edge, offset: projectActionDockOffset(edge, pointer.clientX, pointer.clientY) },
+          window.innerWidth,
+          window.innerHeight,
+          drag.width,
+          drag.height,
+        ));
+      }
+      controller.abort();
+      projectActionDragAbortRef.current = null;
+      projectActionDragRef.current = null;
+      setProjectActionDragging(false);
+      setProjectActionFreePosition(undefined);
+      window.setTimeout(() => { projectActionDragMovedRef.current = false; }, 0);
+    };
+    window.addEventListener('pointermove', move, { signal: controller.signal });
+    window.addEventListener('pointerup', pointer => finish(pointer, true), { signal: controller.signal });
+    window.addEventListener('pointercancel', pointer => finish(pointer, false), { signal: controller.signal });
+  };
+
+  const projectActionDockStyle: CSSProperties = projectActionDragging && projectActionFreePosition
+    ? { left: projectActionFreePosition.left, top: projectActionFreePosition.top, transform: 'none' }
+    : projectActionDock.edge === 'left'
+      ? { left: 8, top: projectActionDock.offset, transform: 'translateY(-50%)' }
+      : projectActionDock.edge === 'right'
+        ? { right: 8, top: projectActionDock.offset, transform: 'translateY(-50%)' }
+        : projectActionDock.edge === 'top'
+          ? { top: 8, left: projectActionDock.offset, transform: 'translateX(-50%)' }
+          : { bottom: 8, left: projectActionDock.offset, transform: 'translateX(-50%)' };
+  const projectActionDockLabels: Record<ProjectActionDockEdge, string> = { top: '上', right: '右', bottom: '下', left: '左' };
+  const projectActionCollapseIcon = projectActionDock.edge === 'left' ? <CaretLeftOutlined /> : projectActionDock.edge === 'right' ? <CaretRightOutlined /> : projectActionDock.edge === 'top' ? <CaretUpOutlined /> : <CaretDownOutlined />;
+  const projectActionExpandIcon = projectActionDock.edge === 'left' ? <CaretRightOutlined /> : projectActionDock.edge === 'right' ? <CaretLeftOutlined /> : projectActionDock.edge === 'top' ? <CaretDownOutlined /> : <CaretUpOutlined />;
 
   return <Layout className="studio-shell">
     <Header className="studio-header">
@@ -688,12 +813,18 @@ function Studio() {
         <div className="hero-serial">Index Voice 01 / 2026</div>
         <a className="scroll-cue" href="#project">Scroll To Continue</a>
       </section>
-      {project && (projectActionsExpanded ? <aside className="project-actions-float" aria-label="项目生成操作">
-        <div className="project-actions-head"><span>Project Actions / 项目操作</span><button type="button" className="project-actions-collapse" aria-label="收缩项目操作" title="收缩到右侧" onClick={() => setProjectActionsExpanded(false)}><CaretRightOutlined /></button></div>
-        <Button disabled={jobRunning || !project.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
-        <Button disabled={jobRunning || !project.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
-        <Button disabled={jobRunning || !project.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
-      </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="展开项目操作" onClick={() => setProjectActionsExpanded(true)}><CaretLeftOutlined /><SoundOutlined /></button>)}
+      {project && <div ref={projectActionDockRef} className={`project-actions-dock project-actions-dock-${projectActionDock.edge} ${projectActionsExpanded ? 'is-expanded' : 'is-collapsed'}${projectActionDragging ? ' is-dragging' : ''}`} style={projectActionDockStyle} data-dock-edge={projectActionDock.edge}>
+        {projectActionsExpanded ? <aside className="project-actions-float" aria-label={`项目生成操作，停靠在${projectActionDockLabels[projectActionDock.edge]}侧`}>
+          <div className="project-actions-head" title="拖动到任意边缘停靠" onPointerDown={beginProjectActionDrag}>
+            <span><DragOutlined /> Project Actions / 项目操作</span>
+            <button type="button" className="project-actions-collapse" aria-label="收缩项目操作" title={`收缩到${projectActionDockLabels[projectActionDock.edge]}侧边缘`} onPointerDown={event => event.stopPropagation()} onClick={() => setProjectActionsExpanded(false)}>{projectActionCollapseIcon}</button>
+          </div>
+          <small className="project-actions-hint">拖动标题停靠四边 · 10 秒闲置收缩</small>
+          <Button disabled={jobRunning || !project.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
+          <Button disabled={jobRunning || !project.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
+          <Button disabled={jobRunning || !project.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
+        </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="拖动可停靠，点击展开" onPointerDown={beginProjectActionDrag} onClick={() => { if (!projectActionDragMovedRef.current) setProjectActionsExpanded(true); }}>{projectActionExpandIcon}<SoundOutlined /></button>}
+      </div>}
       <section className="project-section" id="project">
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
@@ -716,7 +847,7 @@ function Studio() {
         <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
-        <div><Tabs size="large" activeKey={activeTab} onChange={setActiveTab} items={[
+        <div><Tabs size="large" activeKey={activeTab} onChange={key => { setActiveTab(key); setProjectActionsExpanded(true); }} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
           { key: 'scenes', label: `场景分析 ${sceneRows.length}`, children: <Card title="场景连续性与低置信度复核"><Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '当前没有低于 0.7 的说话人归属'} description="场景数据来自最近一次 AI 全文分析。可在这里修订地点、时间、参与人物、叙事视角和基调；说话人归属请在分句导演表中修改。" />{sceneRows.length ? <div className="scene-card-grid">{sceneRows.map((scene, index) => { const sceneId = String(scene.id || `scene_${index + 1}`); return <Card key={sceneId} size="small" title={`${sceneId} · ${String(scene.location || '未说明')}`}><Space direction="vertical" size="middle" className="scene-fields"><div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label></div><label><Text strong>参与人物 ID</Text><Input disabled={jobRunning} value={Array.isArray(scene.participants) ? scene.participants.join('、') : ''} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean))} /></label><div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div><Text type="secondary">判断证据：{String(scene.evidence || '未记录')}</Text></Space></Card>; })}</div> : <Empty description="当前工程没有场景结构。使用全局 AI 设置选择模型后重新分析全文即可生成。" />}{lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}</Card> },
           { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}>
