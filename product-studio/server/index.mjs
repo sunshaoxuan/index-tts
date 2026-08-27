@@ -661,7 +661,7 @@ function launchMp3Encoder(file) {
   ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launchEncoder = launchMp3Encoder, remoteFetch = fetch } = {}) {
+export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawnWorker = spawn, launchEncoder = launchMp3Encoder, remoteFetch = fetch } = {}) {
   const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
@@ -1176,15 +1176,17 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
       const child = launchWorker
         ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
-        : spawn(python, workerArgs, {
+        : spawnWorker(python, workerArgs, {
           cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
         });
-      activeJob.pid = Number.isSafeInteger(child.pid) ? child.pid : undefined;
-      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
       const log = path.join(dir, 'worker.log');
       const chunks = [];
-      child.stdout.on('data', chunk => chunks.push(chunk));
-      child.stderr.on('data', chunk => chunks.push(chunk));
+      const workerSpawned = launchWorker ? undefined : new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      child.stdout?.on('data', chunk => chunks.push(chunk));
+      child.stderr?.on('data', chunk => chunks.push(chunk));
       child.on('close', async code => {
         try {
           const logText = Buffer.concat(chunks).toString('utf8');
@@ -1207,6 +1209,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
           await clearActiveJob(jobId);
         }
       });
+      if (workerSpawned) await workerSpawned;
+      activeJob.pid = Number.isSafeInteger(child.pid) ? child.pid : undefined;
+      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
       return { jobId, kind };
     } catch (error) {
       try { await writeFile(path.join(jobRoot, jobId, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务启动失败：${error.message}` }), 'utf8'); } catch {}

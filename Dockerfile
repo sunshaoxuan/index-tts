@@ -50,7 +50,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PORT=7864
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libgl1 libglib2.0-0 \
+      libgl1 libglib2.0-0 sox \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=web /usr/local/ /usr/local/
@@ -60,9 +60,12 @@ COPY --from=web /build/product-studio/dist /app/product-studio/dist
 COPY --from=web /build/product-studio/node_modules /app/product-studio/node_modules
 
 WORKDIR /app
-RUN npm install --global ffmpeg-static@5.2.0 \
+RUN ln -sfn /usr/local/bin/python3.11 /app/.venv/bin/python \
+    && /app/.venv/bin/python -c "import sys; assert sys.prefix == '/app/.venv', sys.prefix" \
+    && npm install --global ffmpeg-static@5.2.0 \
     && ln -sf /usr/local/lib/node_modules/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg \
     && ffmpeg -version >/dev/null \
+    && sox --version >/dev/null \
     && chmod +x /app/scripts/docker-entrypoint.sh \
     && mkdir -p /app/checkpoints /app/outputs /app/runtime-output /app/artifacts
 

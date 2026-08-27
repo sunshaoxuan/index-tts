@@ -38,11 +38,26 @@ export interface JobStatus {
   phase: string; fraction: number; message: string; telemetry?: JobTelemetry;
 }
 
+export async function parseApiResponse<T>(response: Response): Promise<T> {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+  let body: Record<string, unknown> | undefined;
+  if (contentType.includes('application/json') || /^\s*[\[{]/.test(raw)) {
+    try { body = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error(`接口返回的 JSON 无法解析（HTTP ${response.status}）`); }
+  }
+  if (!response.ok) {
+    const detail = body?.message || body?.error;
+    if (detail) throw new Error(String(detail));
+    throw new Error(`服务返回了非 JSON 响应（HTTP ${response.status}），服务可能正在重启，请稍后重试`);
+  }
+  if (!body) throw new Error(`接口返回格式异常（HTTP ${response.status}，${contentType || '未知类型'}）`);
+  return body as T;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.message || body.error || `请求失败 ${response.status}`);
-  return body as T;
+  return parseApiResponse<T>(response);
 }
 
 const emptyPost: RequestInit = { method: 'POST', body: JSON.stringify({}) };

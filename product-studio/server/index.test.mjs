@@ -912,6 +912,25 @@ test('allows one worker at a time and records a failed worker as error', async (
   await app.close();
 });
 
+test('returns JSON and keeps the server alive when the worker executable cannot spawn', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root, spawnWorker: () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    queueMicrotask(() => child.emit('error', Object.assign(new Error('spawn /missing/python ENOENT'), { code: 'ENOENT' })));
+    return child;
+  } });
+
+  const response = await app.inject({ method: 'POST', url: '/api/projects/demo/voices', payload: {} });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.headers['content-type'], /^application\/json/);
+  assert.match(response.json().error, /ENOENT/);
+  assert.equal((await app.inject('/api/health')).statusCode, 200);
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  await app.close();
+});
+
 test('restores a running worker after the server is rebuilt', async () => {
   const { root, project } = await fixture();
   const jobId = 'restoredjob';
