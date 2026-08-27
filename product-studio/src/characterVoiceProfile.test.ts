@@ -10,7 +10,7 @@ test('recommends distinct pitch ranges by gender and age', () => {
   const female = recommendPitchRange('female', 35);
   const child = recommendPitchRange('unspecified', 10);
   assert.deepEqual([male.min, male.max], [85, 180]);
-  assert.deepEqual([female.min, female.max], [165, 255]);
+  assert.deepEqual([female.min, female.max], [180, 280]);
   assert.ok(child.min > male.min);
 });
 
@@ -40,7 +40,7 @@ test('preserves a supported portrait style and falls back from an unknown style'
 test('changing demographics resets the recommendation and target', () => {
   const current = normalizeCharacterAsset(role, { pitch_target_hz: 90 });
   const updated = updateAssetDemographics(current, 'female', 70);
-  assert.deepEqual([updated.pitch_min_hz, updated.pitch_max_hz, updated.pitch_target_hz], [135, 235, 185]);
+  assert.deepEqual([updated.pitch_min_hz, updated.pitch_max_hz, updated.pitch_target_hz], [155, 250, 203]);
   assert.ok(updated.voice_traits.weight > current.voice_traits.weight);
   assert.ok(updated.voice_traits.roughness > current.voice_traits.roughness);
 });

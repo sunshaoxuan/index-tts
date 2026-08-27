@@ -257,6 +257,7 @@ class NovelProjectStore:
             "effective_guidance_sources": job.get("effective_guidance_sources") if isinstance(job.get("effective_guidance_sources"), list) else [],
             "effective_guidance_instructions": job.get("effective_guidance_instructions") if isinstance(job.get("effective_guidance_instructions"), list) else [],
             "gender_verified": bool(job.get("gender_verified", False)),
+            "gender_verification_version": 2 if job.get("gender_verified", False) else 0,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         self._write(metadata_path, metadata)
@@ -272,7 +273,9 @@ class NovelProjectStore:
             return None
         expected_gender = str(job.get("expected_gender") or "unspecified")
         if expected_gender in {"female", "male"} and (
-            str(metadata.get("expected_gender")) != expected_gender or not metadata.get("gender_verified")
+            str(metadata.get("expected_gender")) != expected_gender
+            or not metadata.get("gender_verified")
+            or int(metadata.get("gender_verification_version") or 0) < 2
         ):
             return None
         if Path(str(metadata.get("audio_path", ""))).is_file():

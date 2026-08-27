@@ -4,11 +4,12 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 import voice_design_worker as worker
 from novel_project import NovelProjectStore
 import product_voice_worker
-from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, resolve_or_reuse_guidance
+from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, resolve_or_reuse_guidance, verified_candidate_metrics
 from text_director import guidance_role_signature
 
 
@@ -114,14 +115,14 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
     status_path = tmp_path / "status.json"
     output_dir = tmp_path / "voices"
     prepare_model(tmp_path / "model")
-    input_path.write_text(json.dumps({"jobs": [{"role_id": "role_002", "name": "老板娘", "filename": "owner.wav", "text": "测试", "language": "Chinese", "instruct": "中年女性音色", "expected_gender": "female", "voice_generation": {"candidate_count": 2}}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model")}, ensure_ascii=False), encoding="utf-8")
+    input_path.write_text(json.dumps({"jobs": [{"role_id": "role_002", "name": "老板娘", "filename": "owner.wav", "text": "测试", "language": "Chinese", "instruct": "中年女性音色", "expected_gender": "female", "voice_generation": {"candidate_count": 1}}], "output_dir": str(output_dir), "model_dir": str(tmp_path / "model"), "gender_max_attempts": 2}, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["worker", "--input", str(input_path), "--result", str(result_path), "--status", str(status_path)])
 
     assert worker.main() == 0
     generated = json.loads(result_path.read_text(encoding="utf-8"))["generated"][0]
     assert calls == [90, 210]
     assert generated["expected_gender"] == "female"
-    assert generated["median_pitch_hz"] >= 135
+    assert generated["median_pitch_hz"] >= 180
     assert generated["generation_attempts"] == 2
     assert all(Path(item["path"]).is_file() for item in generated["candidate_metrics"])
 
@@ -151,7 +152,7 @@ def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp
             "jobs": [{
                 "role_id": "role_003", "name": "教授", "filename": "professor.wav", "text": "测试",
                 "language": "Chinese", "instruct": "成熟偏老年男性声线", "expected_gender": "male",
-                "character_age": 55, "pitch_target_hz": 100,
+                "character_age": 55, "pitch_target_hz": 100, "voice_generation": {"candidate_count": 3},
             }],
             "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir), "gender_max_attempts": 3,
         },
@@ -265,6 +266,83 @@ def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():
     assert not worker.gender_pitch_matches("male", 230.0)
     assert worker.gender_pitch_matches("male", 255.0, 10)
     assert not worker.gender_pitch_matches("male", 255.0, 35)
+    assert not worker.gender_pitch_matches("female", 174.77, 55, 210.0)
+    assert not worker.gender_pitch_matches("female", 186.42, 35, 217.0)
+    assert worker.gender_pitch_matches("female", 195.0, 35, 217.0)
+
+
+def test_worker_collects_requested_number_of_verified_female_candidates(tmp_path, monkeypatch):
+    frequencies = [110, 175, 193, 205, 218]
+    calls = []
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            frequency = frequencies[len(calls)]
+            calls.append(frequency)
+            timeline = np.arange(24000, dtype=np.float32) / 24000
+            return [0.2 * np.sin(2 * np.pi * frequency * timeline)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    result = worker.generate_voice_design({
+        "jobs": [{
+            "role_id": "role_f", "name": "女性角色", "filename": "female.wav", "text": "测试",
+            "language": "Chinese", "instruct": "明确女性声音", "expected_gender": "female",
+            "character_age": 35, "pitch_target_hz": 217, "voice_generation": {"candidate_count": 3},
+        }],
+        "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
+    }, tmp_path / "result.json", tmp_path / "status.json")
+
+    generated = result["generated"][0]
+    assert calls == frequencies
+    assert generated["requested_candidate_count"] == 3
+    assert generated["valid_candidate_count"] == 3
+    assert generated["gender_verified"] is True
+    assert [item["gender_matched"] for item in generated["candidate_metrics"]] == [False, False, True, True, True]
+
+
+def test_product_registration_excludes_cross_gender_candidates():
+    item = {
+        "expected_gender": "female",
+        "candidate_metrics": [
+            {"seed": 42, "median_pitch_hz": 110.0, "gender_matched": False},
+            {"seed": 43, "median_pitch_hz": 205.0, "gender_matched": True},
+        ],
+    }
+    assert [metric["seed"] for metric in verified_candidate_metrics(item)] == [43]
+
+
+def test_worker_rejects_a_partial_verified_candidate_set(tmp_path, monkeypatch):
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            timeline = np.arange(24000, dtype=np.float32) / 24000
+            return [0.2 * np.sin(2 * np.pi * 175 * timeline)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    with pytest.raises(ValueError, match="要求 2 个女性候选.*只有 0 个通过"):
+        worker.generate_voice_design({
+            "jobs": [{
+                "role_id": "role_f", "name": "女性角色", "filename": "female.wav", "text": "测试",
+                "language": "Chinese", "instruct": "明确女性声音", "expected_gender": "female",
+                "character_age": 35, "pitch_target_hz": 217, "voice_generation": {"candidate_count": 2},
+            }],
+            "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
+        }, tmp_path / "result.json", tmp_path / "status.json")
 
 
 def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):

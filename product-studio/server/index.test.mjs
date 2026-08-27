@@ -224,12 +224,14 @@ test('normalizes per character voice controls and invalidates only the affected 
   project.character_assets.narrator.voice_traits.roughness = 83;
   project.character_assets.narrator.voice_generation = { ...project.character_assets.narrator.voice_generation, preset: 'custom', temperature: 1.25, top_k: 90, candidate_count: 5 };
   project.character_assets.narrator.audition_text = '这是旁白独立使用的试听文本。';
+  project.character_assets.narrator.voice_candidates = [{ voice_id: 'voice-verified', seed: 77, median_pitch_hz: 218.5, selected: true, gender_verified: true }];
   const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(saved.statusCode, 200);
   assert.equal(saved.json().character_assets.narrator.voice_traits.roughness, 83);
   assert.equal(saved.json().character_assets.narrator.voice_generation.temperature, 1.25);
   assert.equal(saved.json().character_assets.narrator.voice_generation.candidate_count, 5);
   assert.equal(saved.json().character_assets.narrator.audition_text, '这是旁白独立使用的试听文本。');
+  assert.deepEqual(saved.json().character_assets.narrator.voice_candidates, [{ voice_id: 'voice-verified', seed: 77, median_pitch_hz: 218.5, selected: true, gender_verified: true }]);
   await app.close();
 });
 

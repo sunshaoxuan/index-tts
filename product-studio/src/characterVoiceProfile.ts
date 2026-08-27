@@ -41,9 +41,9 @@ export function recommendPitchRange(gender: CharacterGender, age: number): Pitch
   let min: number;
   let max: number;
   if (safeAge < 13) [min, max] = gender === 'male' ? [190, 320] : gender === 'female' ? [210, 340] : [190, 340];
-  else if (safeAge < 20) [min, max] = gender === 'male' ? [120, 220] : gender === 'female' ? [175, 285] : [120, 285];
-  else if (safeAge < 60) [min, max] = gender === 'male' ? [85, 180] : gender === 'female' ? [165, 255] : [90, 270];
-  else [min, max] = gender === 'male' ? [75, 165] : gender === 'female' ? [135, 235] : [80, 250];
+  else if (safeAge < 20) [min, max] = gender === 'male' ? [120, 220] : gender === 'female' ? [185, 295] : [120, 295];
+  else if (safeAge < 60) [min, max] = gender === 'male' ? [85, 180] : gender === 'female' ? [180, 280] : [90, 280];
+  else [min, max] = gender === 'male' ? [75, 165] : gender === 'female' ? [155, 250] : [80, 250];
   const target = Math.round((min + max) / 2);
   const genderLabel = gender === 'female' ? '女性' : gender === 'male' ? '男性' : '未指定性别';
   return { min, max, target, label: `${safeAge} 岁${genderLabel}建议 ${min} 至 ${max} Hz` };

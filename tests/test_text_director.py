@@ -585,7 +585,7 @@ def test_unknown_limited_presets_are_rejected_but_voice_design_accepts_native_pr
     assert "人物对白克制" not in jobs[0]["instruct"]
     assert "人物小传：成熟" in jobs[0]["instruct"]
     assert "声音导演：五十岁女声，略带沙哑" in jobs[0]["instruct"]
-    assert jobs[0]["instruct"].startswith("为旁白设计")
+    assert jobs[0]["instruct"].startswith("首要声音身份：必须由约 35 岁女性自然发声")
     assert "旁白旁白" not in jobs[0]["instruct"]
 
     invalid_roles = [list(role_rows[0])]
@@ -682,7 +682,8 @@ def test_ai_routed_guidance_excludes_narrator_voice_from_characters_and_enforces
     assert narrator["expected_gender"] == "male"
     assert "老年男性音色" not in owner["instruct"]
     assert "本角色有效导演上下文：作品整体保持克制" in owner["instruct"]
-    assert "声音性别硬约束：女性" in owner["instruct"]
+    assert owner["instruct"].startswith("首要声音身份：必须由约 35 岁女性自然发声")
+    assert owner["instruct"].endswith("最终确认：输出必须保持自然、明确、可听辨的女性声音。")
     assert owner["expected_gender"] == "female"
     assert infer_voice_gender("中年女性音色", "", "") == "female"
 

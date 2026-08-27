@@ -29,12 +29,12 @@ def recommend_pitch_range(gender: str, age: int) -> tuple[int, int, int]:
     if safe_age < 13:
         minimum, maximum = (190, 320) if gender == "male" else (210, 340) if gender == "female" else (190, 340)
     elif safe_age < 20:
-        minimum, maximum = (120, 220) if gender == "male" else (175, 285) if gender == "female" else (120, 285)
+        minimum, maximum = (120, 220) if gender == "male" else (185, 295) if gender == "female" else (120, 295)
     elif safe_age < 60:
-        minimum, maximum = (85, 180) if gender == "male" else (165, 255) if gender == "female" else (90, 270)
+        minimum, maximum = (85, 180) if gender == "male" else (180, 280) if gender == "female" else (90, 280)
     else:
-        minimum, maximum = (75, 165) if gender == "male" else (135, 235) if gender == "female" else (80, 250)
-    return minimum, maximum, round((minimum + maximum) / 2)
+        minimum, maximum = (75, 165) if gender == "male" else (155, 250) if gender == "female" else (80, 250)
+    return minimum, maximum, (minimum + maximum + 1) // 2
 
 
 def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:

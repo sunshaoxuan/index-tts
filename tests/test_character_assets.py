@@ -2,8 +2,8 @@ from character_assets import infer_character_gender, normalize_character_assets,
 
 
 def test_pitch_recommendations_distinguish_demographics():
-    assert recommend_pitch_range("male", 35) == (85, 180, 132)
-    assert recommend_pitch_range("female", 35) == (165, 255, 210)
+    assert recommend_pitch_range("male", 35) == (85, 180, 133)
+    assert recommend_pitch_range("female", 35) == (180, 280, 230)
     assert recommend_pitch_range("unspecified", 10) == (190, 340, 265)
 
 
@@ -13,7 +13,7 @@ def test_legacy_roles_receive_stable_character_assets():
     assert assets["role_001"]["gender"] == "male"
     assert assets["role_001"]["age"] == 35
     assert assets["role_001"]["pitch_min_hz"] == 85
-    assert assets["role_001"]["pitch_target_hz"] == 132
+    assert assets["role_001"]["pitch_target_hz"] == 133
     assert assets["role_001"]["portrait_style"] == "cinematic_manga"
     assert assets["role_001"]["voice_generation"]["preset"] == "balanced"
     assert assets["role_001"]["voice_generation"]["candidate_count"] == 3

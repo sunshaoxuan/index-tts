@@ -41,6 +41,7 @@ export interface VoiceCandidate {
   seed: number;
   median_pitch_hz?: number;
   selected: boolean;
+  gender_verified?: boolean;
 }
 
 export interface CharacterAsset {

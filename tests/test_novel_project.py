@@ -100,6 +100,7 @@ def test_explicit_gender_voice_cache_requires_verification_metadata(tmp_path):
     verified = store.register_voice(generated, verified_job, model="voice-model", seed=42)
     assert verified["voice_id"] == unverified["voice_id"]
     assert store.find_voice(job, model="voice-model", seed=42)["median_pitch_hz"] == 188.0
+    assert verified["gender_verification_version"] == 2
     assert verified["generation_attempts"] == 3
     assert verified["candidate_metrics"][0]["selected"] is True
     assert verified["effective_guidance_sources"] == ["女性声线"]

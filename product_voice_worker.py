@@ -20,6 +20,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def verified_candidate_metrics(item: dict[str, Any]) -> list[dict[str, Any]]:
+    explicit_gender = str(item.get("expected_gender")) in {"female", "male"}
+    return [
+        metric
+        for metric in item.get("candidate_metrics") or []
+        if isinstance(metric, dict) and (not explicit_gender or bool(metric.get("gender_matched")))
+    ]
+
+
 def _legacy_effective_guidance(instruct: str) -> str:
     marker = "本角色有效导演上下文："
     boundary = "。人物小传："
@@ -182,16 +191,18 @@ def main() -> int:
             "median_pitch_hz": item.get("median_pitch_hz"),
             "generation_attempts": item.get("generation_attempts"),
             "candidate_metrics": item.get("candidate_metrics"),
-            "gender_verified": str(item.get("expected_gender")) not in {"female", "male"} or item.get("median_pitch_hz") is not None,
+            "gender_verified": bool(item.get("gender_verified")),
         }
         candidate_records = []
         metadata = None
-        for metric in item.get("candidate_metrics") or []:
-            candidate_job = {**verified_job, "median_pitch_hz": metric.get("median_pitch_hz"), "seed": metric.get("seed")}
+        for metric in verified_candidate_metrics(item):
+            metric_verified = str(item.get("expected_gender")) not in {"female", "male"} or bool(metric.get("gender_matched"))
+            candidate_job = {**verified_job, "median_pitch_hz": metric.get("median_pitch_hz"), "seed": metric.get("seed"), "gender_verified": metric_verified}
             candidate_metadata = store.register_voice(metric["path"], candidate_job, model=str(model_dir), seed=int(metric["seed"]))
             candidate_records.append({
                 "voice_id": candidate_metadata["voice_id"], "seed": int(metric["seed"]),
                 "median_pitch_hz": metric.get("median_pitch_hz"), "selected": bool(metric.get("selected")),
+                "gender_verified": metric_verified,
             })
             if metric.get("selected"):
                 metadata = candidate_metadata

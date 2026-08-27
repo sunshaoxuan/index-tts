@@ -1433,6 +1433,22 @@ def age_voice_constraint(age: int) -> str:
     return "年龄听感强约束：老年声线，声带质感厚而略松，共鸣靠下，高频亮度克制，带自然气息感和轻微粗粝感，禁止青年化清亮紧致声线。"
 
 
+def gender_voice_identity_constraint(expected_gender: str, age: int) -> str:
+    if expected_gender == "female":
+        return (
+            f"首要声音身份：必须由约 {age} 岁女性自然发声。"
+            "保持明确女性声线、女性声带质感和女性共鸣。"
+            "男性声线、中性偏男性声线、男性假声或厚重男性胸腔共鸣均不合格。"
+        )
+    if expected_gender == "male":
+        return (
+            f"首要声音身份：必须由约 {age} 岁男性自然发声。"
+            "保持明确男性声线、男性声带质感和男性共鸣。"
+            "女性声线、中性偏女性声线、女性假声或轻薄女性头腔共鸣均不合格。"
+        )
+    return ""
+
+
 def infer_voice_gender(voice_hint: str, profile: str = "", name: str = "") -> str:
     for source in (voice_hint, profile, name):
         female = any(term in source for term in VOICE_GENDER_TERMS["female"])
@@ -1523,22 +1539,24 @@ def build_voice_design_jobs(
             else f"角色年龄设定：约 {age} 岁。"
         )
         age_constraint = age_voice_constraint(age)
-        gender_constraint = {
-            "female": "声音性别硬约束：女性；男性或中性偏男性嗓音不合格。",
-            "male": "声音性别硬约束：男性；女性或中性偏女性嗓音不合格。",
+        gender_constraint = gender_voice_identity_constraint(expected_gender, age)
+        gender_confirmation = {
+            "female": "最终确认：输出必须保持自然、明确、可听辨的女性声音。",
+            "male": "最终确认：输出必须保持自然、明确、可听辨的男性声音。",
             "unspecified": "",
         }[expected_gender]
         instruct = (
+            f"{gender_constraint}"
             f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
             f"本角色有效导演上下文：{effective_guidance or '遵循作品体裁并保持角色跨章节一致'}。"
             f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
             f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
-            f"{gender_constraint}"
             f"{pitch_constraint}"
             f"{age_constraint}"
             f"{voice_traits_instruction(voice_traits)}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"
+            f"{gender_confirmation}"
         )
         jobs.append(
             {

@@ -55,9 +55,9 @@ export function recommendPitchRange(gender, age) {
   let min;
   let max;
   if (safeAge < 13) [min, max] = gender === 'male' ? [190, 320] : gender === 'female' ? [210, 340] : [190, 340];
-  else if (safeAge < 20) [min, max] = gender === 'male' ? [120, 220] : gender === 'female' ? [175, 285] : [120, 285];
-  else if (safeAge < 60) [min, max] = gender === 'male' ? [85, 180] : gender === 'female' ? [165, 255] : [90, 270];
-  else [min, max] = gender === 'male' ? [75, 165] : gender === 'female' ? [135, 235] : [80, 250];
+  else if (safeAge < 20) [min, max] = gender === 'male' ? [120, 220] : gender === 'female' ? [185, 295] : [120, 295];
+  else if (safeAge < 60) [min, max] = gender === 'male' ? [85, 180] : gender === 'female' ? [180, 280] : [90, 280];
+  else [min, max] = gender === 'male' ? [75, 165] : gender === 'female' ? [155, 250] : [80, 250];
   return { min, max, target: Math.round((min + max) / 2) };
 }
 
@@ -147,7 +147,7 @@ function normalizeCharacterAsset(role, source = {}) {
     audition_text: String(source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
     voice_traits: normalizeVoiceTraits(source.voice_traits, age),
     voice_generation: normalizeVoiceGeneration(source.voice_generation),
-    ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id).slice(0, 6).map(item => ({ voice_id: String(item.voice_id), seed: Math.round(Number(item.seed) || 0), ...(Number.isFinite(Number(item.median_pitch_hz)) ? { median_pitch_hz: Number(item.median_pitch_hz) } : {}), selected: Boolean(item.selected) })) } : {}),
+    ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id && item?.gender_verified !== false).slice(0, 6).map(item => ({ voice_id: String(item.voice_id), seed: Math.round(Number(item.seed) || 0), ...(Number.isFinite(Number(item.median_pitch_hz)) ? { median_pitch_hz: Number(item.median_pitch_hz) } : {}), selected: Boolean(item.selected), ...(typeof item.gender_verified === 'boolean' ? { gender_verified: item.gender_verified } : {}) })) } : {}),
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
     portrait_style: normalizePortraitStyle(source.portrait_style),
