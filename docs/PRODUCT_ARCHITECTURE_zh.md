@@ -49,7 +49,7 @@ Node 服务恢复时还会检查 Render Runtime 的 `busy` 状态和 `.processin
 
 `DELETE /api/projects/:id` 只接受合法工程 ID，要求目标严格位于 `outputs/novel-projects` 的单层工程目录并存在 `project.json`。活动任务锁定同一工程时返回 409。删除成功后移除该工程完整目录，`outputs/voice-library` 永久音色库不在目标范围内。前端二次确认展示工程名称和删除范围，完成后重新读取工程列表并切换到剩余工程。
 
-项目生成操作使用一个由 `IntersectionObserver` 控制的右侧固定操作组。观察目标是完整的 `#project` 工作区，任意交集都会显示操作组，首屏离开项目区域时隐藏。三个浮动按钮直接复用 `runJob` 入口、活动任务锁和工程数据前置条件；项目控制栏不再保留重复按钮。顶部任务进度层保持更高层级。
+项目生成操作使用一个按视口位置控制的右侧固定操作组。滚动或调整窗口大小时读取完整 `#project` 工作区的边界，只要工作区与视口存在交集就显示操作组，首屏离开项目区域时隐藏。三个浮动按钮直接复用 `runJob` 入口、活动任务锁和工程数据前置条件；项目控制栏不再保留重复按钮。顶部任务进度层保持更高层级。
 
 任务启动时，Node 在写入 Worker 输入前登记 `activeJob`，其中包含 `jobId`、任务类型和 `projectId`，并持久写入 `runtime-output/product-jobs/active-job.json`。Worker 启动后追加 PID。`GET /api/active-job` 合并活动标记与实时 `status.json`，供刷新后的 React 页面自动选择所属工程、恢复相同进度面板和继续轮询。同一工程在任务存续期间的 PUT 保存返回 409。前端同步禁用工程选择、全文、角色、分句、纠音、新建和保存操作。任务完成或失败后删除活动标记、释放锁并重新载入工程结果。
 

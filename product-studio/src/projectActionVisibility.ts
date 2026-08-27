@@ -1,3 +1,3 @@
-export function isProjectWorkspaceVisible(entry: Pick<IntersectionObserverEntry, 'isIntersecting' | 'intersectionRatio'>) {
-  return entry.isIntersecting && entry.intersectionRatio > 0;
+export function isProjectWorkspaceVisible(rect: Pick<DOMRect, 'top' | 'bottom'>, viewportHeight: number) {
+  return rect.bottom > 0 && rect.top < viewportHeight;
 }

@@ -247,9 +247,14 @@ function Studio() {
   useEffect(() => {
     const section = document.getElementById('project');
     if (!section) return;
-    const observer = new IntersectionObserver(([entry]) => setProjectActionsVisible(isProjectWorkspaceVisible(entry)), { threshold: 0 });
-    observer.observe(section);
-    return () => observer.disconnect();
+    const updateVisibility = () => setProjectActionsVisible(isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight));
+    updateVisibility();
+    window.addEventListener('scroll', updateVisibility, { passive: true });
+    window.addEventListener('resize', updateVisibility);
+    return () => {
+      window.removeEventListener('scroll', updateVisibility);
+      window.removeEventListener('resize', updateVisibility);
+    };
   }, []);
 
   useEffect(() => {
