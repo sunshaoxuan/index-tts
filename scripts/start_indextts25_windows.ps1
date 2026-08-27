@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$HostAddress = "127.0.0.1",
+    [string]$HostAddress = "0.0.0.0",
     [switch]$SkipBuild
 )
 

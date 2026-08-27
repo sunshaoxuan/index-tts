@@ -8,6 +8,7 @@ LAUNCHER = ROOT / "scripts" / "start_indextts25_windows.ps1"
 def test_windows_launcher_starts_node_product_architecture():
     content = LAUNCHER.read_text(encoding="utf-8")
     assert '[int]$Port = 7864' in content
+    assert '[string]$HostAddress = "0.0.0.0"' in content
     assert 'Get-NetTCPConnection -LocalPort $Port' in content
     assert 'Stop-Process -Id $existingListener.OwningProcess' in content
     assert '[int]$Port = 7864,' not in content
@@ -16,6 +17,12 @@ def test_windows_launcher_starts_node_product_architecture():
     assert 'server/index.mjs' in content
     assert 'production_webui.py' not in content
     assert '$env:PYTHONUTF8 = "1"' in content
+
+
+def test_product_server_listens_on_all_interfaces_by_default():
+    server = (ROOT / "product-studio" / "server" / "index.mjs").read_text(encoding="utf-8")
+    assert "process.env.HOST || '0.0.0.0'" in server
+    assert "process.env.PORT || 7864" in server
 
 
 def test_windows_launcher_builds_with_locked_pnpm_dependencies():
