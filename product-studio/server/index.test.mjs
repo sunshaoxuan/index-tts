@@ -765,6 +765,45 @@ test('restores a running worker after the server is rebuilt', async () => {
   await app.close();
 });
 
+test('takes over a render request that remains active after its worker exits', async () => {
+  const { root, project } = await fixture();
+  const jobId = 'recoveredrender';
+  const requestId = 'a'.repeat(32);
+  const jobDir = path.join(root, 'runtime-output', 'product-jobs', jobId);
+  const runtimeDir = path.join(root, 'runtime-output', 'render-runtime');
+  await mkdir(jobDir, { recursive: true });
+  await mkdir(path.join(runtimeDir, 'requests'), { recursive: true });
+  await writeFile(path.join(jobDir, 'input.json'), JSON.stringify({ root, project_id: 'demo' }));
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'rendering', fraction: 0.5, message: 'IndexTTS 正在生成 1/2' }));
+  await writeFile(path.join(runtimeDir, 'state.json'), JSON.stringify({ protocol: 1, pid: process.pid, phase: 'busy', request_id: requestId }));
+  await writeFile(path.join(runtimeDir, 'requests', `${requestId}.processing`), JSON.stringify({
+    protocol: 1,
+    request_id: requestId,
+    input: path.join(jobDir, 'input.json'),
+    result: path.join(jobDir, 'result.json'),
+    status: path.join(jobDir, 'status.json'),
+  }));
+
+  const app = await buildApp({ repoRoot: root });
+  assert.deepEqual((await app.inject('/api/active-job')).json(), {
+    available: true,
+    jobId,
+    kind: 'render',
+    projectId: 'demo',
+    pid: process.pid,
+    phase: 'rendering',
+    fraction: 0.5,
+    message: 'IndexTTS 正在生成 1/2',
+  });
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project })).statusCode, 409);
+  const persisted = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-jobs', 'active-job.json'), 'utf8'));
+  assert.deepEqual(persisted, { jobId, kind: 'render', projectId: 'demo', pid: process.pid });
+
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完整声音作品已生成' }));
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  await app.close();
+});
+
 test('marks a restored job as failed when its worker no longer exists', async () => {
   const { root } = await fixture();
   const jobId = 'orphanedjob';

@@ -650,6 +650,30 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       }
     }
   } catch {}
+  if (!activeJob) {
+    try {
+      const runtimeDir = path.join(repoRoot, 'runtime-output', 'render-runtime');
+      const runtimeState = JSON.parse(await readFile(path.join(runtimeDir, 'state.json'), 'utf8'));
+      const requestId = String(runtimeState.request_id || '');
+      if (runtimeState.phase !== 'busy' || !/^[a-f0-9]{32}$/.test(requestId) || !Number.isSafeInteger(runtimeState.pid) || runtimeState.pid <= 0) throw new Error('没有可接管的渲染运行时');
+      try { process.kill(runtimeState.pid, 0); } catch { throw new Error('渲染运行时已经退出'); }
+      const envelope = JSON.parse(await readFile(path.join(runtimeDir, 'requests', `${requestId}.processing`), 'utf8'));
+      const jobDir = path.resolve(path.dirname(String(envelope.status || '')));
+      const relativeJobDir = path.relative(path.resolve(jobRoot), jobDir);
+      if (!relativeJobDir || relativeJobDir.startsWith('..') || path.isAbsolute(relativeJobDir) || relativeJobDir.includes(path.sep)) throw new Error('渲染任务目录不合法');
+      const jobId = safeProjectId(relativeJobDir);
+      const expectedStatus = path.join(jobDir, 'status.json');
+      const expectedInput = path.join(jobDir, 'input.json');
+      if (path.resolve(String(envelope.status || '')) !== expectedStatus || path.resolve(String(envelope.input || '')) !== expectedInput) throw new Error('渲染任务文件不匹配');
+      const status = JSON.parse(await readFile(expectedStatus, 'utf8'));
+      if (['complete', 'error'].includes(status.phase)) throw new Error('渲染任务已经结束');
+      const input = JSON.parse(await readFile(expectedInput, 'utf8'));
+      const projectId = safeProjectId(input.project_id);
+      await access(path.join(projectRoot, projectId, 'project.json'));
+      activeJob = { jobId, kind: 'render', projectId, pid: runtimeState.pid };
+      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
+    } catch {}
+  }
   await app.register(fastifyStatic, { root: distRoot, wildcard: false });
 
   app.get('/api/health', async () => ({ status: 'ok', productVersion, runtime: process.version, architecture: 'react-antd-node-python', voiceModel: await voiceRuntimeHealth(repoRoot) }));
