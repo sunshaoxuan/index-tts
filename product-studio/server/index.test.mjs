@@ -36,6 +36,29 @@ test('serves presets and project data', async () => {
   await app.close();
 });
 
+test('saving a selected role candidate backfills its stable voice asset without changing segment speakers', async () => {
+  const { root } = await fixture();
+  const voiceDir = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceDir, { recursive: true });
+  const selectedVoice = path.join(voiceDir, 'voice-selected.wav');
+  await writeFile(selectedVoice, Buffer.from('RIFFselected'));
+  const app = await buildApp({ repoRoot: root });
+  const project = (await app.inject('/api/projects/demo')).json();
+  project.roles[0][5] = 'voice-selected';
+  project.voice_files = [];
+  project.character_assets.narrator.voice_candidates = [{ voice_id: 'voice-selected', seed: 44, selected: true, gender_verified: true }];
+  const originalSegments = structuredClone(project.segments);
+
+  const response = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().segments, originalSegments);
+  assert.equal(response.json().roles[0][5], 'voice-selected');
+  assert.deepEqual(response.json().voice_files, [selectedVoice]);
+  assert.equal(response.json().character_assets.narrator.voice_candidates[0].selected, true);
+  await app.close();
+});
+
 test('stores AI media credentials locally without returning the API key', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });

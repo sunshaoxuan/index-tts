@@ -880,6 +880,61 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
     assert payload["roles"][0]["voice_id"] == "voice_05.wav"
 
 
+def test_render_resolves_current_role_voice_from_library_without_project_voice_files(tmp_path):
+    demo_dir = tmp_path / "examples"
+    demo_dir.mkdir()
+    voice_library = tmp_path / "voice-library"
+    current_voice = voice_library / "voice-current.wav"
+    _write_wav(current_voice, 100)
+
+    class FakeModel:
+        calls = []
+
+        def infer(self, **kwargs):
+            self.calls.append(kwargs)
+            _write_wav(Path(kwargs["output_path"]), 2205)
+            return kwargs["output_path"]
+
+    segments = [[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.5, "自然", 0]]
+    model = FakeModel()
+    render_directed_audio(
+        document={"title": "角色音色动态解析", "content_type": "novel"},
+        role_table=[_role_row(voice_id="voice-current")],
+        segment_table=segments,
+        uploaded_files=[],
+        model=model,
+        model_lock=threading.Lock(),
+        output_root=tmp_path / "outputs",
+        demo_dir=demo_dir,
+        demo_voices={},
+        voice_library_dir=voice_library,
+    )
+
+    assert model.calls[0]["spk_audio_prompt"] == str(current_voice.resolve())
+    assert segments[0][2] == "narrator"
+
+
+def test_missing_current_role_voice_reports_only_role_and_expected_path(tmp_path):
+    with pytest.raises(DirectorError) as raised:
+        render_directed_audio(
+            document={"title": "缺失音色", "content_type": "novel"},
+            role_table=[_role_row(voice_id="voice-missing")],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.5, "自然", 0]],
+            uploaded_files=[],
+            model=object(),
+            model_lock=threading.Lock(),
+            output_root=tmp_path / "outputs",
+            demo_dir=tmp_path / "examples",
+            demo_voices={},
+            voice_library_dir=tmp_path / "voice-library",
+        )
+
+    message = str(raised.value)
+    assert "角色 旁白" in message
+    assert "voice-missing.wav" in message
+    assert "可用：" not in message
+
+
 def test_render_cancel_stops_before_inference_and_cleans_run_directory(tmp_path):
     demo_dir = tmp_path / "voices"
     _write_wav(demo_dir / "voice_05.wav", 100)

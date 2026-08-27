@@ -607,6 +607,22 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
   const productVersion = (await readFile(path.join(repoRoot, 'VERSION'), 'utf8')).trim();
   const aiMediaSettingsFile = path.join(repoRoot, 'runtime-output', 'product-settings.json');
+
+  async function reconcileRoleVoiceFiles(project) {
+    const existing = Array.isArray(project.voice_files) ? project.voice_files.map(value => String(value)) : [];
+    const resolved = [...existing];
+    for (const role of project.roles || []) {
+      const voiceId = String(role?.[5] || '').trim().replace(/\.wav$/i, '');
+      if (!/^(voice-|legacy-)[\w-]+$/i.test(voiceId)) continue;
+      const roleVoice = path.join(repoRoot, 'outputs', 'voice-library', `${voiceId}.wav`);
+      try {
+        await access(roleVoice);
+        resolved.push(roleVoice);
+      } catch {}
+    }
+    project.voice_files = [...new Set(resolved)];
+    return project;
+  }
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
   await mkdir(jobRoot, { recursive: true });
@@ -762,6 +778,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       await access(currentPath);
       const current = normalizeProject(JSON.parse(await readFile(currentPath, 'utf8')));
       const payload = validateProject(request.body, id);
+      await reconcileRoleVoiceFiles(payload);
       const directorChanges = directorChangeKinds(directorSnapshot(current), directorSnapshot(payload));
       preserveDirectorOperations(current, payload);
       payload.artifact_invalidation = await invalidateDirectorArtifacts(path.join(projectRoot, id), current, payload, directorChanges);

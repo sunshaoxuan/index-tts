@@ -62,6 +62,21 @@ def test_project_round_trip_keeps_roles_segments_pronunciations_and_chapters(tmp
     assert loaded["director_memory"]["segments"] == segments
 
 
+def test_project_save_backfills_current_stable_role_voice_file(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    project = store.create("角色音色引用", "novel", "正文", "")
+    current_voice = tmp_path / "voices" / "voice-current.wav"
+    _write_wav(current_voice)
+    roles = [["narrator", "旁白", "narrator", "沉稳", "厚实", "voice-current", "自然叙述", "否"]]
+
+    saved = store.save(
+        project["project_id"], title="角色音色引用", content_type="novel", source_text="正文", guidance="",
+        document={"title": "角色音色引用"}, roles=roles, segments=[], pronunciations=[], voice_files=[],
+    )
+
+    assert saved["voice_files"] == [str(current_voice.resolve())]
+
+
 def test_voice_registration_is_idempotent_and_keeps_generation_conditions(tmp_path):
     store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
     generated = tmp_path / "generated.wav"

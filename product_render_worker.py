@@ -149,6 +149,7 @@ def execute_render_request(request: dict[str, Any], result_path: Path, status_pa
         cache_only=cache_only,
         demo_dir=root / "examples",
         demo_voices={path.name: path.name for path in (root / "examples").glob("voice_*.wav")},
+        voice_library_dir=root / "outputs" / "voice-library",
         progress=progress,
     )
     result = {"master": master, "package": package, "manifest": manifest, "summary": summary, "render_runtime": {"model_reused": model_reused, "resident": not cache_only, "pid": os.getpid()}}

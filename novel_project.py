@@ -198,6 +198,16 @@ class NovelProjectStore:
         director_memory: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self.load(project_id)
+        resolved_voice_files = [str(Path(path).resolve()) for path in (voice_files or []) if Path(str(path)).is_file()]
+        for row in roles or []:
+            if len(row) <= 5:
+                continue
+            voice_id = str(row[5] or "").strip()
+            voice_stem = Path(voice_id).stem
+            if voice_stem.startswith(("voice-", "legacy-")):
+                role_voice = (self.voice_library_root / f"{voice_stem}.wav").resolve()
+                if role_voice.is_file():
+                    resolved_voice_files.append(str(role_voice))
         payload.update(
             {
                 "title": str(title or payload.get("title") or "未命名小说").strip(),
@@ -209,7 +219,7 @@ class NovelProjectStore:
                 "roles": roles or [],
                 "segments": segments or [],
                 "pronunciations": normalize_pronunciations(pronunciations),
-                "voice_files": [str(Path(path).resolve()) for path in (voice_files or []) if Path(str(path)).is_file()],
+                "voice_files": list(dict.fromkeys(resolved_voice_files)),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }
         )

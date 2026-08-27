@@ -1702,6 +1702,8 @@ def _build_voice_catalog(
     demo_voices: dict[str, str],
     uploaded_files: Iterable[str] | None,
     generated_files: Iterable[str] | None = None,
+    voice_library_dir: Path | None = None,
+    required_voice_ids: Iterable[str] | None = None,
 ) -> dict[str, Path]:
     catalog = {voice_id: (demo_dir / voice_id).resolve() for voice_id in demo_voices}
     for voice_id, path in catalog.items():
@@ -1718,6 +1720,19 @@ def _build_voice_catalog(
         catalog[path.name] = path
         if path.stem.startswith(("voice-", "legacy-")):
             catalog[path.stem] = path
+    if voice_library_dir is not None:
+        library_dir = Path(voice_library_dir).resolve()
+        for raw_voice_id in required_voice_ids or []:
+            voice_id = str(raw_voice_id or "").strip()
+            if not voice_id or voice_id in catalog:
+                continue
+            stem = Path(voice_id).stem
+            if not stem.startswith(("voice-", "legacy-")):
+                continue
+            path = (library_dir / f"{stem}.wav").resolve()
+            if path.parent == library_dir and path.is_file():
+                catalog[stem] = path
+                catalog[path.name] = path
     return catalog
 
 
@@ -1772,6 +1787,7 @@ def render_directed_audio(
     output_root: Path,
     demo_dir: Path,
     demo_voices: dict[str, str],
+    voice_library_dir: Path | None = None,
     pronunciation_table: Any | None = None,
     project_process_dir: Path | None = None,
     force_segment_orders: Iterable[int] | None = None,
@@ -1786,11 +1802,20 @@ def render_directed_audio(
     fragment_orders = {int(order) for order in (fragment_only_orders or [])}
     if fragment_orders:
         forced_orders.update(fragment_orders)
-    catalog = _build_voice_catalog(demo_dir, demo_voices, uploaded_files, generated_files)
+    catalog = _build_voice_catalog(
+        demo_dir,
+        demo_voices,
+        uploaded_files,
+        generated_files,
+        voice_library_dir=voice_library_dir,
+        required_voice_ids=(role["voice_id"] for role in roles.values()),
+    )
     for role in roles.values():
         if role["voice_id"] not in catalog:
-            available = "、".join(catalog)
-            raise DirectorError(f"角色 {role['name']} 的音色ID不存在：{role['voice_id']}。可用：{available}")
+            expected = ""
+            if voice_library_dir is not None and Path(role["voice_id"]).stem.startswith(("voice-", "legacy-")):
+                expected = f"，预期文件：{(Path(voice_library_dir).resolve() / (Path(role['voice_id']).stem + '.wav'))}"
+            raise DirectorError(f"角色 {role['name']} 的当前音色不存在：{role['voice_id']}{expected}。请回到角色卡片重新选择或生成音色")
 
     base_run_name = (
         f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}-"
