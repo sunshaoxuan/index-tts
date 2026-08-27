@@ -621,7 +621,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       } catch {}
     }
     project.voice_files = [...new Set(resolved)];
-    return project;
+    return project.voice_files.length !== existing.length || project.voice_files.some((value, index) => value !== existing[index]);
   }
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
@@ -763,7 +763,16 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
     } catch (error) { return reply.code(400).send({ error: error.message }); }
   });
   app.get('/api/projects/:id', async (request, reply) => {
-    try { return normalizeProject(JSON.parse(await readFile(path.join(projectRoot, safeProjectId(request.params.id), 'project.json'), 'utf8'))); }
+    try {
+      const projectPath = path.join(projectRoot, safeProjectId(request.params.id), 'project.json');
+      const project = JSON.parse(await readFile(projectPath, 'utf8'));
+      if (await reconcileRoleVoiceFiles(project)) {
+        const temporary = `${projectPath}.tmp`;
+        await writeFile(temporary, `${JSON.stringify(project, null, 2)}\n`, 'utf8');
+        await rename(temporary, projectPath);
+      }
+      return normalizeProject(project);
+    }
     catch (error) { return reply.code(404).send({ error: error.message || '工程不存在' }); }
   });
   app.put('/api/projects/:id', async (request, reply) => {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import time
@@ -11,6 +12,22 @@ from typing import Any
 from voice_design_daemon_client import process_alive
 
 PROTOCOL_VERSION = 1
+RENDER_SOURCE_FILES = (
+    "render_daemon.py",
+    "render_daemon_client.py",
+    "product_render_worker.py",
+    "text_director.py",
+    "novel_project.py",
+)
+
+
+def render_source_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256()
+    for relative in RENDER_SOURCE_FILES:
+        path = root.resolve() / relative
+        digest.update(relative.encode("utf-8"))
+        digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+    return digest.hexdigest()
 
 
 def daemon_environment() -> dict[str, str]:
@@ -37,6 +54,7 @@ def render_state_healthy(state: dict[str, Any], expected_python: Path, checkpoin
             and state.get("indextts_available") is True
             and state.get("checkpoint_files_ready") is True
             and state.get("runtime_healthy") is True
+            and state.get("source_fingerprint") == render_source_fingerprint(checkpoint_dir.resolve().parent)
             and all(path.is_file() for path in required)
         )
     except (KeyError, OSError, TypeError, ValueError):

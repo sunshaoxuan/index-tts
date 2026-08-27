@@ -5,7 +5,7 @@ from pathlib import Path
 
 import render_daemon_client as client
 from render_daemon import _environment, _state
-from render_daemon_client import enqueue_render_request, render_state_healthy
+from render_daemon_client import enqueue_render_request, render_source_fingerprint, render_state_healthy
 
 
 def prepare_checkpoints(root: Path) -> Path:
@@ -27,6 +27,7 @@ def healthy_state(root: Path, python: Path, phase: str = "ready") -> dict:
         "indextts_available": True,
         "checkpoint_files_ready": True,
         "runtime_healthy": True,
+        "source_fingerprint": render_source_fingerprint(root),
     }
 
 
@@ -37,6 +38,9 @@ def test_render_runtime_health_requires_ready_matching_environment(tmp_path):
     assert render_state_healthy(healthy_state(tmp_path, python, "busy"), python, checkpoint_dir) is False
     mismatched = healthy_state(tmp_path, tmp_path / "other-python.exe")
     assert render_state_healthy(mismatched, python, checkpoint_dir) is False
+    stale_source = healthy_state(tmp_path, python)
+    stale_source["source_fingerprint"] = "stale"
+    assert render_state_healthy(stale_source, python, checkpoint_dir) is False
 
 
 def test_render_request_is_written_atomically(tmp_path):
@@ -59,6 +63,7 @@ def test_render_environment_reports_checkpoint_and_python_fingerprint(tmp_path, 
     assert environment["indextts_available"] is True
     assert environment["checkpoint_files_ready"] is True
     assert environment["runtime_healthy"] is True
+    assert environment["source_fingerprint"] == render_source_fingerprint(tmp_path)
 
 
 def test_render_state_retains_last_request_across_heartbeat():

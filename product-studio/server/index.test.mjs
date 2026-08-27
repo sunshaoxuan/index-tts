@@ -59,6 +59,29 @@ test('saving a selected role candidate backfills its stable voice asset without 
   await app.close();
 });
 
+test('loading a legacy project atomically persists missing current role voice assets', async () => {
+  const { root } = await fixture();
+  const voiceDir = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceDir, { recursive: true });
+  const currentVoice = path.join(voiceDir, 'voice-current.wav');
+  await writeFile(currentVoice, Buffer.from('RIFFcurrent'));
+  const projectPath = path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json');
+  const stored = JSON.parse(await readFile(projectPath, 'utf8'));
+  stored.roles[0][5] = 'voice-current';
+  stored.voice_files = [];
+  await writeFile(projectPath, JSON.stringify(stored));
+  const app = await buildApp({ repoRoot: root });
+
+  const response = await app.inject('/api/projects/demo');
+  const persisted = JSON.parse(await readFile(projectPath, 'utf8'));
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().voice_files, [currentVoice]);
+  assert.deepEqual(persisted.voice_files, [currentVoice]);
+  assert.deepEqual(persisted.segments, stored.segments);
+  await app.close();
+});
+
 test('stores AI media credentials locally without returning the API key', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });

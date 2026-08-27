@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from product_render_worker import RenderRuntime, execute_render_request, write_json
-from render_daemon_client import PROTOCOL_VERSION
+from render_daemon_client import PROTOCOL_VERSION, render_source_fingerprint
 
 
 def _environment(repo_root: Path) -> dict[str, Any]:
@@ -27,6 +27,7 @@ def _environment(repo_root: Path) -> dict[str, Any]:
         "checkpoint_files_ready": not missing,
         "missing_checkpoint_paths": missing,
         "runtime_healthy": spec is not None and not missing,
+        "source_fingerprint": render_source_fingerprint(repo_root),
     }
 
 
