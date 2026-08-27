@@ -152,6 +152,16 @@ $env:INDEXTTS_PNPM = "C:\Users\<用户>\AppData\Roaming\npm\pnpm.cmd"
 .\scripts\start_indextts25_windows.ps1
 ```
 
+### Docker GPU 运行
+
+Docker 部署会把模型、工程、运行配置和成果物挂载为独立持久目录：
+
+```powershell
+docker compose up -d --build
+```
+
+访问 `http://127.0.0.1:7864/`。完整的启动、开机恢复和迁移方法见 [Docker 部署说明](docs/DOCKER_DEPLOYMENT_zh.md)。
+
 启动器会安装锁定的前端依赖、构建生产页面并在以下地址启动产品：
 
 ```text

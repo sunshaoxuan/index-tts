@@ -1,5 +1,9 @@
 # Index Voice Studio 产品架构
 
+## Docker 运行边界
+
+Linux GPU 镜像内置 Product Studio、Node.js 24、IndexTTS Python 环境、VoiceDesign 独立 Python 环境和 FFmpeg。`checkpoints`、`outputs`、`runtime-output`、`artifacts` 通过 Compose 从宿主机挂载，分别承担模型、用户工程、运行配置与正式成果物持久化。容器内的 Ollama 请求通过 `host.docker.internal` 到达宿主机服务。容器重启时会把中断任务记为明确错误，并清理只属于旧进程命名空间的 daemon 控制状态。
+
 产品版本由根 `VERSION` 管理，Node 启动时读取并通过 `/api/health` 返回，React 品牌区显示同一值。`product-studio/package.json`、README、CHANGELOG 和 Git 标签在正式发布时使用同一版本。IndexTTS 推理引擎版本继续独立管理。
 
 ## 目标

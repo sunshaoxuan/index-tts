@@ -7,7 +7,7 @@ import {
   AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { api, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
+import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, findMatchingFragment } from './fragmentState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
@@ -45,6 +45,22 @@ const VOICE_TRAIT_CONTROLS: Array<{ key: Exclude<keyof VoiceTraits, 'accent'>; l
 function formatAudioTime(value: number) {
   const safe = Number.isFinite(value) && value > 0 ? value : 0;
   return `${Math.floor(safe / 60)}:${String(Math.floor(safe % 60)).padStart(2, '0')}`;
+}
+
+function formatJobDuration(startedAt?: string, observedAt?: string) {
+  const elapsed = Date.parse(observedAt || new Date().toISOString()) - Date.parse(startedAt || '');
+  if (!Number.isFinite(elapsed)) return '等待计时';
+  const seconds = Math.floor(Math.max(0, elapsed) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
+}
+
+function formatJobBytes(value?: number) {
+  if (!Number.isFinite(value) || Number(value) < 0) return '等待采样';
+  const bytes = Number(value);
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 function trimSentence(value: string) {
@@ -147,7 +163,7 @@ function Studio() {
   const projectActionDragAbortRef = useRef<AbortController | null>(null);
   const projectActionDragMovedRef = useRef(false);
   const [render, setRender] = useState<RenderInfo>({ available: false });
-  const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string }>();
+  const [job, setJob] = useState<{ id: string; kind: 'analyze' | 'voice' | 'render'; projectId: string; phase: string; fraction: number; message: string; telemetry?: JobTelemetry }>();
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>();
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -175,6 +191,8 @@ function Studio() {
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
+  const voiceTelemetry = job?.telemetry?.voiceRuntime;
+  const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (job.kind !== 'voice' || voiceTelemetry?.processAlive));
 
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
@@ -859,6 +877,10 @@ function Studio() {
         <div className="job-progress-head"><div><span>Processing / 处理中</span><strong>{jobLabels[job.kind]}</strong></div><b>{jobPercent}%</b></div>
         <Progress percent={Math.max(2, jobPercent)} showInfo={false} status="active" strokeLinecap="butt" />
         <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
+        <div className="job-progress-observation">
+          <Text>{jobRuntimeResponsive ? '后台进程响应中' : '正在等待后台进程确认'} · 已运行 {formatJobDuration(job.telemetry?.startedAt, job.telemetry?.observedAt)}</Text>
+          {voiceTelemetry && <Text>模型 {voiceTelemetry.modelLoaded ? '已加载' : '加载中'} · 内存 {formatJobBytes(voiceTelemetry.rssBytes)} · 累计读取 {formatJobBytes(voiceTelemetry.readBytes)} / 权重 {formatJobBytes(voiceTelemetry.modelBytes)}</Text>}
+        </div>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={key => { setActiveTab(key); setProjectActionsExpanded(true); }} items={[

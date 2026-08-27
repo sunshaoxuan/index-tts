@@ -12,6 +12,7 @@ from novel_project import NovelProjectStore, pronunciation_rows
 from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs, guidance_role_signature
 from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
 from render_daemon_client import release_render_model
+from runtime_python import voice_python as resolve_voice_python
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -107,7 +108,11 @@ def main() -> int:
     status = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
     project = store.load(request["project_id"])
-    director = OllamaTextDirector(DirectorConfig())
+    director_config = dict(request.get("config") or {})
+    director_config.pop("settings_file", None)
+    director_config.pop("api_key", None)
+    director_config["provider"] = "ollama"
+    director = OllamaTextDirector(DirectorConfig(**director_config))
     document = dict(project["document"])
     cached_routing = resolve_or_reuse_guidance(project, director)
     document["guidance_routing"], routing_reused = cached_routing
@@ -128,7 +133,7 @@ def main() -> int:
     jobs = build_voice_design_jobs(project["document"], project["roles"], project)
     output_dir = store.project_dir(project["project_id"]) / "voices"
     model_dir = root / "checkpoints" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-    voice_python = root / ".venv-voice-design" / "Scripts" / "python.exe"
+    voice_python = resolve_voice_python(root)
     jobs_by_role = {job["role_id"]: job for job in jobs}
     rows_by_role = {str(row[0]): row for row in project["roles"]}
     registered, pending, preserved_count = [], [], 0

@@ -480,6 +480,16 @@ function normalizeOllamaEndpoint(value) {
   return text;
 }
 
+function configuredOllamaEndpoint(value) {
+  return normalizeOllamaEndpoint(process.env.INDEXTTS_OLLAMA_ENDPOINT || value || 'http://127.0.0.1:11434');
+}
+
+export function workerPython(repoRoot, platform = process.platform) {
+  const configured = String(process.env.INDEXTTS_PYTHON || '').trim();
+  if (configured) return path.resolve(configured);
+  return platform === 'win32' ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe') : 'python3';
+}
+
 function aiRoute(endpoint, route) {
   return `${endpoint}${endpoint.endsWith('/v1') ? '' : '/v1'}${route}`;
 }
@@ -514,7 +524,7 @@ async function readAiMediaSettings(file) {
       text_model: String(stored.text_model || 'gemini-2.5-pro'),
       director_provider: stored.director_provider === 'compatible' ? 'compatible' : 'ollama',
       director_model: String(stored.director_model || 'qwen3:8b'),
-      ollama_endpoint: normalizeOllamaEndpoint(stored.ollama_endpoint),
+      ollama_endpoint: configuredOllamaEndpoint(stored.ollama_endpoint),
       director_max_chunk_chars: Math.max(320, Math.min(12000, Math.round(Number(stored.director_max_chunk_chars) || 1400))),
       image_model: String(stored.image_model || 'gpt-image-1'),
       instance_id: String(stored.instance_id || ''),
@@ -522,7 +532,7 @@ async function readAiMediaSettings(file) {
       allow_insecure_http: Boolean(stored.allow_insecure_http),
     };
   } catch {
-    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:8b', ollama_endpoint: 'http://127.0.0.1:11434', director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:8b', ollama_endpoint: configuredOllamaEndpoint(), director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
   }
 }
 
@@ -1070,15 +1080,15 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       const result = path.join(dir, 'result.json');
       const worker = kind === 'analyze' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
       const payload = { root: repoRoot, project_id: id, ...options };
-      if (kind === 'analyze') {
+      if (kind === 'analyze' || kind === 'voice') {
         const settings = await readAiMediaSettings(aiMediaSettingsFile);
         if (settings.director_provider === 'compatible') {
           if (!settings.endpoint || !settings.api_key) throw new Error('兼容全文分析需要先在全局 AI 设置中保存 Endpoint 和 API Key');
           assertEndpointTransport(settings);
         }
         payload.config = {
-          provider: settings.director_provider,
-          base_url: settings.director_provider === 'compatible' ? settings.endpoint : settings.ollama_endpoint,
+          provider: kind === 'voice' ? 'ollama' : settings.director_provider,
+          base_url: kind === 'voice' ? settings.ollama_endpoint : settings.director_provider === 'compatible' ? settings.endpoint : settings.ollama_endpoint,
           model: settings.director_model,
           instance_id: settings.instance_id,
           text_api: settings.text_api,
@@ -1092,7 +1102,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
       await writeFile(input, JSON.stringify(payload), 'utf8');
       await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
       await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
-      const python = path.join(repoRoot, '.venv', 'Scripts', 'python.exe');
+      const python = workerPython(repoRoot);
       const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
       const child = launchWorker
         ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
@@ -1163,11 +1173,61 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, launc
   app.get('/api/jobs/:id', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
-      const status = JSON.parse(await readFile(path.join(jobRoot, id, 'status.json'), 'utf8'));
+      const jobDir = path.join(jobRoot, id);
+      const statusFile = path.join(jobDir, 'status.json');
+      const [status, statusInfo] = await Promise.all([
+        readFile(statusFile, 'utf8').then(JSON.parse),
+        stat(statusFile),
+      ]);
+      let inputInfo = statusInfo;
+      try { inputInfo = await stat(path.join(jobDir, 'input.json')); } catch {}
       if (['complete', 'error'].includes(status.phase) && activeJob?.jobId === id) await clearActiveJob(id);
       let result;
-      try { result = JSON.parse(await readFile(path.join(jobRoot, id, 'result.json'), 'utf8')); } catch {}
-      return { jobId: id, ...status, result };
+      try { result = JSON.parse(await readFile(path.join(jobDir, 'result.json'), 'utf8')); } catch {}
+      const telemetry = {
+        observedAt: new Date().toISOString(),
+        startedAt: inputInfo.mtime.toISOString(),
+        statusUpdatedAt: statusInfo.mtime.toISOString(),
+        workerAlive: false,
+      };
+      if (activeJob?.jobId === id && Number.isSafeInteger(activeJob.pid) && activeJob.pid > 0) {
+        try { process.kill(activeJob.pid, 0); telemetry.workerAlive = true; } catch {}
+      }
+      if (activeJob?.jobId === id && activeJob.kind === 'voice') {
+        try {
+          const runtimeState = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', 'voice-design-runtime', 'state.json'), 'utf8'));
+          const runtimePid = Number(runtimeState.pid);
+          let processAlive = false;
+          try { process.kill(runtimePid, 0); processAlive = true; } catch {}
+          const voiceRuntime = {
+            processAlive,
+            pid: runtimePid,
+            phase: String(runtimeState.phase || 'unknown'),
+            modelLoaded: Boolean(runtimeState.model_loaded),
+            startedAt: Number.isFinite(Number(runtimeState.started_at)) ? new Date(Number(runtimeState.started_at) * 1000).toISOString() : undefined,
+          };
+          if (process.platform !== 'win32' && processAlive) {
+            try {
+              const io = await readFile(`/proc/${runtimePid}/io`, 'utf8');
+              voiceRuntime.readBytes = Number(io.match(/^read_bytes:\s*(\d+)/m)?.[1] || 0);
+            } catch {}
+            try {
+              const processStatus = await readFile(`/proc/${runtimePid}/status`, 'utf8');
+              voiceRuntime.rssBytes = Number(processStatus.match(/^VmRSS:\s*(\d+)\s+kB/m)?.[1] || 0) * 1024;
+            } catch {}
+          }
+          try {
+            const modelRoot = path.join(repoRoot, 'checkpoints', 'Qwen3-TTS-12Hz-1.7B-VoiceDesign');
+            const modelFiles = await Promise.all([
+              stat(path.join(modelRoot, 'model.safetensors')),
+              stat(path.join(modelRoot, 'speech_tokenizer', 'model.safetensors')),
+            ]);
+            voiceRuntime.modelBytes = modelFiles.reduce((total, item) => total + item.size, 0);
+          } catch {}
+          telemetry.voiceRuntime = voiceRuntime;
+        } catch {}
+      }
+      return { jobId: id, ...status, telemetry, result };
     } catch { return reply.code(404).send({ error: '任务不存在' }); }
   });
   app.get('/api/projects/:id/render-file/:render/:kind', async (request, reply) => {

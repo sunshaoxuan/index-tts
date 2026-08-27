@@ -377,6 +377,8 @@ body * { box-shadow: none !important; }
 .job-progress-detail { margin-top: 14px; display: flex; justify-content: space-between; gap: 24px; }
 .job-progress-detail .ant-typography { color: var(--cream) !important; font-size: 12px; font-weight: 500; }
 .job-progress-detail .anticon { margin-right: 6px; }
+.job-progress-observation { margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(255, 237, 215, .32); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; }
+.job-progress-observation .ant-typography { color: rgba(255, 237, 215, .78) !important; font-size: 11px; font-weight: 450; text-transform: none; }
 .job-result { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--cork); }
 .job-result .ant-typography { color: var(--cream) !important; font-weight: 500; }
 
@@ -725,6 +727,7 @@ body * { box-shadow: none !important; }
   .job-progress-head strong { font-size: 18px; }
   .job-progress-head b { font-size: 32px; }
   .job-progress-detail { display: grid; gap: 8px; }
+  .job-progress-observation { display: grid; }
   .source-grid { grid-template-columns: 1fr; }
   .role-editor-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; padding-bottom: 12px; }
   .role-editor-modal .ant-modal-body { max-height: calc(100svh - 154px); padding: 18px; }

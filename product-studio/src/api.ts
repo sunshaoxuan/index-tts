@@ -23,6 +23,21 @@ export interface RenderInfo {
   stale?: boolean; staleAt?: string; staleReasons?: string[];
 }
 
+export interface JobTelemetry {
+  observedAt: string;
+  startedAt: string;
+  statusUpdatedAt: string;
+  workerAlive: boolean;
+  voiceRuntime?: {
+    processAlive: boolean; pid: number; phase: string; modelLoaded: boolean; startedAt?: string;
+    readBytes?: number; rssBytes?: number; modelBytes?: number;
+  };
+}
+
+export interface JobStatus {
+  phase: string; fraction: number; message: string; telemetry?: JobTelemetry;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
   const body = await response.json();
@@ -56,5 +71,5 @@ export const api = {
   voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),
   expandCharacterProfile: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number }) => request<{ profile: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/expand-profile`, { method: 'POST', body: JSON.stringify(draft) }),
   generateCharacterPortrait: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number; portraitStyle: string; portraitPrompt?: string }) => request<{ portraitUrl: string; portraitPrompt: string; portraitStyle: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/portrait`, { method: 'POST', body: JSON.stringify(draft) }),
-  job: (id: string) => request<{ phase: string; fraction: number; message: string }>(`/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string) => request<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
 };

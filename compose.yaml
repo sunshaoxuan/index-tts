@@ -1,0 +1,49 @@
+name: indextts25
+
+services:
+  studio:
+    image: indextts25-product-studio:1.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: indextts25-product-studio
+    restart: unless-stopped
+    init: true
+    ports:
+      - "7864:7864"
+    environment:
+      INDEXTTS_OLLAMA_ENDPOINT: http://host.docker.internal:11434
+      INDEXTTS_PYTHON: /app/.venv/bin/python
+      INDEXTTS_VOICE_PYTHON: /opt/voice-venv/bin/python
+      PYTHONUTF8: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ./checkpoints
+        target: /app/checkpoints
+      - type: volume
+        source: qwen-voice-design-model
+        target: /app/checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+      - type: bind
+        source: ./outputs
+        target: /app/outputs
+      - type: bind
+        source: ./runtime-output
+        target: /app/runtime-output
+      - type: bind
+        source: ./artifacts
+        target: /app/artifacts
+    shm_size: "8gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  qwen-voice-design-model:
+    name: indextts25-qwen-voice-design-model
+    external: true

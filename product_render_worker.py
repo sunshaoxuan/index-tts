@@ -12,6 +12,7 @@ from typing import Any
 from voice_design_daemon_client import release_voice_design_model
 from render_daemon_client import enqueue_render_request, ensure_render_daemon, read_render_state
 from voice_design_daemon_client import process_alive
+from runtime_python import main_python
 
 
 MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024**3
@@ -177,7 +178,7 @@ def main() -> int:
     if request.get("cache_only"):
         execute_render_request(request, result_path, status_path, RenderRuntime())
         return 0
-    python = root / ".venv" / "Scripts" / "python.exe"
+    python = main_python(root)
     runtime = ensure_render_daemon(root, python)
     warm = bool(runtime.get("model_loaded"))
     write_json(status_path, {"phase": "model_ready" if warm else "runtime_ready", "fraction": 0.01, "message": "正在复用已驻留的 IndexTTS 2.5" if warm else "IndexTTS 持久运行时已就绪，正在首次加载模型"})

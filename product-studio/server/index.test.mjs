@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildApp, wavDurationSeconds } from './index.mjs';
+import { buildApp, wavDurationSeconds, workerPython } from './index.mjs';
+
+test('selects a platform appropriate worker interpreter', () => {
+  assert.equal(workerPython('/srv/index-tts', 'linux'), 'python3');
+  assert.equal(workerPython('C:\\IndexTTS', 'win32'), path.join('C:\\IndexTTS', '.venv', 'Scripts', 'python.exe'));
+});
 
 function pcmWav(durationSeconds, sampleRate = 8000) {
   const dataSize = Math.round(durationSeconds * sampleRate * 2);
@@ -867,6 +872,12 @@ test('restores a running worker after the server is rebuilt', async () => {
     fraction: 0.25,
     message: '正在生成角色音色',
   });
+  const observed = (await app.inject(`/api/jobs/${jobId}`)).json();
+  assert.equal(observed.telemetry.workerAlive, true);
+  assert.match(observed.telemetry.observedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(observed.telemetry.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(observed.telemetry.statusUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(Date.now() - Date.parse(observed.telemetry.startedAt) < 60_000);
   assert.equal((await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project })).statusCode, 409);
 
   await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '角色音色生成完成' }));
