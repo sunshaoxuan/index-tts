@@ -250,8 +250,9 @@ function Studio() {
     if (!section) return;
     const updateVisibility = () => {
       const workspaceVisible = isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight);
-      setProjectActionsExpanded(expanded => nextProjectActionsExpanded(projectWorkspaceVisibleRef.current, workspaceVisible, expanded));
+      const wasWorkspaceVisible = projectWorkspaceVisibleRef.current;
       projectWorkspaceVisibleRef.current = workspaceVisible;
+      setProjectActionsExpanded(expanded => nextProjectActionsExpanded(wasWorkspaceVisible, workspaceVisible, expanded));
     };
     updateVisibility();
     window.addEventListener('scroll', updateVisibility, { passive: true });
