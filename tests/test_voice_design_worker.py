@@ -68,16 +68,20 @@ def test_persisted_natural_candidate_is_remeasured_before_acceptance(tmp_path, m
 
 
 def test_pitch_retry_instruction_changes_natural_direction_without_electronic_processing():
-    initial = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, None, "male", 85.0, 180.0)
-    low = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 111.8, "male", 85.0, 180.0)
-    high = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 168.0, "male", 85.0, 180.0)
+    base = "人物小传：很长的背景。声音导演：略带紧张的男声。角色年龄设定：约 40 岁。表达节奏：自然表达。吐字清晰。"
+    initial = worker.natural_pitch_retry_instruction(base, 147.0, None, "male", 40, 85.0, 180.0)
+    low = worker.natural_pitch_retry_instruction(base, 147.0, 111.8, "male", 40, 85.0, 180.0)
+    high = worker.natural_pitch_retry_instruction(base, 147.0, 168.0, "male", 40, 85.0, 180.0)
 
     assert "明确男高音和较高日常说话音域" in initial
     assert "基频中位数接近 147.0 Hz" in initial
+    assert initial.index("基频中位数接近 147.0 Hz") < initial.index("人物小传")
     assert "提高到约 147.0 Hz" in low
     assert "降低到约 147.0 Hz" in high
     assert "禁止电子变调" in low
     assert "回声" in low
+    assert "很长的背景" not in low
+    assert "略带紧张的男声" in low
 
 
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
@@ -290,6 +294,45 @@ def test_voice_design_worker_passes_per_role_native_sampling_parameters(tmp_path
     assert calls[0]["subtalker_top_k"] == 66
     assert calls[0]["temperature"] == 1.2
     assert calls[0]["max_new_tokens"] == 3072
+
+
+def test_targeted_pitch_retry_uses_focused_prompt_exploration_and_audited_seed_offset(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            calls.append(kwargs)
+            frequency = 110 if len(calls) == 1 else 147
+            timeline = np.arange(24000, dtype=np.float32) / 24000
+            return [0.2 * np.sin(2 * np.pi * frequency * timeline)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    result = worker.generate_voice_design({
+        "jobs": [{
+            "role_id": "role_011", "name": "松浦勇", "filename": "matsuura.wav", "text": "测试",
+            "language": "Chinese", "instruct": "人物小传：很长的背景。声音导演：略带紧张的男声。角色年龄设定：约 40 岁。表达节奏：自然表达。吐字清晰。",
+            "expected_gender": "male", "character_age": 40, "pitch_min_hz": 85, "pitch_max_hz": 180,
+            "pitch_target_hz": 147, "voice_generation": {"candidate_count": 1, "top_k": 50, "top_p": 0.95, "temperature": 0.85},
+        }],
+        "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir), "gender_max_attempts": 2,
+    }, tmp_path / "result.json", tmp_path / "status.json")
+
+    assert result["generated"][0]["valid_candidate_count"] == 1
+    assert [item["seed"] for item in result["generated"][0]["candidate_metrics"]] == [42, 142]
+    assert calls[0]["temperature"] == 0.85
+    assert calls[1]["temperature"] == 1.05
+    assert calls[1]["top_k"] == 100
+    assert calls[1]["top_p"] == 0.98
+    assert "很长的背景" not in calls[1]["instruct"]
+    assert "略带紧张的男声" in calls[1]["instruct"]
 
 
 def test_voice_design_runtime_rejects_missing_model_files_before_import(tmp_path, monkeypatch):

@@ -104,11 +104,13 @@ def test_voice_registration_is_idempotent_and_keeps_generation_conditions(tmp_pa
     calibrated_v3 = {**job, "pitch_calibration_version": 3}
     natural_gate_v4 = {**job, "pitch_calibration_version": 4}
     natural_profile_v5 = {**job, "pitch_calibration_version": 5}
+    focused_retry_v6 = {**job, "pitch_calibration_version": 6}
     assert voice_signature(job, model="voice-model", seed=42) != voice_signature(calibrated_v1, model="voice-model", seed=42)
     assert voice_signature(calibrated_v1, model="voice-model", seed=42) != voice_signature(calibrated_v2, model="voice-model", seed=42)
     assert voice_signature(calibrated_v2, model="voice-model", seed=42) != voice_signature(calibrated_v3, model="voice-model", seed=42)
     assert voice_signature(calibrated_v3, model="voice-model", seed=42) != voice_signature(natural_gate_v4, model="voice-model", seed=42)
     assert voice_signature(natural_gate_v4, model="voice-model", seed=42) != voice_signature(natural_profile_v5, model="voice-model", seed=42)
+    assert voice_signature(natural_profile_v5, model="voice-model", seed=42) != voice_signature(focused_retry_v6, model="voice-model", seed=42)
 
 
 def test_explicit_gender_voice_cache_requires_verification_metadata(tmp_path):

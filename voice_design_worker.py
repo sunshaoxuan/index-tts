@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-PITCH_CALIBRATION_VERSION = 5
+PITCH_CALIBRATION_VERSION = 6
 PITCH_ANALYSIS_PACKAGE_VERSIONS = {
     "librosa": "0.10.2.post1",
     "llvmlite": "0.46.0",
@@ -84,6 +84,7 @@ def natural_pitch_retry_instruction(
     target_pitch: float | None,
     previous_pitch: float | None,
     expected_gender: str = "unspecified",
+    character_age: int | None = None,
     pitch_min_hz: float | None = None,
     pitch_max_hz: float | None = None,
 ) -> str:
@@ -105,18 +106,37 @@ def natural_pitch_retry_instruction(
             profile = "采用该年龄和性别自然声区中的较低音域，发声松弛稳实，保持真实声带质感和自然共鸣。"
         else:
             profile = "采用该年龄和性别自然声区中的中间音域，保持真实声带质感和自然共鸣。"
+    identity = (
+        f"首要声音身份：必须由约 {character_age} 岁"
+        + ("男性" if expected_gender == "male" else "女性" if expected_gender == "female" else "角色")
+        + "自然发声。"
+        if character_age is not None else "首要要求：使用真实自然人声。"
+    )
     natural_target = (
-        f"{base_instruction}\n{profile}整句自然发声的基频中位数接近 {target_pitch:.1f} Hz。"
+        f"{identity}{profile}整句自然发声的基频中位数接近 {target_pitch:.1f} Hz。"
         "禁止电子变调、假声、叠音、回声、空洞共鸣和不自然的音色扭曲。"
     )
     if previous_pitch is None:
-        return natural_target
+        return f"{natural_target}\n补充角色约束：{base_instruction}"
     tolerance = pitch_target_tolerance_hz(target_pitch)
     if pitch_target_matches(previous_pitch, target_pitch, tolerance):
         return natural_target
     direction = "提高" if previous_pitch < target_pitch else "降低"
+    voice_director = ""
+    if "声音导演：" in base_instruction:
+        voice_director = base_instruction.split("声音导演：", 1)[1].split("角色年龄设定：", 1)[0].strip()
+    rhythm = ""
+    if "表达节奏：" in base_instruction:
+        rhythm = base_instruction.split("表达节奏：", 1)[1].split("吐字清晰", 1)[0].strip()
+    concise_role = "".join(
+        part for part in (
+            f"声音导演：{voice_director}" if voice_director else "",
+            f"表达节奏：{rhythm}" if rhythm else "",
+            "吐字清晰，干声，无背景音乐，无环境噪声。",
+        ) if part
+    )
     return (
-        f"{natural_target}\n"
+        f"{natural_target}{concise_role}"
         f"上一个自然候选的实测基频中位数为 {previous_pitch:.1f} Hz。请在保持同一角色年龄、性别和自然音色身份的前提下，"
         f"将本次自然发声的基频中位数{direction}到约 {target_pitch:.1f} Hz。使用真实自然声线、自然共鸣和自然韵律。"
     )
@@ -279,7 +299,7 @@ def generate_voice_design(
         generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
         requested_candidates = max(1, min(6, int(generation.get("candidate_count", 1))))
         if expected_gender in {"female", "male"} or target_pitch is not None:
-            default_budget = requested_candidates * (6 if target_pitch is not None else 3)
+            default_budget = requested_candidates * (12 if target_pitch is not None else 3)
             configured_budget = int(payload.get("gender_max_attempts", default_budget))
             max_attempts = max(requested_candidates, min(36, configured_budget))
         else:
@@ -290,7 +310,7 @@ def generate_voice_design(
         valid_candidate_count = 0
         evaluate_all_candidates = max_attempts > 1
         for attempt in range(max_attempts):
-            candidate_seed = job_seed + attempt
+            candidate_seed = job_seed if attempt == 0 or target_pitch is None else job_seed + 99 + attempt
             torch.manual_seed(candidate_seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(candidate_seed)
@@ -312,17 +332,17 @@ def generate_voice_design(
                 text=str(job["text"]),
                 language=str(job.get("language") or "Auto"),
                 instruct=natural_pitch_retry_instruction(
-                    str(job["instruct"]), target_pitch, best_attempt_pitch, expected_gender, pitch_min_hz, pitch_max_hz
+                    str(job["instruct"]), target_pitch, best_attempt_pitch, expected_gender, character_age, pitch_min_hz, pitch_max_hz
                 ),
                 do_sample=bool(generation.get("do_sample", True)),
-                top_k=int(generation.get("top_k", 50)),
-                top_p=float(generation.get("top_p", 0.95)),
-                temperature=float(generation.get("temperature", 0.85)),
+                top_k=max(int(generation.get("top_k", 50)), 100) if attempt and target_pitch is not None else int(generation.get("top_k", 50)),
+                top_p=max(float(generation.get("top_p", 0.95)), 0.98) if attempt and target_pitch is not None else float(generation.get("top_p", 0.95)),
+                temperature=max(float(generation.get("temperature", 0.85)), 1.05) if attempt and target_pitch is not None else float(generation.get("temperature", 0.85)),
                 repetition_penalty=float(generation.get("repetition_penalty", 1.05)),
                 subtalker_dosample=bool(generation.get("subtalker_dosample", True)),
-                subtalker_top_k=int(generation.get("subtalker_top_k", 50)),
-                subtalker_top_p=float(generation.get("subtalker_top_p", 0.95)),
-                subtalker_temperature=float(generation.get("subtalker_temperature", 0.85)),
+                subtalker_top_k=max(int(generation.get("subtalker_top_k", 50)), 100) if attempt and target_pitch is not None else int(generation.get("subtalker_top_k", 50)),
+                subtalker_top_p=max(float(generation.get("subtalker_top_p", 0.95)), 0.98) if attempt and target_pitch is not None else float(generation.get("subtalker_top_p", 0.95)),
+                subtalker_temperature=max(float(generation.get("subtalker_temperature", 0.85)), 1.05) if attempt and target_pitch is not None else float(generation.get("subtalker_temperature", 0.85)),
                 max_new_tokens=int(generation.get("max_new_tokens", 2048)),
             )
             candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
