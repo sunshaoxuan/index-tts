@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.revision=${APP_REVISION}
 
 COPY --from=uv /uv /tmp/uv
 RUN --mount=type=cache,target=/root/.cache/uv \
-    /tmp/uv pip install --python /opt/voice-venv/bin/python \
+    /tmp/uv pip install --no-config --python /opt/voice-venv/bin/python \
       librosa==0.10.2.post1 llvmlite==0.46.0 numba==0.63.0 numpy==2.2.6 \
       scipy==1.16.2 soundfile==0.13.1 soxr==1.0.0 \
     && rm /tmp/uv
