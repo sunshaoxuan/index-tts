@@ -1899,7 +1899,7 @@ def build_voice_design_jobs(
             audition_text = child_audition_text(language, age, expected_gender)
         pitch_constraint = (
             f"角色年龄设定：约 {age} 岁。建议基频区间：{pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz；"
-            f"目标基频中位数约 {pitch_target_hz:.0f} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。"
+            f"目标基频中位数约 {pitch_target_hz:.0f} Hz；系统会在保留角色年龄与声音身份门禁的前提下校准并复测基频。"
             if pitch_min_hz > 0 and pitch_max_hz > pitch_min_hz and pitch_min_hz <= pitch_target_hz <= pitch_max_hz
             else f"角色年龄设定：约 {age} 岁。"
         )
@@ -1950,6 +1950,7 @@ def build_voice_design_jobs(
                 "pitch_min_hz": pitch_min_hz or None,
                 "pitch_max_hz": pitch_max_hz or None,
                 "pitch_target_hz": pitch_target_hz or None,
+                "pitch_calibration_version": 1,
                 "effective_guidance_sources": [str(item.get("source_text") or "").strip() for item in role_guidance_assignments if str(item.get("source_text") or "").strip()],
                 "effective_guidance_instructions": [str(item.get("instruction") or "").strip() for item in role_guidance_assignments if str(item.get("instruction") or "").strip()],
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",

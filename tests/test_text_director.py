@@ -648,6 +648,8 @@ def test_voice_design_jobs_include_explicit_character_age_and_pitch_target():
     assert job["pitch_target_hz"] == 105
     assert "建议基频区间：85 至 180 Hz" in job["instruct"]
     assert "目标基频中位数约 105 Hz" in job["instruct"]
+    assert "校准并复测基频" in job["instruct"]
+    assert job["pitch_calibration_version"] == 1
     assert "年龄听感强约束" in job["instruct"]
     assert "声音重量非常厚重" in job["instruct"]
     assert "音色亮度偏暗" in job["instruct"]

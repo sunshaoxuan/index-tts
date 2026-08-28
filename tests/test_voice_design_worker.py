@@ -29,6 +29,23 @@ def test_pitch_score_prioritizes_a_gender_matched_candidate_before_target_distan
     assert worker.gender_pitch_score("male", 180.0, 220.0) > worker.gender_pitch_score("male", 220.0, 220.0)
 
 
+def test_pitch_calibration_moves_audio_into_the_user_target_tolerance():
+    sample_rate = 24000
+    timeline = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate
+    original = 0.2 * np.sin(2 * np.pi * 107 * timeline)
+    raw_pitch = worker.estimate_median_pitch(original, sample_rate)
+
+    calibrated, measured, semitones, matched = worker.calibrate_pitch_to_target(
+        original, sample_rate, raw_pitch, 147.0
+    )
+
+    assert matched is True
+    assert semitones > 5
+    assert worker.pitch_target_matches(measured, 147.0)
+    assert abs(float(measured) - 147.0) <= worker.pitch_target_tolerance_hz(147.0)
+    assert len(calibrated) == len(original)
+
+
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     calls = []
 
@@ -166,7 +183,9 @@ def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp
     assert len(generated["candidate_metrics"]) == 3
     assert sum(item["selected"] for item in generated["candidate_metrics"]) == 0
     assert sum(item["recommended"] for item in generated["candidate_metrics"]) == 1
-    assert generated["median_pitch_hz"] == generated["candidate_metrics"][1]["median_pitch_hz"]
+    assert worker.pitch_target_matches(generated["median_pitch_hz"], 100.0)
+    assert all(item["pitch_target_matched"] for item in generated["candidate_metrics"])
+    assert all(item["raw_median_pitch_hz"] is not None for item in generated["candidate_metrics"])
 
 
 def test_voice_design_runtime_reuses_one_loaded_model_for_later_requests(tmp_path, monkeypatch):
@@ -323,15 +342,28 @@ def test_product_registration_excludes_cross_gender_candidates():
     assert [metric["seed"] for metric in verified_candidate_metrics(item)] == [43]
 
 
+def test_product_registration_excludes_a_candidate_outside_the_requested_pitch_target():
+    item = {
+        "expected_gender": "male",
+        "pitch_target_hz": 147.0,
+        "candidate_metrics": [
+            {"seed": 42, "median_pitch_hz": 108.0, "gender_matched": True, "pitch_target_matched": False},
+            {"seed": 43, "median_pitch_hz": 145.0, "gender_matched": True, "pitch_target_matched": True},
+        ],
+    }
+    assert [metric["seed"] for metric in verified_candidate_metrics(item)] == [43]
+
+
 def test_product_registration_keeps_three_candidates_unselected_until_user_choice(tmp_path):
     store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
     metrics = []
     for offset, frequency in enumerate((218.0, 224.0, 231.0)):
         path = tmp_path / f"candidate-{offset + 1}.wav"
         path.write_bytes(b"RIFF")
-        metrics.append({"seed": 42 + offset, "median_pitch_hz": frequency, "gender_matched": True, "recommended": offset == 0, "selected": offset == 0, "path": str(path)})
+        metrics.append({"seed": 42 + offset, "raw_median_pitch_hz": frequency - 20, "median_pitch_hz": frequency, "pitch_delta_hz": abs(frequency - 224), "pitch_target_tolerance_hz": 10.0, "pitch_target_matched": True, "pitch_correction_semitones": 1.5, "pitch_correction_method": "librosa_phase_vocoder", "gender_matched": True, "recommended": offset == 0, "selected": offset == 0, "path": str(path)})
     item = {
         "role_id": "role_f", "name": "女性角色", "expected_gender": "female", "median_pitch_hz": 218.0,
+        "pitch_target_hz": 224.0, "pitch_calibration_version": 1, "pitch_verified": True,
         "generation_attempts": 3, "gender_verified": True, "candidate_metrics": metrics,
     }
     job = {"role_id": "role_f", "name": "女性角色", "language": "Chinese", "text": "测试", "instruct": "明确女性声音"}
@@ -342,6 +374,9 @@ def test_product_registration_keeps_three_candidates_unselected_until_user_choic
     assert len(registrations) == 3
     assert all(candidate["selected"] is False for candidate in candidates)
     assert all(candidate["gender_verified"] is True for candidate in candidates)
+    assert all(candidate["pitch_target_matched"] is True for candidate in candidates)
+    assert candidates[0]["raw_median_pitch_hz"] == 198.0
+    assert candidates[0]["pitch_correction_method"] == "librosa_phase_vocoder"
 
 
 def test_child_candidates_require_human_gender_identity_confirmation(tmp_path):

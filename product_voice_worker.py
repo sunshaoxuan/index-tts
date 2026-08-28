@@ -23,10 +23,13 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def verified_candidate_metrics(item: dict[str, Any]) -> list[dict[str, Any]]:
     explicit_gender = str(item.get("expected_gender")) in {"female", "male"}
+    target_required = item.get("pitch_target_hz") is not None
     return [
         metric
         for metric in item.get("candidate_metrics") or []
-        if isinstance(metric, dict) and (not explicit_gender or bool(metric.get("gender_matched")))
+        if isinstance(metric, dict)
+        and (not explicit_gender or bool(metric.get("gender_matched")))
+        and (not target_required or bool(metric.get("pitch_target_matched")))
     ]
 
 
@@ -46,6 +49,9 @@ def register_candidate_set(
         "age_band_verified": bool(item.get("age_band_verified", item.get("gender_verified"))),
         "gender_identity_verified": bool(item.get("gender_identity_verified", item.get("gender_verified"))),
         "gender_identity_method": str(item.get("gender_identity_method") or "legacy"),
+        "pitch_calibration_version": int(item.get("pitch_calibration_version") or 0),
+        "pitch_target_tolerance_hz": item.get("pitch_target_tolerance_hz"),
+        "pitch_verified": bool(item.get("pitch_verified", item.get("pitch_target_hz") is None)),
     }
     candidate_records: list[dict[str, Any]] = []
     registrations: list[dict[str, Any]] = []
@@ -59,13 +65,28 @@ def register_candidate_set(
             "age_band_verified": bool(metric.get("age_band_verified", metric_verified)),
             "gender_identity_verified": bool(metric.get("gender_identity_verified", metric_verified)),
             "gender_identity_method": str(metric.get("gender_identity_method") or "legacy"),
+            "raw_median_pitch_hz": metric.get("raw_median_pitch_hz"),
+            "pitch_target_tolerance_hz": metric.get("pitch_target_tolerance_hz"),
+            "pitch_target_matched": bool(metric.get("pitch_target_matched", item.get("pitch_target_hz") is None)),
+            "pitch_correction_semitones": metric.get("pitch_correction_semitones"),
+            "pitch_correction_method": str(metric.get("pitch_correction_method") or "none"),
+            "pitch_calibration_version": int(item.get("pitch_calibration_version") or 0),
+            "pitch_verified": bool(metric.get("pitch_target_matched", item.get("pitch_target_hz") is None)),
         }
         metadata = store.register_voice(metric["path"], candidate_job, model=model, seed=int(metric["seed"]))
         candidate_records.append(
             {
                 "voice_id": metadata["voice_id"],
                 "seed": int(metric["seed"]),
+                "raw_median_pitch_hz": metric.get("raw_median_pitch_hz"),
                 "median_pitch_hz": metric.get("median_pitch_hz"),
+                "pitch_delta_hz": metric.get("pitch_delta_hz"),
+                "pitch_target_tolerance_hz": metric.get("pitch_target_tolerance_hz"),
+                "pitch_target_matched": bool(metric.get("pitch_target_matched", item.get("pitch_target_hz") is None)),
+                "pitch_correction_semitones": metric.get("pitch_correction_semitones"),
+                "pitch_correction_method": str(metric.get("pitch_correction_method") or "none"),
+                "pitch_calibration_version": int(item.get("pitch_calibration_version") or 0),
+                "pitch_verified": bool(metric.get("pitch_target_matched", item.get("pitch_target_hz") is None)),
                 "selected": False,
                 "gender_verified": metric_verified,
                 "age_band_verified": bool(metric.get("age_band_verified", metric_verified)),

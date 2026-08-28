@@ -1,5 +1,20 @@
 import { normalizeCharacterAsset } from './characterVoiceProfile.ts';
-import type { ProjectPayload, RoleRow } from './types.ts';
+import type { ProjectPayload, RoleRow, VoiceCandidate } from './types.ts';
+
+export function candidatePitchAuditLabel(candidate: VoiceCandidate): string {
+  const parts: string[] = [];
+  if (Number.isFinite(candidate.raw_median_pitch_hz)) parts.push(`原始 ${Number(candidate.raw_median_pitch_hz).toFixed(1)} Hz`);
+  if (Number.isFinite(candidate.pitch_correction_semitones) && Math.abs(Number(candidate.pitch_correction_semitones)) >= 0.005) {
+    const correction = Number(candidate.pitch_correction_semitones);
+    parts.push(`校准 ${correction > 0 ? '+' : ''}${correction.toFixed(2)} 半音`);
+  }
+  if (Number.isFinite(candidate.pitch_delta_hz) && Number.isFinite(candidate.pitch_target_tolerance_hz)) {
+    parts.push(`目标偏差 ${Number(candidate.pitch_delta_hz).toFixed(1)} Hz / 容差 ±${Number(candidate.pitch_target_tolerance_hz).toFixed(1)} Hz`);
+  }
+  if (candidate.pitch_target_matched === true) parts.push('目标校验通过');
+  if (candidate.pitch_target_matched === false) parts.push('目标校验未通过');
+  return parts.join(' · ');
+}
 
 export function candidateVerificationLabel(age: number, gender: string, candidate: { gender_verified?: boolean; age_band_verified?: boolean; gender_identity_verified?: boolean }): string {
   if (age < 13 && (gender === 'female' || gender === 'male')) {
@@ -16,7 +31,7 @@ export function applyVoiceCandidateSelection(project: ProjectPayload, roleId: st
   if (!currentRole) throw new Error(`角色不存在：${roleId}`);
   const asset = normalizeCharacterAsset(currentRole, project.character_assets?.[roleId]);
   const candidates = asset.voice_candidates ?? [];
-  if (!candidates.some(candidate => candidate.voice_id === voiceId && candidate.gender_verified !== false && candidate.age_band_verified !== false)) {
+  if (!candidates.some(candidate => candidate.voice_id === voiceId && candidate.gender_verified !== false && candidate.age_band_verified !== false && candidate.pitch_target_matched !== false)) {
     throw new Error(`角色 ${currentRole[1]} 的候选音色不存在或未通过校验`);
   }
   const roles = project.roles.map(row => row[0] === roleId

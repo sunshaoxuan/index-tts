@@ -132,6 +132,28 @@ function normalizePortraitStyle(value) {
   return Object.hasOwn(PORTRAIT_STYLE_PROMPTS, style) ? style : DEFAULT_PORTRAIT_STYLE;
 }
 
+function normalizeVoiceCandidate(item) {
+  const numeric = (key) => Number.isFinite(Number(item[key])) ? { [key]: Number(item[key]) } : {};
+  return {
+    voice_id: String(item.voice_id),
+    seed: Math.round(Number(item.seed) || 0),
+    ...numeric('raw_median_pitch_hz'),
+    ...numeric('median_pitch_hz'),
+    ...numeric('pitch_delta_hz'),
+    ...numeric('pitch_target_tolerance_hz'),
+    ...(typeof item.pitch_target_matched === 'boolean' ? { pitch_target_matched: item.pitch_target_matched } : {}),
+    ...numeric('pitch_correction_semitones'),
+    ...(item.pitch_correction_method ? { pitch_correction_method: String(item.pitch_correction_method) } : {}),
+    ...numeric('pitch_calibration_version'),
+    ...(typeof item.pitch_verified === 'boolean' ? { pitch_verified: item.pitch_verified } : {}),
+    selected: Boolean(item.selected),
+    ...(typeof item.gender_verified === 'boolean' ? { gender_verified: item.gender_verified } : {}),
+    ...(typeof item.age_band_verified === 'boolean' ? { age_band_verified: item.age_band_verified } : {}),
+    ...(typeof item.gender_identity_verified === 'boolean' ? { gender_identity_verified: item.gender_identity_verified } : {}),
+    ...(item.gender_identity_method ? { gender_identity_method: String(item.gender_identity_method) } : {}),
+  };
+}
+
 function normalizeCharacterAsset(role, source = {}) {
   const gender = ['female', 'male', 'unspecified'].includes(source.gender)
     ? source.gender
@@ -147,7 +169,7 @@ function normalizeCharacterAsset(role, source = {}) {
     audition_text: String(source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
     voice_traits: normalizeVoiceTraits(source.voice_traits, age),
     voice_generation: normalizeVoiceGeneration(source.voice_generation),
-    ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id && item?.gender_verified !== false).slice(0, 6).map(item => ({ voice_id: String(item.voice_id), seed: Math.round(Number(item.seed) || 0), ...(Number.isFinite(Number(item.median_pitch_hz)) ? { median_pitch_hz: Number(item.median_pitch_hz) } : {}), selected: Boolean(item.selected), ...(typeof item.gender_verified === 'boolean' ? { gender_verified: item.gender_verified } : {}), ...(typeof item.age_band_verified === 'boolean' ? { age_band_verified: item.age_band_verified } : {}), ...(typeof item.gender_identity_verified === 'boolean' ? { gender_identity_verified: item.gender_identity_verified } : {}), ...(item.gender_identity_method ? { gender_identity_method: String(item.gender_identity_method) } : {}) })) } : {}),
+    ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id && item?.gender_verified !== false && item?.pitch_target_matched !== false).slice(0, 6).map(normalizeVoiceCandidate) } : {}),
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
     portrait_style: normalizePortraitStyle(source.portrait_style),

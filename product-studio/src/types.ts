@@ -39,7 +39,15 @@ export interface VoiceGenerationSettings {
 export interface VoiceCandidate {
   voice_id: string;
   seed: number;
+  raw_median_pitch_hz?: number;
   median_pitch_hz?: number;
+  pitch_delta_hz?: number;
+  pitch_target_tolerance_hz?: number;
+  pitch_target_matched?: boolean;
+  pitch_correction_semitones?: number;
+  pitch_correction_method?: 'librosa_phase_vocoder' | 'none';
+  pitch_calibration_version?: number;
+  pitch_verified?: boolean;
   selected: boolean;
   gender_verified?: boolean;
   age_band_verified?: boolean;

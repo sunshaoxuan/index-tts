@@ -112,6 +112,7 @@ def voice_signature(job: dict[str, Any], *, model: str, seed: int) -> str:
         "model": str(model),
         "seed": int(seed),
         "voice_generation": job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {},
+        "pitch_calibration_version": int(job.get("pitch_calibration_version") or 0),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -260,6 +261,13 @@ class NovelProjectStore:
             "pitch_max_hz": job.get("pitch_max_hz"),
             "pitch_target_hz": job.get("pitch_target_hz"),
             "median_pitch_hz": job.get("median_pitch_hz"),
+            "raw_median_pitch_hz": job.get("raw_median_pitch_hz"),
+            "pitch_target_tolerance_hz": job.get("pitch_target_tolerance_hz"),
+            "pitch_target_matched": bool(job.get("pitch_target_matched", job.get("pitch_target_hz") is None)),
+            "pitch_correction_semitones": job.get("pitch_correction_semitones"),
+            "pitch_correction_method": str(job.get("pitch_correction_method") or "none"),
+            "pitch_calibration_version": int(job.get("pitch_calibration_version") or 0),
+            "pitch_verified": bool(job.get("pitch_verified", job.get("pitch_target_hz") is None)),
             "generation_attempts": job.get("generation_attempts"),
             "candidate_metrics": job.get("candidate_metrics") if isinstance(job.get("candidate_metrics"), list) else [],
             "voice_traits": job.get("voice_traits") if isinstance(job.get("voice_traits"), dict) else {},

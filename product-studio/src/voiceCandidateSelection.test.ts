@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyVoiceCandidateSelection, candidateVerificationLabel, pendingVoiceSelectionRoleIds } from './voiceCandidateSelection.ts';
+import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerificationLabel, pendingVoiceSelectionRoleIds } from './voiceCandidateSelection.ts';
 import type { ProjectPayload } from './types.ts';
 
 const project = {
@@ -40,4 +40,18 @@ test('does not ask for a new decision when a stable role voice already exists', 
   const stable = structuredClone(project);
   stable.roles[0][5] = 'voice-stable';
   assert.deepEqual(pendingVoiceSelectionRoleIds(stable), []);
+});
+
+test('shows auditable target pitch calibration details', () => {
+  assert.equal(candidatePitchAuditLabel({
+    voice_id: 'voice-calibrated', seed: 42, raw_median_pitch_hz: 107.89, median_pitch_hz: 146.2,
+    pitch_delta_hz: 0.8, pitch_target_tolerance_hz: 7.35, pitch_target_matched: true,
+    pitch_correction_semitones: 5.274, pitch_correction_method: 'librosa_phase_vocoder', selected: false,
+  }), '原始 107.9 Hz · 校准 +5.27 半音 · 目标偏差 0.8 Hz / 容差 ±7.3 Hz · 目标校验通过');
+});
+
+test('rejects a candidate that failed the target pitch gate', () => {
+  const invalid = structuredClone(project);
+  invalid.character_assets.role_child.voice_candidates![0].pitch_target_matched = false;
+  assert.throws(() => applyVoiceCandidateSelection(invalid, 'role_child', 'voice-a'), /不存在或未通过校验/);
 });

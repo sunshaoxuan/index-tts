@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
+PITCH_CALIBRATION_VERSION = 1
+
+
 def estimate_median_pitch(wav: Any, sample_rate: int) -> float | None:
     import librosa
     import numpy as np
@@ -24,6 +27,68 @@ def estimate_median_pitch(wav: Any, sample_rate: int) -> float | None:
     if voiced.size < 6:
         return None
     return round(float(np.median(voiced)), 2)
+
+
+def pitch_target_tolerance_hz(target_pitch: float) -> float:
+    return round(max(3.0, min(10.0, float(target_pitch) * 0.05)), 2)
+
+
+def pitch_target_matches(median_pitch: float | None, target_pitch: float | None, tolerance_hz: float | None = None) -> bool:
+    if target_pitch is None:
+        return True
+    if median_pitch is None:
+        return False
+    tolerance = tolerance_hz if tolerance_hz is not None else pitch_target_tolerance_hz(target_pitch)
+    return abs(float(median_pitch) - float(target_pitch)) <= float(tolerance)
+
+
+def calibrate_pitch_to_target(
+    wav: Any,
+    sample_rate: int,
+    median_pitch: float | None,
+    target_pitch: float | None,
+    *,
+    max_semitones: float = 12.0,
+) -> tuple[Any, float | None, float, bool]:
+    import librosa
+    import numpy as np
+
+    samples = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if target_pitch is None:
+        return samples, median_pitch, 0.0, True
+    tolerance = pitch_target_tolerance_hz(target_pitch)
+    if pitch_target_matches(median_pitch, target_pitch, tolerance):
+        return samples, median_pitch, 0.0, True
+    if median_pitch is None or median_pitch <= 0 or target_pitch <= 0:
+        return samples, median_pitch, 0.0, False
+
+    corrected = samples
+    corrected_pitch = float(median_pitch)
+    total_semitones = 0.0
+    for _ in range(2):
+        if pitch_target_matches(corrected_pitch, target_pitch, tolerance):
+            break
+        adjustment = 12.0 * float(np.log2(float(target_pitch) / corrected_pitch))
+        if abs(total_semitones + adjustment) > max_semitones:
+            return samples, median_pitch, 0.0, False
+        corrected = librosa.effects.pitch_shift(
+            corrected,
+            sr=sample_rate,
+            n_steps=adjustment,
+            bins_per_octave=12,
+            res_type="soxr_hq",
+        ).astype(np.float32, copy=False)
+        total_semitones += adjustment
+        corrected_pitch = estimate_median_pitch(corrected, sample_rate) or 0.0
+        if corrected_pitch <= 0:
+            return samples, median_pitch, 0.0, False
+
+    original_peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    corrected_peak = float(np.max(np.abs(corrected))) if corrected.size else 0.0
+    if original_peak > 0 and corrected_peak > original_peak:
+        corrected = corrected * (original_peak / corrected_peak)
+    corrected_pitch = estimate_median_pitch(corrected, sample_rate)
+    return corrected, corrected_pitch, round(total_semitones, 4), pitch_target_matches(corrected_pitch, target_pitch, tolerance)
 
 
 def gender_pitch_matches(
@@ -181,7 +246,7 @@ def generate_voice_design(
         character_age = int(job["character_age"]) if job.get("character_age") is not None else None
         generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
         requested_candidates = max(1, min(6, int(generation.get("candidate_count", 1))))
-        if expected_gender in {"female", "male"}:
+        if expected_gender in {"female", "male"} or target_pitch is not None:
             configured_budget = int(payload.get("gender_max_attempts", requested_candidates * 3))
             max_attempts = max(requested_candidates, min(18, configured_budget))
         else:
@@ -198,7 +263,7 @@ def generate_voice_design(
                 torch.cuda.manual_seed_all(candidate_seed)
             if attempt:
                 retry_message = (
-                    f"{job['name']} 正在评估年龄与频率候选 {attempt + 1}/{max_attempts}"
+                    f"{job['name']} 正在评估并校准频率候选 {attempt + 1}/{max_attempts}"
                     if evaluate_all_candidates
                     else f"{job['name']} 音色性别校验未通过，正在重试 {attempt + 1}/{max_attempts}"
                 )
@@ -225,21 +290,38 @@ def generate_voice_design(
                 subtalker_temperature=float(generation.get("subtalker_temperature", 0.85)),
                 max_new_tokens=int(generation.get("max_new_tokens", 2048)),
             )
+            candidate_wav = wavs[0]
+            raw_pitch = estimate_median_pitch(candidate_wav, sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
+            raw_gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(
+                expected_gender, raw_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
+            )
+            if raw_gender_matched:
+                candidate_wav, median_pitch, correction_semitones, target_matched = calibrate_pitch_to_target(
+                    candidate_wav, sample_rate, raw_pitch, target_pitch
+                )
+            else:
+                median_pitch, correction_semitones, target_matched = raw_pitch, 0.0, target_pitch is None
+            gender_matched = raw_gender_matched and (
+                expected_gender not in {"female", "male"}
+                or gender_pitch_matches(expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz)
+            )
             candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
-            sf.write(candidate_path, wavs[0], sample_rate)
-            median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
+            sf.write(candidate_path, candidate_wav, sample_rate)
             score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age, pitch_min_hz, pitch_max_hz)
             diagnostic_score = -abs(median_pitch - target_pitch) if median_pitch is not None and target_pitch is not None else float(median_pitch or float("-inf"))
             if diagnostic_score > best_attempt_score:
                 best_attempt_pitch, best_attempt_score = median_pitch, diagnostic_score
-            gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(
-                expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
-            )
+            accepted = gender_matched and target_matched
             candidate_metrics.append(
                 {
                     "seed": candidate_seed,
+                    "raw_median_pitch_hz": raw_pitch,
                     "median_pitch_hz": median_pitch,
                     "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
+                    "pitch_target_tolerance_hz": pitch_target_tolerance_hz(target_pitch) if target_pitch is not None else None,
+                    "pitch_target_matched": target_matched,
+                    "pitch_correction_semitones": correction_semitones,
+                    "pitch_correction_method": "librosa_phase_vocoder" if correction_semitones else "none",
                     "gender_matched": gender_matched,
                     "age_band_verified": gender_matched,
                     "gender_identity_verified": False if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else gender_matched,
@@ -249,26 +331,30 @@ def generate_voice_design(
                     "path": str(candidate_path),
                 }
             )
-            if gender_matched:
+            if accepted:
                 valid_candidate_count += 1
-            if gender_matched and (best_wav is None or score > best_score):
-                best_wav, best_sample_rate, best_pitch, best_score = wavs[0], sample_rate, median_pitch, score
+            if accepted and (best_wav is None or score > best_score):
+                best_wav, best_sample_rate, best_pitch, best_score = candidate_wav, sample_rate, median_pitch, score
                 for metric in candidate_metrics:
                     metric["recommended"] = False
                 candidate_metrics[-1]["recommended"] = True
             attempts_used = attempt + 1
             if valid_candidate_count >= requested_candidates:
                 break
-        if expected_gender in {"female", "male"} and valid_candidate_count < requested_candidates:
-            label = "女性" if expected_gender == "female" else "男性"
+        if valid_candidate_count < requested_candidates:
+            label = "女性" if expected_gender == "female" else "男性" if expected_gender == "male" else ""
             measured = "无法测量" if best_attempt_pitch is None else f"{best_attempt_pitch:.1f} Hz"
+            target_requirement = (
+                f"且进入目标 {target_pitch:.1f} Hz ± {pitch_target_tolerance_hz(target_pitch):.1f} Hz"
+                if target_pitch is not None else ""
+            )
             failures.append(
                 {
                     "role_id": str(job["role_id"]),
                     "name": str(job["name"]),
                     "error": (
                         f"{job['name']} 要求 {requested_candidates} 个{label}候选，连续 {attempts_used} 次生成后只有 "
-                        f"{valid_candidate_count} 个通过声学年龄与性别校验，最接近目标的尝试为 {measured}。"
+                        f"{valid_candidate_count} 个通过声学年龄与性别校验{target_requirement}，最接近目标的尝试为 {measured}。"
                     ),
                     "generation_attempts": attempts_used,
                     "requested_candidate_count": requested_candidates,
@@ -287,6 +373,9 @@ def generate_voice_design(
                 "expected_gender": expected_gender,
                 "median_pitch_hz": best_pitch,
                 "pitch_target_hz": target_pitch,
+                "pitch_target_tolerance_hz": pitch_target_tolerance_hz(target_pitch) if target_pitch is not None else None,
+                "pitch_calibration_version": PITCH_CALIBRATION_VERSION,
+                "pitch_verified": target_pitch is None or valid_candidate_count > 0,
                 "generation_attempts": attempts_used,
                 "requested_candidate_count": requested_candidates,
                 "valid_candidate_count": valid_candidate_count,
