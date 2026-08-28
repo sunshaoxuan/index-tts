@@ -3,6 +3,16 @@ import json
 import product_render_worker as worker
 
 
+def test_linux_available_memory_uses_reclaimable_memavailable():
+    meminfo = (
+        "MemTotal:       16372864 kB\n"
+        "MemFree:          248136 kB\n"
+        "MemAvailable:   11816328 kB\n"
+    )
+
+    assert worker.linux_memavailable_bytes(meminfo) == 11816328 * 1024
+
+
 def test_render_preparation_releases_voice_model_before_import(tmp_path, monkeypatch):
     status_path = tmp_path / "status.json"
     calls = []

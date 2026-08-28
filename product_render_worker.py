@@ -24,6 +24,17 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def linux_memavailable_bytes(meminfo: str) -> int | None:
+    for line in meminfo.splitlines():
+        if line.startswith("MemAvailable:"):
+            try:
+                available_kib = int(line.split()[1])
+            except (ValueError, IndexError):
+                return None
+            return available_kib * 1024 if available_kib > 0 else None
+    return None
+
+
 def available_memory_bytes() -> int | None:
     if os.name == "nt":
         import ctypes
@@ -46,6 +57,12 @@ def available_memory_bytes() -> int | None:
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return int(status.available_physical)
         return None
+    try:
+        available = linux_memavailable_bytes(Path("/proc/meminfo").read_text(encoding="utf-8"))
+        if available is not None:
+            return available
+    except OSError:
+        pass
     try:
         return int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
     except (AttributeError, OSError, ValueError):
