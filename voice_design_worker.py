@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-PITCH_CALIBRATION_VERSION = 1
+PITCH_CALIBRATION_VERSION = 2
 
 
 def estimate_median_pitch(wav: Any, sample_rate: int) -> float | None:

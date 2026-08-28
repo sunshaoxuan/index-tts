@@ -1950,7 +1950,7 @@ def build_voice_design_jobs(
                 "pitch_min_hz": pitch_min_hz or None,
                 "pitch_max_hz": pitch_max_hz or None,
                 "pitch_target_hz": pitch_target_hz or None,
-                "pitch_calibration_version": 1,
+                "pitch_calibration_version": 2,
                 "effective_guidance_sources": [str(item.get("source_text") or "").strip() for item in role_guidance_assignments if str(item.get("source_text") or "").strip()],
                 "effective_guidance_instructions": [str(item.get("instruction") or "").strip() for item in role_guidance_assignments if str(item.get("instruction") or "").strip()],
                 "filename": f"ai-{_safe_name(role_id, 'role')}-{_safe_name(name, 'voice')}.wav",
