@@ -36,7 +36,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       --index-url https://download.pytorch.org/whl/cu128
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/voice-venv/bin/python qwen-tts==0.1.1 huggingface-hub
+    uv pip install --python /opt/voice-venv/bin/python \
+      qwen-tts==0.1.1 huggingface-hub \
+      librosa==0.10.2.post1 llvmlite==0.46.0 numba==0.63.0 numpy==2.2.6 \
+      scipy==1.16.2 soundfile==0.13.1 soxr==1.0.0
 
 FROM python:3.11-slim-bookworm
 

@@ -5,11 +5,34 @@ import gc
 import json
 import os
 import time
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 
-PITCH_CALIBRATION_VERSION = 2
+PITCH_CALIBRATION_VERSION = 3
+PITCH_ANALYSIS_PACKAGE_VERSIONS = {
+    "librosa": "0.10.2.post1",
+    "llvmlite": "0.46.0",
+    "numba": "0.63.0",
+    "numpy": "2.2.6",
+    "scipy": "1.16.2",
+    "soundfile": "0.13.1",
+    "soxr": "1.0.0",
+}
+
+
+def validate_pitch_analysis_runtime() -> dict[str, str]:
+    installed = {name: metadata.version(name) for name in PITCH_ANALYSIS_PACKAGE_VERSIONS}
+    mismatches = {
+        name: {"expected": expected, "actual": installed[name]}
+        for name, expected in PITCH_ANALYSIS_PACKAGE_VERSIONS.items()
+        if installed[name] != expected
+    }
+    if mismatches:
+        details = "，".join(f"{name} 需要 {item['expected']}，当前 {item['actual']}" for name, item in mismatches.items())
+        raise RuntimeError(f"基频分析依赖版本不一致：{details}")
+    return installed
 
 
 def estimate_median_pitch(wav: Any, sample_rate: int) -> float | None:
@@ -209,6 +232,7 @@ class VoiceDesignRuntime:
         return had_model
 
     def get_model(self, payload: dict[str, Any], status_path: Path) -> tuple[Any, Any, bool]:
+        validate_pitch_analysis_runtime()
         requested_model_dir = Path(payload["model_dir"]).resolve()
         required_paths = [requested_model_dir / "config.json", requested_model_dir / "model.safetensors", requested_model_dir / "speech_tokenizer"]
         missing = [str(path) for path in required_paths if not path.exists()]

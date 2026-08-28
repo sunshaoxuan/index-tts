@@ -46,6 +46,14 @@ def test_pitch_calibration_moves_audio_into_the_user_target_tolerance():
     assert len(calibrated) == len(original)
 
 
+def test_pitch_analysis_runtime_rejects_dependency_version_drift(monkeypatch):
+    expected = dict(worker.PITCH_ANALYSIS_PACKAGE_VERSIONS)
+    monkeypatch.setattr(worker.metadata, "version", lambda name: "0.11.0" if name == "librosa" else expected[name])
+
+    with pytest.raises(RuntimeError, match=r"librosa 需要 0\.10\.2\.post1，当前 0\.11\.0"):
+        worker.validate_pitch_analysis_runtime()
+
+
 def test_persisted_candidate_is_remeasured_and_recalibrated_before_acceptance(tmp_path, monkeypatch):
     sample_rate = 24000
     audio = np.zeros(sample_rate, dtype=np.float32)

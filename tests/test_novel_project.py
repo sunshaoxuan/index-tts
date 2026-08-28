@@ -101,8 +101,10 @@ def test_voice_registration_is_idempotent_and_keeps_generation_conditions(tmp_pa
     assert voice_signature(job, model="voice-model", seed=42) != voice_signature(exploratory, model="voice-model", seed=42)
     calibrated_v1 = {**job, "pitch_calibration_version": 1}
     calibrated_v2 = {**job, "pitch_calibration_version": 2}
+    calibrated_v3 = {**job, "pitch_calibration_version": 3}
     assert voice_signature(job, model="voice-model", seed=42) != voice_signature(calibrated_v1, model="voice-model", seed=42)
     assert voice_signature(calibrated_v1, model="voice-model", seed=42) != voice_signature(calibrated_v2, model="voice-model", seed=42)
+    assert voice_signature(calibrated_v2, model="voice-model", seed=42) != voice_signature(calibrated_v3, model="voice-model", seed=42)
 
 
 def test_explicit_gender_voice_cache_requires_verification_metadata(tmp_path):
