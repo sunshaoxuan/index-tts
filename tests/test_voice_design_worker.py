@@ -29,21 +29,19 @@ def test_pitch_score_prioritizes_a_gender_matched_candidate_before_target_distan
     assert worker.gender_pitch_score("male", 180.0, 220.0) > worker.gender_pitch_score("male", 220.0, 220.0)
 
 
-def test_pitch_calibration_moves_audio_into_the_user_target_tolerance():
+def test_natural_candidate_is_persisted_without_pitch_shifting(tmp_path):
     sample_rate = 24000
     timeline = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate
     original = 0.2 * np.sin(2 * np.pi * 107 * timeline)
-    raw_pitch = worker.estimate_median_pitch(original, sample_rate)
-
-    calibrated, measured, semitones, matched = worker.calibrate_pitch_to_target(
-        original, sample_rate, raw_pitch, 147.0
+    persisted, persisted_sample_rate, measured, matched = worker.persist_natural_candidate(
+        tmp_path / "candidate.wav", original, sample_rate, 147.0
     )
 
-    assert matched is True
-    assert semitones > 5
-    assert worker.pitch_target_matches(measured, 147.0)
-    assert abs(float(measured) - 147.0) <= worker.pitch_target_tolerance_hz(147.0)
-    assert len(calibrated) == len(original)
+    assert persisted_sample_rate == sample_rate
+    assert matched is False
+    assert measured == pytest.approx(107.0, abs=1.0)
+    assert len(persisted) == len(original)
+    assert np.max(np.abs(persisted - original)) < 0.0001
 
 
 def test_pitch_analysis_runtime_rejects_dependency_version_drift(monkeypatch):
@@ -54,28 +52,29 @@ def test_pitch_analysis_runtime_rejects_dependency_version_drift(monkeypatch):
         worker.validate_pitch_analysis_runtime()
 
 
-def test_persisted_candidate_is_remeasured_and_recalibrated_before_acceptance(tmp_path, monkeypatch):
+def test_persisted_natural_candidate_is_remeasured_before_acceptance(tmp_path, monkeypatch):
     sample_rate = 24000
     audio = np.zeros(sample_rate, dtype=np.float32)
-    measured_pitches = iter([157.83, 147.48])
-    recalibration_calls = []
+    monkeypatch.setattr(worker, "estimate_median_pitch", lambda *_args: 157.83)
 
-    monkeypatch.setattr(worker, "estimate_median_pitch", lambda *_args: next(measured_pitches))
-
-    def fake_recalibrate(wav, persisted_sample_rate, measured, target):
-        recalibration_calls.append((persisted_sample_rate, measured, target))
-        return wav, 147.48, -1.1804, True
-
-    monkeypatch.setattr(worker, "calibrate_pitch_to_target", fake_recalibrate)
-    persisted, measured, semitones, matched = worker.persist_calibrated_candidate(
-        tmp_path / "candidate.wav", audio, sample_rate, 147.0, 5.6121
+    persisted, persisted_sample_rate, measured, matched = worker.persist_natural_candidate(
+        tmp_path / "candidate.wav", audio, sample_rate, 147.0
     )
 
     assert len(persisted) == len(audio)
-    assert measured == 147.48
-    assert semitones == pytest.approx(4.4317)
-    assert matched is True
-    assert recalibration_calls == [(sample_rate, 157.83, 147.0)]
+    assert persisted_sample_rate == sample_rate
+    assert measured == 157.83
+    assert matched is False
+
+
+def test_pitch_retry_instruction_changes_natural_direction_without_electronic_processing():
+    low = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 111.8)
+    high = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 168.0)
+
+    assert "提高到约 147.0 Hz" in low
+    assert "降低到约 147.0 Hz" in high
+    assert "禁止电子变调" in low
+    assert "回声" in low
 
 
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
@@ -177,7 +176,7 @@ def test_voice_design_worker_retries_a_male_pitch_candidate_for_a_female_role(tm
 
 
 def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp_path, monkeypatch):
-    frequencies = [108, 101, 96]
+    frequencies = [103, 101, 96]
     calls = []
 
     class FakeModel:
@@ -326,7 +325,7 @@ def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():
 
 
 def test_worker_collects_requested_number_of_verified_female_candidates(tmp_path, monkeypatch):
-    frequencies = [110, 175, 193, 205, 218]
+    frequencies = [110, 175, 208, 217, 225]
     calls = []
 
     class FakeModel:
@@ -361,6 +360,8 @@ def test_worker_collects_requested_number_of_verified_female_candidates(tmp_path
     assert generated["gender_verified"] is True
     assert generated["age_band_verified"] is True
     assert [item["gender_matched"] for item in generated["candidate_metrics"]] == [False, False, True, True, True]
+    assert all(item["pitch_correction_semitones"] == 0 for item in generated["candidate_metrics"])
+    assert all(item["pitch_correction_method"] == "none" for item in generated["candidate_metrics"])
 
 
 def test_product_registration_excludes_cross_gender_candidates():

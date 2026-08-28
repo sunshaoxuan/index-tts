@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-PITCH_CALIBRATION_VERSION = 3
+PITCH_CALIBRATION_VERSION = 4
 PITCH_ANALYSIS_PACKAGE_VERSIONS = {
     "librosa": "0.10.2.post1",
     "llvmlite": "0.46.0",
@@ -65,83 +65,37 @@ def pitch_target_matches(median_pitch: float | None, target_pitch: float | None,
     return abs(float(median_pitch) - float(target_pitch)) <= float(tolerance)
 
 
-def calibrate_pitch_to_target(
-    wav: Any,
-    sample_rate: int,
-    median_pitch: float | None,
-    target_pitch: float | None,
-    *,
-    max_semitones: float = 12.0,
-) -> tuple[Any, float | None, float, bool]:
-    import librosa
-    import numpy as np
-
-    samples = np.asarray(wav, dtype=np.float32).reshape(-1)
-    if target_pitch is None:
-        return samples, median_pitch, 0.0, True
-    tolerance = pitch_target_tolerance_hz(target_pitch)
-    if pitch_target_matches(median_pitch, target_pitch, tolerance):
-        return samples, median_pitch, 0.0, True
-    if median_pitch is None or median_pitch <= 0 or target_pitch <= 0:
-        return samples, median_pitch, 0.0, False
-
-    corrected = samples
-    corrected_pitch = float(median_pitch)
-    total_semitones = 0.0
-    for _ in range(2):
-        if pitch_target_matches(corrected_pitch, target_pitch, tolerance):
-            break
-        adjustment = 12.0 * float(np.log2(float(target_pitch) / corrected_pitch))
-        if abs(total_semitones + adjustment) > max_semitones:
-            return samples, median_pitch, 0.0, False
-        corrected = librosa.effects.pitch_shift(
-            corrected,
-            sr=sample_rate,
-            n_steps=adjustment,
-            bins_per_octave=12,
-            res_type="soxr_hq",
-        ).astype(np.float32, copy=False)
-        total_semitones += adjustment
-        corrected_pitch = estimate_median_pitch(corrected, sample_rate) or 0.0
-        if corrected_pitch <= 0:
-            return samples, median_pitch, 0.0, False
-
-    original_peak = float(np.max(np.abs(samples))) if samples.size else 0.0
-    corrected_peak = float(np.max(np.abs(corrected))) if corrected.size else 0.0
-    if original_peak > 0 and corrected_peak > original_peak:
-        corrected = corrected * (original_peak / corrected_peak)
-    corrected_pitch = estimate_median_pitch(corrected, sample_rate)
-    return corrected, corrected_pitch, round(total_semitones, 4), pitch_target_matches(corrected_pitch, target_pitch, tolerance)
-
-
-def persist_calibrated_candidate(
+def persist_natural_candidate(
     path: Path,
     wav: Any,
     sample_rate: int,
     target_pitch: float | None,
-    correction_semitones: float,
-    *,
-    max_persisted_corrections: int = 2,
-) -> tuple[Any, float | None, float, bool]:
+) -> tuple[Any, int, float | None, bool]:
     import soundfile as sf
 
-    candidate_wav = wav
-    total_semitones = float(correction_semitones)
-    for correction_pass in range(max_persisted_corrections + 1):
-        sf.write(path, candidate_wav, sample_rate)
-        persisted_wav, persisted_sample_rate = sf.read(path, dtype="float32")
-        persisted_pitch = estimate_median_pitch(persisted_wav, persisted_sample_rate)
-        matched = pitch_target_matches(persisted_pitch, target_pitch)
-        if matched or target_pitch is None or correction_pass >= max_persisted_corrections:
-            return persisted_wav, persisted_pitch, round(total_semitones, 4), matched
-        recalibrated, _, additional_semitones, _ = calibrate_pitch_to_target(
-            persisted_wav, persisted_sample_rate, persisted_pitch, target_pitch
-        )
-        if not additional_semitones or abs(total_semitones + additional_semitones) > 12.0:
-            return persisted_wav, persisted_pitch, round(total_semitones, 4), False
-        candidate_wav = recalibrated
-        total_semitones += additional_semitones
-    return persisted_wav, persisted_pitch, round(total_semitones, 4), False
+    sf.write(path, wav, sample_rate)
+    persisted_wav, persisted_sample_rate = sf.read(path, dtype="float32")
+    persisted_pitch = estimate_median_pitch(persisted_wav, persisted_sample_rate)
+    return persisted_wav, persisted_sample_rate, persisted_pitch, pitch_target_matches(persisted_pitch, target_pitch)
+
+
+def natural_pitch_retry_instruction(
+    base_instruction: str,
+    target_pitch: float | None,
+    previous_pitch: float | None,
+) -> str:
+    if target_pitch is None or previous_pitch is None:
+        return base_instruction
+    tolerance = pitch_target_tolerance_hz(target_pitch)
+    if pitch_target_matches(previous_pitch, target_pitch, tolerance):
+        return base_instruction
+    direction = "提高" if previous_pitch < target_pitch else "降低"
+    return (
+        f"{base_instruction}\n"
+        f"上一个自然候选的实测基频中位数为 {previous_pitch:.1f} Hz。请在保持同一角色年龄、性别和自然音色身份的前提下，"
+        f"将本次自然发声的基频中位数{direction}到约 {target_pitch:.1f} Hz。使用真实自然声线、自然共鸣和自然韵律。"
+        "禁止电子变调、假声、叠音、回声、空洞共鸣和不自然的音色扭曲。"
+    )
 
 
 def gender_pitch_matches(
@@ -301,8 +255,9 @@ def generate_voice_design(
         generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
         requested_candidates = max(1, min(6, int(generation.get("candidate_count", 1))))
         if expected_gender in {"female", "male"} or target_pitch is not None:
-            configured_budget = int(payload.get("gender_max_attempts", requested_candidates * 3))
-            max_attempts = max(requested_candidates, min(18, configured_budget))
+            default_budget = requested_candidates * (6 if target_pitch is not None else 3)
+            configured_budget = int(payload.get("gender_max_attempts", default_budget))
+            max_attempts = max(requested_candidates, min(36, configured_budget))
         else:
             max_attempts = requested_candidates
         best_wav, best_sample_rate, best_pitch, best_score, attempts_used = None, None, None, float("-inf"), 0
@@ -317,7 +272,7 @@ def generate_voice_design(
                 torch.cuda.manual_seed_all(candidate_seed)
             if attempt:
                 retry_message = (
-                    f"{job['name']} 正在评估并校准频率候选 {attempt + 1}/{max_attempts}"
+                    f"{job['name']} 正在生成自然频率候选 {attempt + 1}/{max_attempts}"
                     if evaluate_all_candidates
                     else f"{job['name']} 音色性别校验未通过，正在重试 {attempt + 1}/{max_attempts}"
                 )
@@ -332,7 +287,7 @@ def generate_voice_design(
             wavs, sample_rate = model.generate_voice_design(
                 text=str(job["text"]),
                 language=str(job.get("language") or "Auto"),
-                instruct=str(job["instruct"]),
+                instruct=natural_pitch_retry_instruction(str(job["instruct"]), target_pitch, best_attempt_pitch),
                 do_sample=bool(generation.get("do_sample", True)),
                 top_k=int(generation.get("top_k", 50)),
                 top_p=float(generation.get("top_p", 0.95)),
@@ -344,24 +299,13 @@ def generate_voice_design(
                 subtalker_temperature=float(generation.get("subtalker_temperature", 0.85)),
                 max_new_tokens=int(generation.get("max_new_tokens", 2048)),
             )
-            candidate_wav = wavs[0]
-            raw_pitch = estimate_median_pitch(candidate_wav, sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
-            raw_gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(
-                expected_gender, raw_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
-            )
-            if raw_gender_matched:
-                candidate_wav, median_pitch, correction_semitones, target_matched = calibrate_pitch_to_target(
-                    candidate_wav, sample_rate, raw_pitch, target_pitch
-                )
-            else:
-                median_pitch, correction_semitones, target_matched = raw_pitch, 0.0, target_pitch is None
             candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
-            candidate_wav, median_pitch, correction_semitones, target_matched = persist_calibrated_candidate(
-                candidate_path, candidate_wav, sample_rate, target_pitch, correction_semitones
+            candidate_wav, persisted_sample_rate, median_pitch, target_matched = persist_natural_candidate(
+                candidate_path, wavs[0], sample_rate, target_pitch
             )
-            gender_matched = raw_gender_matched and (
-                expected_gender not in {"female", "male"}
-                or gender_pitch_matches(expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz)
+            raw_pitch = median_pitch
+            gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(
+                expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
             )
             score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age, pitch_min_hz, pitch_max_hz)
             diagnostic_score = -abs(median_pitch - target_pitch) if median_pitch is not None and target_pitch is not None else float(median_pitch or float("-inf"))
@@ -376,8 +320,8 @@ def generate_voice_design(
                     "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
                     "pitch_target_tolerance_hz": pitch_target_tolerance_hz(target_pitch) if target_pitch is not None else None,
                     "pitch_target_matched": target_matched,
-                    "pitch_correction_semitones": correction_semitones,
-                    "pitch_correction_method": "librosa_phase_vocoder" if correction_semitones else "none",
+                    "pitch_correction_semitones": 0.0,
+                    "pitch_correction_method": "none",
                     "gender_matched": gender_matched,
                     "age_band_verified": gender_matched,
                     "gender_identity_verified": False if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else gender_matched,
@@ -390,7 +334,7 @@ def generate_voice_design(
             if accepted:
                 valid_candidate_count += 1
             if accepted and (best_wav is None or score > best_score):
-                best_wav, best_sample_rate, best_pitch, best_score = candidate_wav, sample_rate, median_pitch, score
+                best_wav, best_sample_rate, best_pitch, best_score = candidate_wav, persisted_sample_rate, median_pitch, score
                 for metric in candidate_metrics:
                     metric["recommended"] = False
                 candidate_metrics[-1]["recommended"] = True
