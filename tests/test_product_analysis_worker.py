@@ -69,6 +69,8 @@ def test_merge_analysis_roles_reuses_existing_assets_and_appends_new_roles():
     assert roles[:3] == existing
     assert roles[3][1] == "松浦勇"
     assert roles[3][0] == "role_002"
+    assert roles[3][5] == ""
+    assert roles[3][7] == "是"
     assert merged_segments[0][2:4] == ["role_001", "笹垣"]
     assert merged_segments[1][2:4] == ["role_002", "松浦勇"]
     assert document["characters"][1]["id"] == "role_001"
@@ -78,6 +80,7 @@ def test_merge_analysis_roles_reuses_existing_assets_and_appends_new_roles():
         "existing_roles": 3,
         "reused_roles": 2,
         "new_roles": 1,
+        "new_roles_pending_voice_selection": 1,
         "retained_unmentioned_roles": 1,
         "generated_to_final": {"ai_narrator": "narrator", "ai_detective": "role_001", "role_001": "role_002"},
     }

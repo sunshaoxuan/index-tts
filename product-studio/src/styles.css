@@ -591,6 +591,16 @@ body * { box-shadow: none !important; }
 .switch-field { justify-items: start; }
 .voice-candidate-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding-top: 12px; border-top: 1px dashed rgba(255, 237, 215, .22); }
 .voice-candidate-row > div { min-width: 0; display: grid; gap: 7px; }
+.voice-selection-review { display: grid; gap: 16px; margin-top: 18px; }
+.voice-selection-role { display: grid; gap: 14px; padding: 18px; border: 1px solid rgba(239, 144, 65, .58); border-radius: 12px; background: rgba(115, 52, 18, .18); }
+.voice-selection-role > header { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
+.voice-selection-role > header > div { display: grid; gap: 4px; }
+.voice-selection-role > header strong { color: var(--cream); font-size: 18px; font-weight: 550; }
+.voice-selection-role > header .ant-typography { color: rgba(255, 237, 215, .72); font-size: 11px; }
+.voice-selection-candidates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.voice-selection-candidate { min-width: 0; display: grid; gap: 9px; padding: 14px; border: 1px dashed rgba(255, 237, 215, .34); border-radius: 10px; background: rgba(16, 9, 4, .32); }
+.voice-selection-candidate > .ant-typography { color: var(--cream); font-size: 10px; }
+.voice-selection-candidate .voice-preview { min-width: 0; }
 .editor-section-heading { display: grid; gap: 7px; padding-top: 20px; border-top: 1px dashed var(--cork); }
 .editor-section-heading:first-child { padding-top: 0; border-top: 0; }
 .editor-section-heading span { color: var(--cream); font-size: 9px; font-weight: 500; opacity: .62; text-transform: uppercase; }
@@ -770,6 +780,7 @@ body * { box-shadow: none !important; }
   .split-segment-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; }
   .split-preview { grid-template-columns: minmax(0, 1fr); }
   .voice-instruction-preview { padding: 16px; }
+  .voice-selection-candidates { grid-template-columns: minmax(0, 1fr); }
   .delivery-caption { grid-template-columns: minmax(0, 1fr); gap: 5px; }
 }
 

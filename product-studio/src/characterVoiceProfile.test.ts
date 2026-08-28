@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ageVoiceConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
+import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
 import type { RoleRow } from './types.ts';
 
 const role: RoleRow = ['role_001', '林澈', 'character', '三十五岁的男性刑警，性格克制。', '低沉厚实', '', '自然叙述', '是'];
@@ -18,6 +18,13 @@ test('adds explicit perceived age timbre constraints', () => {
   assert.match(ageVoiceConstraint(55), /成熟偏老年声线/);
   assert.match(ageVoiceConstraint(55), /禁止明亮、轻薄、紧致的青年声线/);
   assert.match(ageVoiceConstraint(10), /儿童声线/);
+});
+
+test('uses child identity wording without adult male resonance instructions', () => {
+  const instruction = genderVoiceIdentityConstraint('male', 10);
+  assert.match(instruction, /尚未变声的男童/);
+  assert.match(instruction, /成年男性胸腔共鸣/);
+  assert.doesNotMatch(instruction, /保持明确男性声线、男性声带质感和男性共鸣/);
 });
 
 test('normalizes legacy roles into editable character assets', () => {

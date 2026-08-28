@@ -25,6 +25,17 @@ export function ageVoiceConstraint(age: number): string {
   return '年龄听感强约束：老年声线，声带质感厚而略松，共鸣靠下，高频亮度克制，带自然气息感和轻微粗粝感，禁止青年化清亮紧致声线。';
 }
 
+export function genderVoiceIdentityConstraint(gender: CharacterGender, age: number): string {
+  const safeAge = Math.max(5, Math.min(100, Math.round(Number(age) || 35)));
+  if (safeAge < 13 && gender === 'male') return `首要声音身份：必须由约 ${safeAge} 岁、尚未变声的男童自然发声。保持清楚可辨的男孩身份、儿童声带质感、轻巧口腔共鸣和自然稚嫩感。成年男性低音、成年男性胸腔共鸣、成熟声带质感、女童声线或成人模仿儿童的假声均不合格。`;
+  if (safeAge < 13 && gender === 'female') return `首要声音身份：必须由约 ${safeAge} 岁女童自然发声。保持清楚可辨的女孩身份、儿童声带质感、轻巧口腔共鸣和自然稚嫩感。成年女性声线、成年男性声线、成熟胸腔共鸣、男童声线或成人模仿儿童的假声均不合格。`;
+  if (safeAge < 20 && gender === 'male') return `首要声音身份：必须由约 ${safeAge} 岁少年自然发声。保持清楚可辨的少年男性身份、较轻声带质感和自然明亮度。成年男性厚重低音、女性声线或中老年粗粝声线均不合格。`;
+  if (safeAge < 20 && gender === 'female') return `首要声音身份：必须由约 ${safeAge} 岁少女自然发声。保持清楚可辨的少女身份、较轻声带质感和自然明亮度。成年女性厚重声线、男性声线或中老年粗粝声线均不合格。`;
+  if (gender === 'female') return `首要声音身份：必须由约 ${safeAge} 岁女性自然发声。保持明确女性声线、女性声带质感和女性共鸣。男性声线、中性偏男性声线、男性假声或厚重男性胸腔共鸣均不合格。`;
+  if (gender === 'male') return `首要声音身份：必须由约 ${safeAge} 岁男性自然发声。保持明确男性声线、男性声带质感和男性共鸣。女性声线、中性偏女性声线、女性假声或轻薄女性头腔共鸣均不合格。`;
+  return '';
+}
+
 export function inferCharacterGender(...sources: string[]): CharacterGender {
   const femaleTerms = ['女性', '女声', '女人', '妇人', '妻子', '母亲', '奶奶', '姐姐', '妹妹', '女儿', '少女', '女孩'];
   const maleTerms = ['男性', '男声', '男人', '丈夫', '父亲', '爷爷', '哥哥', '弟弟', '儿子', '少年', '男孩'];

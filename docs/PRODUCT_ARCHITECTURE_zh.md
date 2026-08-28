@@ -133,7 +133,7 @@ VoiceDesign 作业读取 `character_assets`，把年龄、建议区间和目标�
 
 VoiceDesign Worker 把角色配置的一至六解释为合格候选数量，并在一个驻留模型中使用连续种子生成。显式性别角色最多尝试请求数量的三倍，收集足量合格候选后立即停止。每次尝试先写入独立 WAV，再记录种子、实测中位基频、目标差值和性别门禁结果。产品 Worker 只把通过门禁的候选注册到永久音色库并写回角色资产，未通过的尝试留在本次 Worker 审计数据。用户选择既有候选只改变该角色当前 `voice_id`。
 
-角色音色采用两级间接引用。分句数组第三列只保存稳定角色 ID，角色八列数组第六列保存该角色当前稳定 `voice_id`，候选列表留在 `character_assets.<role_id>.voice_candidates`。候选采用操作只更新角色当前 `voice_id` 和候选 `selected` 状态。渲染先由分句角色 ID 找到角色，再延迟解析该角色当前音色；对 `voice-*` 和 `legacy-*` 标识可直接从 `outputs/voice-library` 定位 WAV。`voice_files` 保留为工程资产清单与上传音色兼容入口，Node 和 Python 保存链路都会回填存在的角色当前稳定音色，渲染不把该清单作为永久音色的唯一来源。
+角色音色采用两级间接引用。分句数组第三列只保存稳定角色 ID，角色八列数组第六列保存该角色当前稳定 `voice_id`，候选列表留在 `character_assets.<role_id>.voice_candidates`。VoiceDesign 默认生成三个通过年龄与性别门禁的候选并保持全部 `selected=false`，角色资产页集中提供试听和人工采用；候选采用操作只更新角色当前 `voice_id` 和候选 `selected` 状态。渲染先由分句角色 ID 找到角色，再延迟解析该角色当前音色；对 `voice-*` 和 `legacy-*` 标识可直接从 `outputs/voice-library` 定位 WAV。`voice_files` 保留为工程资产清单与上传音色兼容入口，Node 和 Python 保存链路都会回填存在的角色当前稳定音色，渲染不把该清单作为永久音色的唯一来源。
 
 工程 GET 读取原始 JSON 后先执行角色当前音色资产协调。发现 `voice_files` 缺项时只追加永久库中真实存在的当前角色 WAV，再以临时文件和原子重命名持久化，之后执行页面规范化。该迁移不改写分句、角色、导演历史和交付状态。Render Runtime 状态记录渲染守护进程、客户端、Worker、文本导演和工程存储五个源码文件的 SHA-256 组合指纹。客户端在每次任务前比较当前指纹，旧进程缺少指纹或指纹不一致时通过停止请求退役，再启动加载当前代码的新进程。
 

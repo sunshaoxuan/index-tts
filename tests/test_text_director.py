@@ -664,6 +664,11 @@ def test_child_voice_design_uses_an_unambiguous_pre_voice_change_constraint():
     job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 230}}})[0]
     assert "尚未变声的儿童声线" in job["instruct"]
     assert "成年男性低音" in job["instruct"]
+    assert job["instruct"].startswith("首要声音身份：必须由约 10 岁、尚未变声的男童自然发声")
+    assert "保持明确男性声线、男性声带质感和男性共鸣" not in job["instruct"]
+    assert "低沉、沉默或压抑只表示情绪与表达方式" in job["instruct"]
+    assert job["instruct"].endswith("最终确认：输出必须保持自然、明确、可听辨的未变声男童声音。")
+    assert job["text"] == "我今年10岁，刚从学校回来。你找我有什么事吗？"
 
 
 def test_voice_design_jobs_preserve_structured_guidance_sources_and_add_mature_timbre_constraints():

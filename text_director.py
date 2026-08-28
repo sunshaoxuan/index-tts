@@ -1717,6 +1717,30 @@ def age_voice_constraint(age: int) -> str:
 
 
 def gender_voice_identity_constraint(expected_gender: str, age: int) -> str:
+    if age < 13 and expected_gender == "male":
+        return (
+            f"首要声音身份：必须由约 {age} 岁、尚未变声的男童自然发声。"
+            "保持清楚可辨的男孩身份、儿童声带质感、轻巧口腔共鸣和自然稚嫩感。"
+            "成年男性低音、成年男性胸腔共鸣、成熟声带质感、女童声线或成人模仿儿童的假声均不合格。"
+        )
+    if age < 13 and expected_gender == "female":
+        return (
+            f"首要声音身份：必须由约 {age} 岁女童自然发声。"
+            "保持清楚可辨的女孩身份、儿童声带质感、轻巧口腔共鸣和自然稚嫩感。"
+            "成年女性声线、成年男性声线、成熟胸腔共鸣、男童声线或成人模仿儿童的假声均不合格。"
+        )
+    if age < 20 and expected_gender == "male":
+        return (
+            f"首要声音身份：必须由约 {age} 岁少年自然发声。"
+            "保持清楚可辨的少年男性身份、较轻声带质感和自然明亮度。"
+            "成年男性厚重低音、女性声线或中老年粗粝声线均不合格。"
+        )
+    if age < 20 and expected_gender == "female":
+        return (
+            f"首要声音身份：必须由约 {age} 岁少女自然发声。"
+            "保持清楚可辨的少女身份、较轻声带质感和自然明亮度。"
+            "成年女性厚重声线、男性声线或中老年粗粝声线均不合格。"
+        )
     if expected_gender == "female":
         return (
             f"首要声音身份：必须由约 {age} 岁女性自然发声。"
@@ -1815,6 +1839,8 @@ def build_voice_design_jobs(
         voice_traits = normalize_voice_traits(asset.get("voice_traits"))
         voice_generation = normalize_voice_generation(asset.get("voice_generation"))
         audition_text = str(asset.get("audition_text") or VOICE_DESIGN_TEXT.get(language, DEFAULT_AUDITION_TEXT)).strip()[:500]
+        if age < 13 and language == "ZH" and audition_text == DEFAULT_AUDITION_TEXT:
+            audition_text = f"我今年{age}岁，刚从学校回来。你找我有什么事吗？"
         pitch_constraint = (
             f"角色年龄设定：约 {age} 岁。建议基频区间：{pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz；"
             f"目标基频中位数约 {pitch_target_hz:.0f} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。"
@@ -1823,11 +1849,20 @@ def build_voice_design_jobs(
         )
         age_constraint = age_voice_constraint(age)
         gender_constraint = gender_voice_identity_constraint(expected_gender, age)
-        gender_confirmation = {
-            "female": "最终确认：输出必须保持自然、明确、可听辨的女性声音。",
-            "male": "最终确认：输出必须保持自然、明确、可听辨的男性声音。",
-            "unspecified": "",
-        }[expected_gender]
+        child_tone_constraint = (
+            "儿童角色描述中的低沉、沉默或压抑只表示情绪与表达方式，不得降低成成年人的基频、胸腔共鸣或成熟声带质感。"
+            if age < 13 else ""
+        )
+        if age < 13 and expected_gender == "male":
+            gender_confirmation = "最终确认：输出必须保持自然、明确、可听辨的未变声男童声音。"
+        elif age < 13 and expected_gender == "female":
+            gender_confirmation = "最终确认：输出必须保持自然、明确、可听辨的女童声音。"
+        else:
+            gender_confirmation = {
+                "female": "最终确认：输出必须保持自然、明确、可听辨的女性声音。",
+                "male": "最终确认：输出必须保持自然、明确、可听辨的男性声音。",
+                "unspecified": "",
+            }[expected_gender]
         instruct = (
             f"{gender_constraint}"
             f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
@@ -1836,6 +1871,7 @@ def build_voice_design_jobs(
             f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
             f"{pitch_constraint}"
             f"{age_constraint}"
+            f"{child_tone_constraint}"
             f"{voice_traits_instruction(voice_traits)}"
             f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
             "吐字清晰，干声，无背景音乐，无环境噪声。"

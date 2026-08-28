@@ -97,6 +97,8 @@ def merge_analysis_roles(
             final_row = deepcopy(generated)
             final_id = allocate_role_id(generated_id)
             final_row[0] = final_id
+            final_row[5] = ""
+            final_row[7] = "是"
             final_by_id[final_id] = final_row
             new_roles.append(final_row)
         generated_to_final[generated_id] = final_id
@@ -127,6 +129,7 @@ def merge_analysis_roles(
         "existing_roles": len(existing),
         "reused_roles": reused_roles,
         "new_roles": len(new_roles),
+        "new_roles_pending_voice_selection": len(new_roles),
         "retained_unmentioned_roles": max(0, len(existing) - reused_roles),
         "generated_to_final": generated_to_final,
     }

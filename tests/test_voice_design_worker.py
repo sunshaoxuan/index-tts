@@ -9,7 +9,7 @@ import pytest
 import voice_design_worker as worker
 from novel_project import NovelProjectStore
 import product_voice_worker
-from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, resolve_or_reuse_guidance, verified_candidate_metrics
+from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, register_candidate_set, resolve_or_reuse_guidance, verified_candidate_metrics
 from text_director import guidance_role_signature
 
 
@@ -164,7 +164,8 @@ def test_voice_design_worker_evaluates_all_candidates_for_an_older_character(tmp
     assert calls == frequencies
     assert generated["generation_attempts"] == 3
     assert len(generated["candidate_metrics"]) == 3
-    assert sum(item["selected"] for item in generated["candidate_metrics"]) == 1
+    assert sum(item["selected"] for item in generated["candidate_metrics"]) == 0
+    assert sum(item["recommended"] for item in generated["candidate_metrics"]) == 1
     assert generated["median_pitch_hz"] == generated["candidate_metrics"][1]["median_pitch_hz"]
 
 
@@ -319,7 +320,28 @@ def test_product_registration_excludes_cross_gender_candidates():
     assert [metric["seed"] for metric in verified_candidate_metrics(item)] == [43]
 
 
-def test_worker_rejects_a_partial_verified_candidate_set(tmp_path, monkeypatch):
+def test_product_registration_keeps_three_candidates_unselected_until_user_choice(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    metrics = []
+    for offset, frequency in enumerate((218.0, 224.0, 231.0)):
+        path = tmp_path / f"candidate-{offset + 1}.wav"
+        path.write_bytes(b"RIFF")
+        metrics.append({"seed": 42 + offset, "median_pitch_hz": frequency, "gender_matched": True, "recommended": offset == 0, "selected": offset == 0, "path": str(path)})
+    item = {
+        "role_id": "role_f", "name": "女性角色", "expected_gender": "female", "median_pitch_hz": 218.0,
+        "generation_attempts": 3, "gender_verified": True, "candidate_metrics": metrics,
+    }
+    job = {"role_id": "role_f", "name": "女性角色", "language": "Chinese", "text": "测试", "instruct": "明确女性声音"}
+
+    candidates, registrations = register_candidate_set(store, item, job, model="voice-model")
+
+    assert len(candidates) == 3
+    assert len(registrations) == 3
+    assert all(candidate["selected"] is False for candidate in candidates)
+    assert all(candidate["gender_verified"] is True for candidate in candidates)
+
+
+def test_worker_reports_a_partial_verified_candidate_set_without_losing_other_roles(tmp_path, monkeypatch):
     class FakeModel:
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
@@ -334,8 +356,7 @@ def test_worker_rejects_a_partial_verified_candidate_set(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
     model_dir = tmp_path / "model"
     prepare_model(model_dir)
-    with pytest.raises(ValueError, match="要求 2 个女性候选.*只有 0 个通过"):
-        worker.generate_voice_design({
+    result = worker.generate_voice_design({
             "jobs": [{
                 "role_id": "role_f", "name": "女性角色", "filename": "female.wav", "text": "测试",
                 "language": "Chinese", "instruct": "明确女性声音", "expected_gender": "female",
@@ -343,6 +364,9 @@ def test_worker_rejects_a_partial_verified_candidate_set(tmp_path, monkeypatch):
             }],
             "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
         }, tmp_path / "result.json", tmp_path / "status.json")
+    assert result["generated"] == []
+    assert result["failures"][0]["role_id"] == "role_f"
+    assert "只有 0 个通过声学年龄与性别校验" in result["failures"][0]["error"]
 
 
 def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):

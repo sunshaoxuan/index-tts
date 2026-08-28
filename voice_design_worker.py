@@ -146,6 +146,7 @@ def generate_voice_design(
     torch.manual_seed(int(payload.get("seed", 42)))
 
     generated: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
     started = time.perf_counter()
     for index, job in enumerate(jobs, start=1):
         job_seed = int(job.get("seed", payload.get("seed", 42)))
@@ -224,6 +225,7 @@ def generate_voice_design(
                     "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
                     "gender_matched": gender_matched,
                     "selected": False,
+                    "recommended": False,
                     "path": str(candidate_path),
                 }
             )
@@ -232,18 +234,29 @@ def generate_voice_design(
             if gender_matched and (best_wav is None or score > best_score):
                 best_wav, best_sample_rate, best_pitch, best_score = wavs[0], sample_rate, median_pitch, score
                 for metric in candidate_metrics:
-                    metric["selected"] = False
-                candidate_metrics[-1]["selected"] = True
+                    metric["recommended"] = False
+                candidate_metrics[-1]["recommended"] = True
             attempts_used = attempt + 1
             if valid_candidate_count >= requested_candidates:
                 break
         if expected_gender in {"female", "male"} and valid_candidate_count < requested_candidates:
             label = "女性" if expected_gender == "female" else "男性"
             measured = "无法测量" if best_attempt_pitch is None else f"{best_attempt_pitch:.1f} Hz"
-            raise ValueError(
-                f"{job['name']} 要求 {requested_candidates} 个{label}候选，连续 {attempts_used} 次生成后只有 "
-                f"{valid_candidate_count} 个通过声学性别校验，最接近目标的尝试为 {measured}。"
+            failures.append(
+                {
+                    "role_id": str(job["role_id"]),
+                    "name": str(job["name"]),
+                    "error": (
+                        f"{job['name']} 要求 {requested_candidates} 个{label}候选，连续 {attempts_used} 次生成后只有 "
+                        f"{valid_candidate_count} 个通过声学年龄与性别校验，最接近目标的尝试为 {measured}。"
+                    ),
+                    "generation_attempts": attempts_used,
+                    "requested_candidate_count": requested_candidates,
+                    "valid_candidate_count": valid_candidate_count,
+                    "candidate_metrics": candidate_metrics,
+                }
             )
+            continue
         output_path = output_dir / str(job["filename"])
         sf.write(output_path, best_wav, best_sample_rate)
         generated.append(
@@ -264,13 +277,17 @@ def generate_voice_design(
 
     result = {
         "generated": generated,
+        "failures": failures,
         "model": str(payload["model_dir"]),
         "model_reused": model_reused,
         "runtime_pid": os.getpid(),
         "duration_seconds": round(time.perf_counter() - started, 3),
     }
     _write_json(result_path, result)
-    _write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": "角色音色设计完成"})
+    completion_message = "角色音色候选生成完成"
+    if failures:
+        completion_message += f"，{len(failures)} 个角色未取得完整合格候选"
+    _write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": completion_message})
     return result
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from novel_project import NovelProjectStore, pronunciation_rows
-from text_director import DirectorConfig, OllamaTextDirector, apply_generated_voices, build_voice_design_jobs, guidance_role_signature
+from text_director import DirectorConfig, OllamaTextDirector, build_voice_design_jobs, guidance_role_signature
 from voice_design_daemon_client import enqueue_voice_design_request, ensure_voice_design_daemon, process_alive, read_runtime_state
 from render_daemon_client import release_render_model
 from runtime_python import voice_python as resolve_voice_python
@@ -28,6 +28,53 @@ def verified_candidate_metrics(item: dict[str, Any]) -> list[dict[str, Any]]:
         for metric in item.get("candidate_metrics") or []
         if isinstance(metric, dict) and (not explicit_gender or bool(metric.get("gender_matched")))
     ]
+
+
+def register_candidate_set(
+    store: NovelProjectStore,
+    item: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    model: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    verified_job = {
+        **job,
+        "median_pitch_hz": item.get("median_pitch_hz"),
+        "generation_attempts": item.get("generation_attempts"),
+        "candidate_metrics": item.get("candidate_metrics"),
+        "gender_verified": bool(item.get("gender_verified")),
+    }
+    candidate_records: list[dict[str, Any]] = []
+    registrations: list[dict[str, Any]] = []
+    for metric in verified_candidate_metrics(item):
+        metric_verified = str(item.get("expected_gender")) not in {"female", "male"} or bool(metric.get("gender_matched"))
+        candidate_job = {
+            **verified_job,
+            "median_pitch_hz": metric.get("median_pitch_hz"),
+            "seed": metric.get("seed"),
+            "gender_verified": metric_verified,
+        }
+        metadata = store.register_voice(metric["path"], candidate_job, model=model, seed=int(metric["seed"]))
+        candidate_records.append(
+            {
+                "voice_id": metadata["voice_id"],
+                "seed": int(metric["seed"]),
+                "median_pitch_hz": metric.get("median_pitch_hz"),
+                "selected": False,
+                "gender_verified": metric_verified,
+            }
+        )
+        registrations.append(
+            {
+                "role_id": item["role_id"],
+                "name": item["name"],
+                "path": metadata["audio_path"],
+                "voice_id": metadata["voice_id"],
+                "expected_gender": metadata["expected_gender"],
+                "median_pitch_hz": metadata["median_pitch_hz"],
+            }
+        )
+    return candidate_records, registrations
 
 
 def _legacy_effective_guidance(instruct: str) -> str:
@@ -139,14 +186,16 @@ def main() -> int:
     registered, pending, preserved_count = [], [], 0
     for job in jobs:
         row = rows_by_role[job["role_id"]]
-        if str(row[7]) == "否" and str(row[5]).strip():
+        asset = (project.get("character_assets") or {}).get(job["role_id"], {})
+        required_candidates = int((job.get("voice_generation") or {}).get("candidate_count", 3))
+        existing_candidates = [
+            item for item in (asset.get("voice_candidates") or [])
+            if isinstance(item, dict) and item.get("voice_id") and item.get("gender_verified") is not False
+        ] if isinstance(asset, dict) else []
+        if str(row[7]) == "否" and (str(row[5]).strip() or len(existing_candidates) >= required_candidates):
             preserved_count += 1
             continue
-        cached = store.find_voice(job, model=str(model_dir), seed=int(job.get("seed", 42)))
-        if cached:
-            registered.append({"role_id": job["role_id"], "name": job["name"], "path": cached["audio_path"], "voice_id": cached["voice_id"]})
-        else:
-            pending.append(job)
+        pending.append(job)
     generated = []
     voice_runtime: dict[str, Any] | None = None
     voice_result: dict[str, Any] = {}
@@ -189,33 +238,17 @@ def main() -> int:
             generated = voice_result["generated"]
             write_json(status, {"phase": "registering", "fraction": 0.97, "message": "正在注册永久音色并更新工程"})
     character_assets = {role_id: dict(asset) for role_id, asset in (project.get("character_assets") or {}).items() if isinstance(asset, dict)}
+    generated_role_ids: set[str] = set()
     for item in generated:
         job = jobs_by_role[item["role_id"]]
-        verified_job = {
-            **job,
-            "median_pitch_hz": item.get("median_pitch_hz"),
-            "generation_attempts": item.get("generation_attempts"),
-            "candidate_metrics": item.get("candidate_metrics"),
-            "gender_verified": bool(item.get("gender_verified")),
-        }
-        candidate_records = []
-        metadata = None
-        for metric in verified_candidate_metrics(item):
-            metric_verified = str(item.get("expected_gender")) not in {"female", "male"} or bool(metric.get("gender_matched"))
-            candidate_job = {**verified_job, "median_pitch_hz": metric.get("median_pitch_hz"), "seed": metric.get("seed"), "gender_verified": metric_verified}
-            candidate_metadata = store.register_voice(metric["path"], candidate_job, model=str(model_dir), seed=int(metric["seed"]))
-            candidate_records.append({
-                "voice_id": candidate_metadata["voice_id"], "seed": int(metric["seed"]),
-                "median_pitch_hz": metric.get("median_pitch_hz"), "selected": bool(metric.get("selected")),
-                "gender_verified": metric_verified,
-            })
-            if metric.get("selected"):
-                metadata = candidate_metadata
-        if metadata is None:
-            metadata = store.register_voice(item["path"], verified_job, model=str(model_dir), seed=int(job.get("seed", 42)))
+        candidate_records, candidate_registrations = register_candidate_set(store, item, job, model=str(model_dir))
         character_assets.setdefault(item["role_id"], {})["voice_candidates"] = candidate_records
-        registered.append({"role_id": item["role_id"], "name": item["name"], "path": metadata["audio_path"], "voice_id": metadata["voice_id"], "expected_gender": metadata["expected_gender"], "median_pitch_hz": metadata["median_pitch_hz"]})
-    roles = apply_generated_voices(project["roles"], registered)
+        registered.extend(candidate_registrations)
+        generated_role_ids.add(str(item["role_id"]))
+    roles = [list(row) for row in project["roles"]]
+    for row in roles:
+        if str(row[0]) in generated_role_ids:
+            row[7] = "否"
     store.save(
         project["project_id"], title=project["title"], content_type=project["content_type"], source_text=project["source_text"],
         guidance=project.get("guidance", ""), document=project["document"], roles=roles, segments=project["segments"],
@@ -223,9 +256,11 @@ def main() -> int:
         voice_files=list(dict.fromkeys([*(project.get("voice_files") or []), *[item["path"] for item in registered]])),
         character_assets=character_assets,
     )
-    runtime_summary = "已复用驻留模型" if voice_result.get("model_reused") else "模型已保持驻留" if generated else "未调用模型"
-    write_json(Path(args.result), {"roles": roles, "voices": registered, "voice_runtime": {"pid": voice_result.get("runtime_pid") or (voice_runtime or {}).get("pid"), "model_reused": voice_result.get("model_reused"), "resident": bool(generated)}})
-    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色设计完成，新生成 {len(generated)} 个，签名复用 {len(registered) - len(generated)} 个，保留已有 {preserved_count} 个；{runtime_summary}"})
+    failures = voice_result.get("failures") or []
+    runtime_summary = "已复用驻留模型" if voice_result.get("model_reused") else "模型已保持驻留" if generated or failures else "未调用模型"
+    write_json(Path(args.result), {"roles": roles, "voices": registered, "failures": failures, "voice_runtime": {"pid": voice_result.get("runtime_pid") or (voice_runtime or {}).get("pid"), "model_reused": voice_result.get("model_reused"), "resident": bool(generated or failures)}})
+    failure_summary = f"；{len(failures)} 个角色未取得三个合格候选：" + "；".join(str(item.get("error") or item.get("name")) for item in failures) if failures else ""
+    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色候选生成完成，{len(generated)} 个角色等待人工选择，共保留 {len(registered)} 个候选，跳过已有 {preserved_count} 个；{runtime_summary}{failure_summary}"})
     return 0
 
 
