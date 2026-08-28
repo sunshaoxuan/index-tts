@@ -308,6 +308,7 @@ def test_worker_collects_requested_number_of_verified_female_candidates(tmp_path
     assert generated["requested_candidate_count"] == 3
     assert generated["valid_candidate_count"] == 3
     assert generated["gender_verified"] is True
+    assert generated["age_band_verified"] is True
     assert [item["gender_matched"] for item in generated["candidate_metrics"]] == [False, False, True, True, True]
 
 
@@ -341,6 +342,19 @@ def test_product_registration_keeps_three_candidates_unselected_until_user_choic
     assert len(registrations) == 3
     assert all(candidate["selected"] is False for candidate in candidates)
     assert all(candidate["gender_verified"] is True for candidate in candidates)
+
+
+def test_child_candidates_require_human_gender_identity_confirmation(tmp_path):
+    store = NovelProjectStore(tmp_path / "projects", tmp_path / "voices")
+    path = tmp_path / "child.wav"
+    path.write_bytes(b"RIFF")
+    metric = {"seed": 42, "median_pitch_hz": 238.0, "gender_matched": True, "age_band_verified": True, "gender_identity_verified": False, "gender_identity_method": "pending_human", "path": str(path)}
+    item = {"role_id": "role_child", "name": "桐原亮", "expected_gender": "male", "median_pitch_hz": 238.0, "generation_attempts": 1, "gender_verified": True, "age_band_verified": True, "gender_identity_verified": False, "gender_identity_method": "pending_human", "candidate_metrics": [metric]}
+    job = {"role_id": "role_child", "name": "桐原亮", "language": "Japanese", "text": "僕は十歳です。", "instruct": "十岁男童", "expected_gender": "male", "character_age": 10}
+    candidates, _ = register_candidate_set(store, item, job, model="voice-model")
+    assert candidates[0]["age_band_verified"] is True
+    assert candidates[0]["gender_identity_verified"] is False
+    assert candidates[0]["gender_identity_method"] == "pending_human"
 
 
 def test_worker_reports_a_partial_verified_candidate_set_without_losing_other_roles(tmp_path, monkeypatch):

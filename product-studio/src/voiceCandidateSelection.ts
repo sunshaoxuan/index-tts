@@ -1,12 +1,22 @@
 import { normalizeCharacterAsset } from './characterVoiceProfile.ts';
 import type { ProjectPayload, RoleRow } from './types.ts';
 
+export function candidateVerificationLabel(age: number, gender: string, candidate: { gender_verified?: boolean; age_band_verified?: boolean; gender_identity_verified?: boolean }): string {
+  if (age < 13 && (gender === 'female' || gender === 'male')) {
+    const identity = gender === 'male' ? '男童' : '女童';
+    if (candidate.age_band_verified === false) return '儿童声区校验未通过';
+    if (candidate.gender_identity_verified === true) return `儿童声区通过 · ${identity}身份已由试听确认`;
+    return `儿童声区通过 · ${identity}身份待试听确认`;
+  }
+  return candidate.gender_verified === false ? '历史候选待重新校验' : `${gender === 'male' ? '男性' : gender === 'female' ? '女性' : '声音'}校验通过`;
+}
+
 export function applyVoiceCandidateSelection(project: ProjectPayload, roleId: string, voiceId: string): ProjectPayload {
   const currentRole = project.roles.find(row => row[0] === roleId);
   if (!currentRole) throw new Error(`角色不存在：${roleId}`);
   const asset = normalizeCharacterAsset(currentRole, project.character_assets?.[roleId]);
   const candidates = asset.voice_candidates ?? [];
-  if (!candidates.some(candidate => candidate.voice_id === voiceId && candidate.gender_verified !== false)) {
+  if (!candidates.some(candidate => candidate.voice_id === voiceId && candidate.gender_verified !== false && candidate.age_band_verified !== false)) {
     throw new Error(`角色 ${currentRole[1]} 的候选音色不存在或未通过校验`);
   }
   const roles = project.roles.map(row => row[0] === roleId
@@ -19,7 +29,9 @@ export function applyVoiceCandidateSelection(project: ProjectPayload, roleId: st
       ...project.character_assets,
       [roleId]: {
         ...asset,
-        voice_candidates: candidates.map(candidate => ({ ...candidate, selected: candidate.voice_id === voiceId })),
+        voice_candidates: candidates.map(candidate => candidate.voice_id === voiceId
+          ? { ...candidate, selected: true, ...(asset.age < 13 && asset.gender !== 'unspecified' ? { gender_identity_verified: true, gender_identity_method: 'human_listening' as const } : {}) }
+          : { ...candidate, selected: false }),
       },
     },
   };

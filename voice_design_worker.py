@@ -241,6 +241,9 @@ def generate_voice_design(
                     "median_pitch_hz": median_pitch,
                     "pitch_delta_hz": round(abs(float(median_pitch) - target_pitch), 2) if median_pitch is not None and target_pitch is not None else None,
                     "gender_matched": gender_matched,
+                    "age_band_verified": gender_matched,
+                    "gender_identity_verified": False if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else gender_matched,
+                    "gender_identity_method": "pending_human" if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else "acoustic_pitch",
                     "selected": False,
                     "recommended": False,
                     "path": str(candidate_path),
@@ -288,6 +291,9 @@ def generate_voice_design(
                 "requested_candidate_count": requested_candidates,
                 "valid_candidate_count": valid_candidate_count,
                 "gender_verified": expected_gender not in {"female", "male"} or valid_candidate_count > 0,
+                "age_band_verified": expected_gender not in {"female", "male"} or valid_candidate_count > 0,
+                "gender_identity_verified": False if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else expected_gender not in {"female", "male"} or valid_candidate_count > 0,
+                "gender_identity_method": "pending_human" if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else "acoustic_pitch",
                 "candidate_metrics": candidate_metrics,
             }
         )

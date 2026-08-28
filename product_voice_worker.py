@@ -43,6 +43,9 @@ def register_candidate_set(
         "generation_attempts": item.get("generation_attempts"),
         "candidate_metrics": item.get("candidate_metrics"),
         "gender_verified": bool(item.get("gender_verified")),
+        "age_band_verified": bool(item.get("age_band_verified", item.get("gender_verified"))),
+        "gender_identity_verified": bool(item.get("gender_identity_verified", item.get("gender_verified"))),
+        "gender_identity_method": str(item.get("gender_identity_method") or "legacy"),
     }
     candidate_records: list[dict[str, Any]] = []
     registrations: list[dict[str, Any]] = []
@@ -53,6 +56,9 @@ def register_candidate_set(
             "median_pitch_hz": metric.get("median_pitch_hz"),
             "seed": metric.get("seed"),
             "gender_verified": metric_verified,
+            "age_band_verified": bool(metric.get("age_band_verified", metric_verified)),
+            "gender_identity_verified": bool(metric.get("gender_identity_verified", metric_verified)),
+            "gender_identity_method": str(metric.get("gender_identity_method") or "legacy"),
         }
         metadata = store.register_voice(metric["path"], candidate_job, model=model, seed=int(metric["seed"]))
         candidate_records.append(
@@ -62,6 +68,9 @@ def register_candidate_set(
                 "median_pitch_hz": metric.get("median_pitch_hz"),
                 "selected": False,
                 "gender_verified": metric_verified,
+                "age_band_verified": bool(metric.get("age_band_verified", metric_verified)),
+                "gender_identity_verified": bool(metric.get("gender_identity_verified", metric_verified)),
+                "gender_identity_method": str(metric.get("gender_identity_method") or "legacy"),
             }
         )
         registrations.append(

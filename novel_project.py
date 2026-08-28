@@ -268,6 +268,9 @@ class NovelProjectStore:
             "effective_guidance_instructions": job.get("effective_guidance_instructions") if isinstance(job.get("effective_guidance_instructions"), list) else [],
             "gender_verified": bool(job.get("gender_verified", False)),
             "gender_verification_version": 2 if job.get("gender_verified", False) else 0,
+            "age_band_verified": bool(job.get("age_band_verified", job.get("gender_verified", False))),
+            "gender_identity_verified": bool(job.get("gender_identity_verified", job.get("gender_verified", False))),
+            "gender_identity_method": str(job.get("gender_identity_method") or "legacy"),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         self._write(metadata_path, metadata)

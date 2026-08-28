@@ -663,12 +663,23 @@ def test_child_voice_design_uses_an_unambiguous_pre_voice_change_constraint():
     roles = [["role_child", "小宇", "character", "十岁男孩", "清亮年轻", "", "自然叙述", "是"]]
     job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 230}}})[0]
     assert job["instruct"].startswith("一个 10 岁的小学生男孩，使用尚未变声的自然男童童声说话")
-    assert "声音清亮、稚嫩、轻巧" in job["instruct"]
+    assert "性别身份比音高更重要" in job["instruct"]
+    assert "声音稚嫩、轻巧" in job["instruct"]
     assert "声音基频中位数自然保持在 190 至 320 Hz，目标约 230 Hz" in job["instruct"]
     assert "人物小传" not in job["instruct"]
     assert "成年男性" not in job["instruct"]
     assert "男性胸腔共鸣" not in job["instruct"]
-    assert job["text"] == "我今年10岁，刚从学校回来。你找我有什么事吗？"
+    assert job["text"] == "我是一个10岁的男孩，刚从学校回来。你找我有什么事吗？"
+
+
+def test_japanese_child_voice_design_uses_gender_anchored_audition_text():
+    segment = _segment(1, "僕は帰った。", "僕は帰った。", role_id="role_child", name="桐原亮", kind="character")
+    segment["language"] = "JA"
+    document = {"characters": [_character("role_child", "桐原亮", "character")], "segments": [segment]}
+    roles = [["role_child", "桐原亮", "character", "十岁男孩", "沉默的男孩声音", "", "自然叙述", "是"]]
+    job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 255}}})[0]
+    assert job["language"] == "Japanese"
+    assert job["text"].startswith("僕は10歳の男の子です")
 
 
 def test_child_voice_design_translates_low_tone_words_into_child_safe_emotion():

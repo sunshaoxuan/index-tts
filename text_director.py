@@ -1786,12 +1786,27 @@ def compact_child_voice_instruction(
     )
     return (
         f"一个 {age} 岁的{identity}，使用尚未变声的自然{child_label}童声说话。"
-        "声音清亮、稚嫩、轻巧，具有明确的儿童口腔共鸣和小学生的日常说话感。"
+        f"听者必须能够直接辨认出这是{child_label}，性别身份比音高更重要。"
+        "声音稚嫩、轻巧，具有明确的儿童口腔共鸣和小学生的日常说话感。"
         f"为角色{name}建立可长期复用的声音。{child_expression_direction(voice_hint, profile)}，"
         "吐字自然清楚，语速中等。"
         f"{pitch}"
         "干声，无背景音乐，无环境噪声。"
     )
+
+
+def child_audition_text(language: str, age: int, expected_gender: str) -> str:
+    identity = "男孩" if expected_gender == "male" else "女孩"
+    if language == "JA":
+        pronoun = "僕" if expected_gender == "male" else "わたし"
+        identity_ja = "男の子" if expected_gender == "male" else "女の子"
+        return f"{pronoun}は{age}歳の{identity_ja}です。学校から帰ってきたところです。何か用ですか。"
+    if language == "EN":
+        return f"I am a {age}-year-old {'boy' if expected_gender == 'male' else 'girl'}. I just came home from school. Did you need me?"
+    if language == "ES":
+        identity_es = "niño" if expected_gender == "male" else "niña"
+        return f"Soy un {identity_es} de {age} años. Acabo de volver de la escuela. ¿Me buscabas?"
+    return f"我是一个{age}岁的{identity}，刚从学校回来。你找我有什么事吗？"
 
 
 def infer_voice_gender(voice_hint: str, profile: str = "", name: str = "") -> str:
@@ -1877,8 +1892,11 @@ def build_voice_design_jobs(
         voice_traits = normalize_voice_traits(asset.get("voice_traits"))
         voice_generation = normalize_voice_generation(asset.get("voice_generation"))
         audition_text = str(asset.get("audition_text") or VOICE_DESIGN_TEXT.get(language, DEFAULT_AUDITION_TEXT)).strip()[:500]
-        if age < 13 and language == "ZH" and audition_text == DEFAULT_AUDITION_TEXT:
-            audition_text = f"我今年{age}岁，刚从学校回来。你找我有什么事吗？"
+        if age < 13 and expected_gender in {"female", "male"} and audition_text in {
+            DEFAULT_AUDITION_TEXT,
+            VOICE_DESIGN_TEXT.get(language, DEFAULT_AUDITION_TEXT),
+        }:
+            audition_text = child_audition_text(language, age, expected_gender)
         pitch_constraint = (
             f"角色年龄设定：约 {age} 岁。建议基频区间：{pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz；"
             f"目标基频中位数约 {pitch_target_hz:.0f} Hz，请通过自然的声带厚度、共鸣和发声位置接近目标，不使用电子变调。"

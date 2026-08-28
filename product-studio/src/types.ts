@@ -42,6 +42,9 @@ export interface VoiceCandidate {
   median_pitch_hz?: number;
   selected: boolean;
   gender_verified?: boolean;
+  age_band_verified?: boolean;
+  gender_identity_verified?: boolean;
+  gender_identity_method?: 'acoustic_pitch' | 'pending_human' | 'human_listening' | 'legacy';
 }
 
 export interface CharacterAsset {
