@@ -68,9 +68,12 @@ def test_persisted_natural_candidate_is_remeasured_before_acceptance(tmp_path, m
 
 
 def test_pitch_retry_instruction_changes_natural_direction_without_electronic_processing():
-    low = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 111.8)
-    high = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 168.0)
+    initial = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, None, "male", 85.0, 180.0)
+    low = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 111.8, "male", 85.0, 180.0)
+    high = worker.natural_pitch_retry_instruction("四十岁男性自然声线。", 147.0, 168.0, "male", 85.0, 180.0)
 
+    assert "明确男高音和较高日常说话音域" in initial
+    assert "基频中位数接近 147.0 Hz" in initial
     assert "提高到约 147.0 Hz" in low
     assert "降低到约 147.0 Hz" in high
     assert "禁止电子变调" in low

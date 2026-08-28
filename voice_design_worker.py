@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-PITCH_CALIBRATION_VERSION = 4
+PITCH_CALIBRATION_VERSION = 5
 PITCH_ANALYSIS_PACKAGE_VERSIONS = {
     "librosa": "0.10.2.post1",
     "llvmlite": "0.46.0",
@@ -83,18 +83,42 @@ def natural_pitch_retry_instruction(
     base_instruction: str,
     target_pitch: float | None,
     previous_pitch: float | None,
+    expected_gender: str = "unspecified",
+    pitch_min_hz: float | None = None,
+    pitch_max_hz: float | None = None,
 ) -> str:
-    if target_pitch is None or previous_pitch is None:
+    if target_pitch is None:
         return base_instruction
+    profile = ""
+    if pitch_min_hz is not None and pitch_max_hz is not None and pitch_max_hz > pitch_min_hz:
+        position = (target_pitch - pitch_min_hz) / (pitch_max_hz - pitch_min_hz)
+        if position >= 0.6:
+            profile = (
+                "采用该年龄和性别自然声区中的较高音域。"
+                + (
+                    "使用明确男高音和较高日常说话音域，发声轻盈清亮，使用自然的口腔与头腔混合共鸣。"
+                    if expected_gender == "male"
+                    else "使用自然的较高女性说话音域，发声清亮，保持真实声带质感和自然共鸣。"
+                )
+            )
+        elif position <= 0.4:
+            profile = "采用该年龄和性别自然声区中的较低音域，发声松弛稳实，保持真实声带质感和自然共鸣。"
+        else:
+            profile = "采用该年龄和性别自然声区中的中间音域，保持真实声带质感和自然共鸣。"
+    natural_target = (
+        f"{base_instruction}\n{profile}整句自然发声的基频中位数接近 {target_pitch:.1f} Hz。"
+        "禁止电子变调、假声、叠音、回声、空洞共鸣和不自然的音色扭曲。"
+    )
+    if previous_pitch is None:
+        return natural_target
     tolerance = pitch_target_tolerance_hz(target_pitch)
     if pitch_target_matches(previous_pitch, target_pitch, tolerance):
-        return base_instruction
+        return natural_target
     direction = "提高" if previous_pitch < target_pitch else "降低"
     return (
-        f"{base_instruction}\n"
+        f"{natural_target}\n"
         f"上一个自然候选的实测基频中位数为 {previous_pitch:.1f} Hz。请在保持同一角色年龄、性别和自然音色身份的前提下，"
         f"将本次自然发声的基频中位数{direction}到约 {target_pitch:.1f} Hz。使用真实自然声线、自然共鸣和自然韵律。"
-        "禁止电子变调、假声、叠音、回声、空洞共鸣和不自然的音色扭曲。"
     )
 
 
@@ -287,7 +311,9 @@ def generate_voice_design(
             wavs, sample_rate = model.generate_voice_design(
                 text=str(job["text"]),
                 language=str(job.get("language") or "Auto"),
-                instruct=natural_pitch_retry_instruction(str(job["instruct"]), target_pitch, best_attempt_pitch),
+                instruct=natural_pitch_retry_instruction(
+                    str(job["instruct"]), target_pitch, best_attempt_pitch, expected_gender, pitch_min_hz, pitch_max_hz
+                ),
                 do_sample=bool(generation.get("do_sample", True)),
                 top_k=int(generation.get("top_k", 50)),
                 top_p=float(generation.get("top_p", 0.95)),
