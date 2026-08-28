@@ -8,5 +8,8 @@
 | 新角色不再随机继承音色 | `product_analysis_worker.py` 与 `tests/test_product_analysis_worker.py` | PASS |
 | 三候选保持待用户选择 | `product_voice_worker.py`、`voiceCandidateSelection.ts` 及对应测试 | PASS |
 | 儿童身份提示不含通用男性共鸣 | `text_director.py`、`characterVoiceProfile.ts` 及对应测试 | PASS |
+| 长儿童指令仍产生成人低频 | 任务 `ba49f28221a940d2b0d98fe05cbe919c`，桐原亮 9 次为 91.31 至 139.28 Hz | PASS |
+| 简洁正向童声模板有效 | 同一驻留模型实验 `0fb736e17f594e478b1982cc557b3f0f`，238.12、293.45、269.29 Hz | PASS |
+| 角色资产基频上下限被严格执行 | `voice_design_worker.py` 与 `tests/test_voice_design_worker.py` | PASS |
 | 真实音频年龄与性别 | 部署后真实 VoiceDesign 生成和试听 | PENDING |
 | 浏览器、Console、截图 | 部署后产品页面验收 | PENDING |

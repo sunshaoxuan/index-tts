@@ -662,13 +662,22 @@ def test_child_voice_design_uses_an_unambiguous_pre_voice_change_constraint():
     document = {"characters": [_character("role_child", "小宇", "character")], "segments": [_segment(1, "测试。", "测试。", role_id="role_child", name="小宇", kind="character")]}
     roles = [["role_child", "小宇", "character", "十岁男孩", "清亮年轻", "", "自然叙述", "是"]]
     job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 230}}})[0]
-    assert "尚未变声的儿童声线" in job["instruct"]
-    assert "成年男性低音" in job["instruct"]
-    assert job["instruct"].startswith("首要声音身份：必须由约 10 岁、尚未变声的男童自然发声")
-    assert "保持明确男性声线、男性声带质感和男性共鸣" not in job["instruct"]
-    assert "低沉、沉默或压抑只表示情绪与表达方式" in job["instruct"]
-    assert job["instruct"].endswith("最终确认：输出必须保持自然、明确、可听辨的未变声男童声音。")
+    assert job["instruct"].startswith("一个 10 岁的小学生男孩，使用尚未变声的自然男童童声说话")
+    assert "声音清亮、稚嫩、轻巧" in job["instruct"]
+    assert "声音基频中位数自然保持在 190 至 320 Hz，目标约 230 Hz" in job["instruct"]
+    assert "人物小传" not in job["instruct"]
+    assert "成年男性" not in job["instruct"]
+    assert "男性胸腔共鸣" not in job["instruct"]
     assert job["text"] == "我今年10岁，刚从学校回来。你找我有什么事吗？"
+
+
+def test_child_voice_design_translates_low_tone_words_into_child_safe_emotion():
+    document = {"characters": [_character("role_child", "小亮", "character")], "segments": [_segment(1, "测试。", "测试。", role_id="role_child", name="小亮", kind="character")]}
+    roles = [["role_child", "小亮", "character", "十岁男孩，情绪阴沉压抑。", "低沉而沉默的男孩声音", "", "沉稳舒缓", "是"]]
+    job = build_voice_design_jobs(document, roles, {"character_assets": {"role_child": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 255}}})[0]
+    assert "情绪安静克制，带轻微低落感" in job["instruct"]
+    assert "低沉" not in job["instruct"]
+    assert "沉稳舒缓" not in job["instruct"]
 
 
 def test_voice_design_jobs_preserve_structured_guidance_sources_and_add_mature_timbre_constraints():

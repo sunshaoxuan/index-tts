@@ -31,9 +31,13 @@ def gender_pitch_matches(
     median_pitch: float | None,
     character_age: int | None = None,
     target_pitch: float | None = None,
+    pitch_min_hz: float | None = None,
+    pitch_max_hz: float | None = None,
 ) -> bool:
     if median_pitch is None:
         return False
+    if pitch_min_hz is not None and pitch_max_hz is not None and 0 < pitch_min_hz < pitch_max_hz:
+        return pitch_min_hz <= median_pitch <= pitch_max_hz
     if character_age is not None and character_age < 13:
         return 130 <= median_pitch <= 360
     if character_age is not None and character_age < 20:
@@ -50,10 +54,19 @@ def gender_pitch_matches(
     return True
 
 
-def gender_pitch_score(expected_gender: str, median_pitch: float | None, target_pitch: float | None = None, character_age: int | None = None) -> float:
+def gender_pitch_score(
+    expected_gender: str,
+    median_pitch: float | None,
+    target_pitch: float | None = None,
+    character_age: int | None = None,
+    pitch_min_hz: float | None = None,
+    pitch_max_hz: float | None = None,
+) -> float:
     if median_pitch is None:
         return float("-inf")
-    if expected_gender in {"female", "male"} and not gender_pitch_matches(expected_gender, median_pitch, character_age, target_pitch):
+    if expected_gender in {"female", "male"} and not gender_pitch_matches(
+        expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
+    ):
         return -1_000_000.0 - abs(median_pitch - target_pitch) if target_pitch is not None else -1_000_000.0
     if target_pitch is not None:
         return -abs(median_pitch - target_pitch)
@@ -163,6 +176,8 @@ def generate_voice_design(
         )
         expected_gender = str(job.get("expected_gender") or "unspecified")
         target_pitch = float(job["pitch_target_hz"]) if job.get("pitch_target_hz") is not None else None
+        pitch_min_hz = float(job["pitch_min_hz"]) if job.get("pitch_min_hz") is not None else None
+        pitch_max_hz = float(job["pitch_max_hz"]) if job.get("pitch_max_hz") is not None else None
         character_age = int(job["character_age"]) if job.get("character_age") is not None else None
         generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
         requested_candidates = max(1, min(6, int(generation.get("candidate_count", 1))))
@@ -213,11 +228,13 @@ def generate_voice_design(
             candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
             sf.write(candidate_path, wavs[0], sample_rate)
             median_pitch = estimate_median_pitch(wavs[0], sample_rate) if expected_gender in {"female", "male"} or target_pitch is not None else None
-            score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age)
+            score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age, pitch_min_hz, pitch_max_hz)
             diagnostic_score = -abs(median_pitch - target_pitch) if median_pitch is not None and target_pitch is not None else float(median_pitch or float("-inf"))
             if diagnostic_score > best_attempt_score:
                 best_attempt_pitch, best_attempt_score = median_pitch, diagnostic_score
-            gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(expected_gender, median_pitch, character_age, target_pitch)
+            gender_matched = expected_gender not in {"female", "male"} or gender_pitch_matches(
+                expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz
+            )
             candidate_metrics.append(
                 {
                     "seed": candidate_seed,

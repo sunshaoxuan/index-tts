@@ -1756,6 +1756,44 @@ def gender_voice_identity_constraint(expected_gender: str, age: int) -> str:
     return ""
 
 
+def child_expression_direction(voice_hint: str, profile: str) -> str:
+    source = f"{voice_hint} {profile}"
+    if any(term in source for term in ("活泼", "开朗", "轻快", "兴奋")):
+        return "情绪活泼自然"
+    if any(term in source for term in ("悲伤", "低落", "压抑", "阴沉", "沉默", "低沉")):
+        return "情绪安静克制，带轻微低落感"
+    if any(term in source for term in ("紧张", "不安", "恐惧")):
+        return "情绪略带紧张，表达保持克制"
+    return "情绪自然克制"
+
+
+def compact_child_voice_instruction(
+    name: str,
+    expected_gender: str,
+    age: int,
+    pitch_min_hz: float,
+    pitch_max_hz: float,
+    pitch_target_hz: float,
+    voice_hint: str,
+    profile: str,
+) -> str:
+    identity = "小学生男孩" if expected_gender == "male" else "小学生女孩"
+    child_label = "男童" if expected_gender == "male" else "女童"
+    pitch = (
+        f"声音基频中位数自然保持在 {pitch_min_hz:.0f} 至 {pitch_max_hz:.0f} Hz，目标约 {pitch_target_hz:.0f} Hz。"
+        if pitch_min_hz > 0 and pitch_max_hz > pitch_min_hz and pitch_min_hz <= pitch_target_hz <= pitch_max_hz
+        else ""
+    )
+    return (
+        f"一个 {age} 岁的{identity}，使用尚未变声的自然{child_label}童声说话。"
+        "声音清亮、稚嫩、轻巧，具有明确的儿童口腔共鸣和小学生的日常说话感。"
+        f"为角色{name}建立可长期复用的声音。{child_expression_direction(voice_hint, profile)}，"
+        "吐字自然清楚，语速中等。"
+        f"{pitch}"
+        "干声，无背景音乐，无环境噪声。"
+    )
+
+
 def infer_voice_gender(voice_hint: str, profile: str = "", name: str = "") -> str:
     for source in (voice_hint, profile, name):
         female = any(term in source for term in VOICE_GENDER_TERMS["female"])
@@ -1863,20 +1901,25 @@ def build_voice_design_jobs(
                 "male": "最终确认：输出必须保持自然、明确、可听辨的男性声音。",
                 "unspecified": "",
             }[expected_gender]
-        instruct = (
-            f"{gender_constraint}"
-            f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
-            f"本角色有效导演上下文：{effective_guidance or '遵循作品体裁并保持角色跨章节一致'}。"
-            f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
-            f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
-            f"{pitch_constraint}"
-            f"{age_constraint}"
-            f"{child_tone_constraint}"
-            f"{voice_traits_instruction(voice_traits)}"
-            f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
-            "吐字清晰，干声，无背景音乐，无环境噪声。"
-            f"{gender_confirmation}"
-        )
+        if age < 13 and expected_gender in {"female", "male"}:
+            instruct = compact_child_voice_instruction(
+                name, expected_gender, age, pitch_min_hz, pitch_max_hz, pitch_target_hz, voice_hint, profile
+            )
+        else:
+            instruct = (
+                f"{gender_constraint}"
+                f"为{role_title}设计可长期复用的独特声音。作品体裁：{content_label}。"
+                f"本角色有效导演上下文：{effective_guidance or '遵循作品体裁并保持角色跨章节一致'}。"
+                f"人物小传：{profile or '原文身份信息不足，使用自然可信的角色声音'}。"
+                f"声音导演：{voice_hint or '采用与人物身份和作品体裁相符的自然声线'}。"
+                f"{pitch_constraint}"
+                f"{age_constraint}"
+                f"{child_tone_constraint}"
+                f"{voice_traits_instruction(voice_traits)}"
+                f"表达节奏：{rhythm_prompt or '自然表达，按语义停连'}。"
+                "吐字清晰，干声，无背景音乐，无环境噪声。"
+                f"{gender_confirmation}"
+            )
         jobs.append(
             {
                 "role_id": role_id,

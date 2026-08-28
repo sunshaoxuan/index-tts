@@ -270,6 +270,8 @@ def test_gender_pitch_guard_rejects_obvious_cross_gender_pitch():
     assert not worker.gender_pitch_matches("female", 174.77, 55, 210.0)
     assert not worker.gender_pitch_matches("female", 186.42, 35, 217.0)
     assert worker.gender_pitch_matches("female", 195.0, 35, 217.0)
+    assert not worker.gender_pitch_matches("male", 139.28, 10, 255.0, 190.0, 320.0)
+    assert worker.gender_pitch_matches("male", 238.12, 10, 255.0, 190.0, 320.0)
 
 
 def test_worker_collects_requested_number_of_verified_female_candidates(tmp_path, monkeypatch):
