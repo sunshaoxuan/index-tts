@@ -7,3 +7,6 @@
 | 工程分句未写入 | 白夜行02 `project.json` 的 `segments` 为 0，更新时间早于两轮分析 | high | 原子写入策略下符合预期 |
 | 14B 已安装且配置成功 | Ollama `/api/tags`、7864 设置测试接口与设置读取接口 | high | 当前主机运行状态 |
 | 安全拆块修复覆盖真实失败文本 | 白夜行02全文强制覆盖失败模拟生成 296 条安全分句，覆盖一致 | high | 模拟 AI 全部失败路径 |
+| 真实 14B 路由与全文块执行成立 | `09838d0fc3ed404e93e392817d9cb4fe/input.json`、状态历史、Ollama `/api/ps` | high | 任务在后处理阶段终止 |
+| 干净镜像后处理失败来自空示例音色表 | `09838d0fc3ed404e93e392817d9cb4fe/worker.log` 与 `product_analysis_worker.py` | high | 原始 AI 文档未在失败前落盘 |
+| 工程存在可用正式音色 | 白夜行02项目 API 返回 22 个 `voice_files` | high | 失败时 `segments` 仍为 0 |

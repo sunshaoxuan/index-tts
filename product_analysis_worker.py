@@ -20,6 +20,41 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def analysis_voice_ids(root: Path, project: dict[str, Any]) -> list[str]:
+    available_by_stem: dict[str, str] = {}
+    for raw_path in project.get("voice_files") or []:
+        path = Path(str(raw_path))
+        if path.is_file():
+            available_by_stem.setdefault(path.stem, path.stem)
+    for path in (root / "outputs" / "voice-library").glob("*.wav"):
+        available_by_stem.setdefault(path.stem, path.stem)
+    for path in (root / "examples").glob("voice_*.wav"):
+        available_by_stem.setdefault(path.stem, path.name)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def append(raw_voice_id: Any) -> None:
+        voice_id = str(raw_voice_id or "").strip()
+        resolved = available_by_stem.get(Path(voice_id).stem)
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            ordered.append(resolved)
+
+    for row in project.get("roles") or []:
+        if isinstance(row, list) and len(row) > 5:
+            append(row[5])
+    for asset in (project.get("character_assets") or {}).values():
+        if not isinstance(asset, dict):
+            continue
+        for candidate in asset.get("voice_candidates") or []:
+            if isinstance(candidate, dict):
+                append(candidate.get("voice_id"))
+    for voice_id in available_by_stem.values():
+        append(voice_id)
+    return ordered
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -42,7 +77,7 @@ def main() -> int:
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
-    roles, segments = document_to_tables(document, [path.name for path in (root / "examples").glob("voice_*.wav")])
+    roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
