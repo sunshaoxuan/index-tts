@@ -27,6 +27,7 @@ export function applyVoiceCandidateSelection(project: ProjectPayload, roleId: st
 
 export function pendingVoiceSelectionRoleIds(project: ProjectPayload): string[] {
   return project.roles.flatMap(row => {
+    if (String(row[5] || '').trim()) return [];
     const candidates = normalizeCharacterAsset(row, project.character_assets?.[row[0]]).voice_candidates ?? [];
     const verified = candidates.filter(candidate => candidate.gender_verified !== false);
     return verified.length > 0 && !verified.some(candidate => candidate.selected) ? [row[0]] : [];

@@ -746,6 +746,7 @@ function Studio() {
 
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];
   const pendingVoiceSelections = (project?.roles ?? []).flatMap(row => {
+    if (String(row[5] || '').trim()) return [];
     const asset = normalizeCharacterAsset(row, project?.character_assets?.[row[0]]);
     const candidates = (asset.voice_candidates ?? []).filter(candidate => candidate.gender_verified !== false);
     return candidates.length > 0 && !candidates.some(candidate => candidate.selected)

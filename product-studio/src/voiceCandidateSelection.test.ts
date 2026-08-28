@@ -27,3 +27,9 @@ test('choosing a candidate updates only the role voice and selected flags', () =
   assert.deepEqual(pendingVoiceSelectionRoleIds(selected), []);
   assert.equal(project.roles[0][5], '');
 });
+
+test('does not ask for a new decision when a stable role voice already exists', () => {
+  const stable = structuredClone(project);
+  stable.roles[0][5] = 'voice-stable';
+  assert.deepEqual(pendingVoiceSelectionRoleIds(stable), []);
+});
