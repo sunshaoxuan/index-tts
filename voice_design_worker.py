@@ -91,6 +91,36 @@ def calibrate_pitch_to_target(
     return corrected, corrected_pitch, round(total_semitones, 4), pitch_target_matches(corrected_pitch, target_pitch, tolerance)
 
 
+def persist_calibrated_candidate(
+    path: Path,
+    wav: Any,
+    sample_rate: int,
+    target_pitch: float | None,
+    correction_semitones: float,
+    *,
+    max_persisted_corrections: int = 2,
+) -> tuple[Any, float | None, float, bool]:
+    import soundfile as sf
+
+    candidate_wav = wav
+    total_semitones = float(correction_semitones)
+    for correction_pass in range(max_persisted_corrections + 1):
+        sf.write(path, candidate_wav, sample_rate)
+        persisted_wav, persisted_sample_rate = sf.read(path, dtype="float32")
+        persisted_pitch = estimate_median_pitch(persisted_wav, persisted_sample_rate)
+        matched = pitch_target_matches(persisted_pitch, target_pitch)
+        if matched or target_pitch is None or correction_pass >= max_persisted_corrections:
+            return persisted_wav, persisted_pitch, round(total_semitones, 4), matched
+        recalibrated, _, additional_semitones, _ = calibrate_pitch_to_target(
+            persisted_wav, persisted_sample_rate, persisted_pitch, target_pitch
+        )
+        if not additional_semitones or abs(total_semitones + additional_semitones) > 12.0:
+            return persisted_wav, persisted_pitch, round(total_semitones, 4), False
+        candidate_wav = recalibrated
+        total_semitones += additional_semitones
+    return persisted_wav, persisted_pitch, round(total_semitones, 4), False
+
+
 def gender_pitch_matches(
     expected_gender: str,
     median_pitch: float | None,
@@ -301,12 +331,14 @@ def generate_voice_design(
                 )
             else:
                 median_pitch, correction_semitones, target_matched = raw_pitch, 0.0, target_pitch is None
+            candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
+            candidate_wav, median_pitch, correction_semitones, target_matched = persist_calibrated_candidate(
+                candidate_path, candidate_wav, sample_rate, target_pitch, correction_semitones
+            )
             gender_matched = raw_gender_matched and (
                 expected_gender not in {"female", "male"}
                 or gender_pitch_matches(expected_gender, median_pitch, character_age, target_pitch, pitch_min_hz, pitch_max_hz)
             )
-            candidate_path = output_dir / f"{Path(str(job['filename'])).stem}-candidate-{attempt + 1}.wav"
-            sf.write(candidate_path, candidate_wav, sample_rate)
             score = gender_pitch_score(expected_gender, median_pitch, target_pitch, character_age, pitch_min_hz, pitch_max_hz)
             diagnostic_score = -abs(median_pitch - target_pitch) if median_pitch is not None and target_pitch is not None else float(median_pitch or float("-inf"))
             if diagnostic_score > best_attempt_score:

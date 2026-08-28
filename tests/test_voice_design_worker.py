@@ -46,6 +46,30 @@ def test_pitch_calibration_moves_audio_into_the_user_target_tolerance():
     assert len(calibrated) == len(original)
 
 
+def test_persisted_candidate_is_remeasured_and_recalibrated_before_acceptance(tmp_path, monkeypatch):
+    sample_rate = 24000
+    audio = np.zeros(sample_rate, dtype=np.float32)
+    measured_pitches = iter([157.83, 147.48])
+    recalibration_calls = []
+
+    monkeypatch.setattr(worker, "estimate_median_pitch", lambda *_args: next(measured_pitches))
+
+    def fake_recalibrate(wav, persisted_sample_rate, measured, target):
+        recalibration_calls.append((persisted_sample_rate, measured, target))
+        return wav, 147.48, -1.1804, True
+
+    monkeypatch.setattr(worker, "calibrate_pitch_to_target", fake_recalibrate)
+    persisted, measured, semitones, matched = worker.persist_calibrated_candidate(
+        tmp_path / "candidate.wav", audio, sample_rate, 147.0, 5.6121
+    )
+
+    assert len(persisted) == len(audio)
+    assert measured == 147.48
+    assert semitones == pytest.approx(4.4317)
+    assert matched is True
+    assert recalibration_calls == [(sample_rate, 157.83, 147.0)]
+
+
 def test_voice_design_runtime_release_drops_model_and_cuda_cache():
     calls = []
 
