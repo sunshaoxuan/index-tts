@@ -523,7 +523,7 @@ async function readAiMediaSettings(file) {
       api_key: String(stored.api_key || ''),
       text_model: String(stored.text_model || 'gemini-2.5-pro'),
       director_provider: stored.director_provider === 'compatible' ? 'compatible' : 'ollama',
-      director_model: String(stored.director_model || 'qwen3:8b'),
+      director_model: String(stored.director_model || 'qwen3:14b'),
       ollama_endpoint: configuredOllamaEndpoint(stored.ollama_endpoint),
       director_max_chunk_chars: Math.max(320, Math.min(12000, Math.round(Number(stored.director_max_chunk_chars) || 1400))),
       image_model: String(stored.image_model || 'gpt-image-1'),
@@ -532,7 +532,7 @@ async function readAiMediaSettings(file) {
       allow_insecure_http: Boolean(stored.allow_insecure_http),
     };
   } catch {
-    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:8b', ollama_endpoint: configuredOllamaEndpoint(), director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:14b', ollama_endpoint: configuredOllamaEndpoint(), director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
   }
 }
 
@@ -694,6 +694,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     const voiceFiles = [];
     const linkedProjects = [];
     const usedRoleIds = new Set();
+    const pronunciations = [];
+    const pronunciationOwners = new Map();
 
     for (const sourceProjectId of uniqueIds) {
       const sourcePath = path.join(projectRoot, sourceProjectId, 'project.json');
@@ -706,9 +708,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           roles: stored.roles,
           character_assets: stored.character_assets,
           segments: [],
-          pronunciations: [],
+          pronunciations: stored.pronunciations,
         });
-        source = { title: stored.title, roles: normalizedRoles.roles, character_assets: normalizedRoles.character_assets };
+        source = { title: stored.title, roles: normalizedRoles.roles, character_assets: normalizedRoles.character_assets, pronunciations: normalizedRoles.pronunciations };
       }
       catch { throw new Error(`关联来源工程不存在或无法读取：${sourceProjectId}`); }
       const importedRoles = [];
@@ -744,14 +746,43 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           missing_voice_ids: missingVoiceIds,
         });
       }
+      const duplicatePronunciations = [];
+      const conflictingPronunciations = [];
+      let importedPronunciationCount = 0;
+      for (const sourcePronunciation of source.pronunciations) {
+        const pronunciation = structuredClone(sourcePronunciation);
+        const sourceText = String(pronunciation.source || '');
+        const existing = pronunciationOwners.get(sourceText);
+        if (!existing) {
+          pronunciations.push(pronunciation);
+          pronunciationOwners.set(sourceText, { rule: pronunciation, sourceProjectId });
+          importedPronunciationCount += 1;
+          continue;
+        }
+        if (JSON.stringify(existing.rule) === JSON.stringify(pronunciation)) {
+          duplicatePronunciations.push({ source: sourceText, kept_source_project_id: existing.sourceProjectId });
+          continue;
+        }
+        conflictingPronunciations.push({
+          source: sourceText,
+          kept_source_project_id: existing.sourceProjectId,
+          kept_replacement: String(existing.rule.replacement || ''),
+          ignored_replacement: String(pronunciation.replacement || ''),
+        });
+      }
       linkedProjects.push({
         source_project_id: sourceProjectId,
         source_project_title: String(source.title || sourceProjectId),
         imported_at: importedAt,
         roles: importedRoles,
+        pronunciations: {
+          imported_count: importedPronunciationCount,
+          duplicate_rules: duplicatePronunciations,
+          conflict_rules: conflictingPronunciations,
+        },
       });
     }
-    return { roles, characterAssets, voiceFiles: [...new Set(voiceFiles)], linkedProjects };
+    return { roles, characterAssets, voiceFiles: [...new Set(voiceFiles)], pronunciations, linkedProjects };
   }
   const activeJobFile = path.join(jobRoot, 'active-job.json');
   let activeJob;
@@ -871,7 +902,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const endpoint = normalizeAiEndpoint(request.body?.endpoint);
       const textModel = String(request.body?.textModel || '').trim();
       const directorProvider = request.body?.directorProvider === 'compatible' ? 'compatible' : 'ollama';
-      const directorModel = String(request.body?.directorModel || '').trim() || 'qwen3:8b';
+      const directorModel = String(request.body?.directorModel || '').trim() || 'qwen3:14b';
       const ollamaEndpoint = normalizeOllamaEndpoint(request.body?.ollamaEndpoint);
       const directorMaxChunkChars = Math.max(320, Math.min(12000, Math.round(Number(request.body?.directorMaxChunkChars) || 1400)));
       const imageModel = String(request.body?.imageModel || '').trim();
@@ -940,7 +971,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const imported = await importLinkedProjectRoles(request.body?.source_project_ids, now);
       const dir = path.join(projectRoot, id);
       await Promise.all(['voices', 'process', 'renders', 'analysis'].map(name => mkdir(path.join(dir, name), { recursive: true })));
-      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: imported.roles, character_assets: imported.characterAssets, segments: [], pronunciations: [], director_history: [], director_memory: { source_text: '', roles: structuredClone(imported.roles), character_assets: structuredClone(imported.characterAssets), segments: [], pronunciations: [] }, voice_files: imported.voiceFiles, linked_projects: imported.linkedProjects, created_at: now, updated_at: now };
+      const payload = { version: 1, project_id: id, title, content_type: contentType, source_text: '', guidance: '', chapters: [], document: {}, roles: imported.roles, character_assets: imported.characterAssets, segments: [], pronunciations: imported.pronunciations, director_history: [], director_memory: { source_text: '', roles: structuredClone(imported.roles), character_assets: structuredClone(imported.characterAssets), segments: [], pronunciations: structuredClone(imported.pronunciations) }, voice_files: imported.voiceFiles, linked_projects: imported.linkedProjects, created_at: now, updated_at: now };
       await writeFile(path.join(dir, 'project.json'), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       return reply.code(201).send(payload);
     } catch (error) { return reply.code(400).send({ error: error.message }); }

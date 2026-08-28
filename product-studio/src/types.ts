@@ -80,6 +80,11 @@ export interface ProjectPayload {
     source_project_title: string;
     imported_at: string;
     roles: Array<{ source_role_id: string; target_role_id: string; name: string; voice_ids: string[]; available_voice_ids: string[]; missing_voice_ids: string[] }>;
+    pronunciations: {
+      imported_count: number;
+      duplicate_rules: Array<{ source: string; kept_source_project_id: string }>;
+      conflict_rules: Array<{ source: string; kept_source_project_id: string; kept_replacement: string; ignored_replacement: string }>;
+    };
   }>;
 }
 

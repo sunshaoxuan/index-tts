@@ -161,7 +161,7 @@ test('stores AI media credentials locally without returning the API key', async 
   const app = await buildApp({ repoRoot: root });
   const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:49530/v1/', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
   assert.equal(saved.statusCode, 200);
-  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', directorProvider: 'ollama', directorModel: 'qwen3:8b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
+  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', directorProvider: 'ollama', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
   const loaded = await app.inject('/api/settings/ai-media');
   assert.equal(loaded.json().hasApiKey, true);
   assert.equal(JSON.stringify(loaded.json()).includes('secret-key'), false);
@@ -548,6 +548,8 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   const created = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '新闻播报', content_type: 'news' } });
   assert.equal(created.statusCode, 201);
   assert.equal(created.json().content_type, 'news');
+  assert.deepEqual(created.json().pronunciations, []);
+  assert.deepEqual(created.json().director_memory.pronunciations, []);
   project.pronunciations = [{ source: '重庆银行', replacement: '重 庆 银行', note: '固定读法', enabled: true }];
   const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(saved.statusCode, 200);
@@ -575,6 +577,10 @@ test('creates a project linked to multiple sources and imports every role voice 
     { voice_id: 'voice-candidate-a', seed: 2, selected: false, gender_verified: true },
     { voice_id: 'voice-missing', seed: 3, selected: false, gender_verified: true },
   ] } };
+  demo.pronunciations = [
+    { source: '重庆银行', replacement: '重 庆 银行', note: '共同规则', enabled: true },
+    { source: '朝阳', replacement: '朝 阳', note: '首来源优先', enabled: true },
+  ];
   await writeFile(demoPath, JSON.stringify(demo));
   const secondDir = path.join(projectRoot, 'second');
   await mkdir(secondDir, { recursive: true });
@@ -584,6 +590,11 @@ test('creates a project linked to multiple sources and imports every role voice 
     title: '第二工程',
     roles: [['narrator', '第二旁白', 'narrator', '第二工程旁白。', '中性清晰', 'voice-candidate-b', '自然叙述', '否']],
     character_assets: { narrator: { voice_candidates: [{ voice_id: 'voice-candidate-b', seed: 4, selected: true, gender_verified: true }] } },
+    pronunciations: [
+      { source: '重庆银行', replacement: '重 庆 银行', note: '共同规则', enabled: true },
+      { source: '朝阳', replacement: '朝阳', note: '第二来源冲突', enabled: true },
+      { source: '甄嬛', replacement: '真 环', note: '第二来源独有', enabled: true },
+    ],
   }));
   demo.director_history = [{ snapshot: { source_text: '大体积历史不应进入角色导入规范化', segments: Array.from({ length: 500 }, (_, index) => [index + 1, '正文']) } }];
   await writeFile(demoPath, JSON.stringify(demo));
@@ -599,9 +610,27 @@ test('creates a project linked to multiple sources and imports every role voice 
   assert.deepEqual(payload.linked_projects.map(link => link.source_project_id), ['demo', 'second']);
   assert.deepEqual(payload.linked_projects[0].roles[0].available_voice_ids, ['voice-current', 'voice-candidate-a']);
   assert.deepEqual(payload.linked_projects[0].roles[0].missing_voice_ids, ['voice-missing']);
+  assert.deepEqual(payload.pronunciations, [
+    { source: '重庆银行', replacement: '重 庆 银行', note: '共同规则', enabled: true },
+    { source: '朝阳', replacement: '朝 阳', note: '首来源优先', enabled: true },
+    { source: '甄嬛', replacement: '真 环', note: '第二来源独有', enabled: true },
+  ]);
+  assert.equal(payload.linked_projects[0].pronunciations.imported_count, 2);
+  assert.deepEqual(payload.linked_projects[0].pronunciations.duplicate_rules, []);
+  assert.deepEqual(payload.linked_projects[0].pronunciations.conflict_rules, []);
+  assert.equal(payload.linked_projects[1].pronunciations.imported_count, 1);
+  assert.deepEqual(payload.linked_projects[1].pronunciations.duplicate_rules, [
+    { source: '重庆银行', kept_source_project_id: 'demo' },
+  ]);
+  assert.deepEqual(payload.linked_projects[1].pronunciations.conflict_rules, [
+    { source: '朝阳', kept_source_project_id: 'demo', kept_replacement: '朝 阳', ignored_replacement: '朝阳' },
+  ]);
   assert.deepEqual(payload.director_memory.roles, payload.roles);
+  assert.deepEqual(payload.director_memory.pronunciations, payload.pronunciations);
   const reopened = (await app.inject(`/api/projects/${payload.project_id}`)).json();
   assert.deepEqual(reopened.linked_projects, payload.linked_projects);
+  assert.deepEqual(reopened.pronunciations, payload.pronunciations);
+  assert.deepEqual(reopened.director_memory.pronunciations, payload.pronunciations);
   await app.close();
 });
 

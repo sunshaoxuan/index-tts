@@ -547,6 +547,16 @@ def test_minimum_failed_chunk_uses_lossless_fallback_and_continues():
     assert any(character["name"] == "林舟" for character in result["characters"])
 
 
+def test_adaptive_chunks_keep_closing_quotes_with_their_sentence_boundary():
+    source = "甲" * 180 + "？”" + "乙" * 180
+
+    chunks = split_document(source, 320)
+
+    assert "".join(chunks) == source
+    assert chunks[0].endswith("？”")
+    assert chunks[1].startswith("乙")
+
+
 def test_tables_round_trip_role_voice_and_segment_annotations():
     document = {
         "characters": [_character(), _character("role_001", "李明", "character")],

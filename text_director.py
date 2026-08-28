@@ -423,6 +423,10 @@ def split_document(text: str, max_chars: int = 1400) -> list[str]:
             boundary = max(candidates)
             if boundary >= lower_bound:
                 end = boundary + (2 if source[boundary : boundary + 2] == "\n\n" else 1)
+                while end < len(source) and source[end] in "”’」』】）)]\"'":
+                    end += 1
+                while end < len(source) and source[end].isspace():
+                    end += 1
         chunk = source[start:end]
         if chunk:
             chunks.append(chunk)
@@ -765,8 +769,12 @@ SOURCE
         raise DirectorValidationError(f"AI 连续两次未生成可验证的完整分轨：{last_error}")
 
     def _fallback_chunk(self, chunk: str, requested_type: str) -> dict[str, Any]:
-        segments = [
-            {
+        segments = []
+        for index, source_text in enumerate(split_exact_sentences(chunk), start=1):
+            spoken_text = source_text.strip().strip("“”‘’\"'")
+            if not spoken_text:
+                spoken_text = source_text.strip()
+            segments.append({
                 "order": index,
                 "section": "安全分段",
                 "speaker_id": "narrator",
@@ -778,15 +786,13 @@ SOURCE
                 "scene_id": "scene_001",
                 "language": "ZH",
                 "source_text": source_text,
-                "text": source_text.strip().strip("“”‘’\"'"),
+                "text": spoken_text,
                 "attitude": "中性叙述",
                 "emotion": "calm",
                 "intensity": 0.4,
                 "pace": "自然",
                 "pause_after_ms": 300,
-            }
-            for index, source_text in enumerate(split_exact_sentences(chunk), start=1)
-        ]
+            })
         return self._validate_chunk(
             {
                 "content_type": requested_type if requested_type != "auto" else "story",
