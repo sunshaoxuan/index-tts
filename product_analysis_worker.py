@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import time
@@ -55,6 +56,82 @@ def analysis_voice_ids(root: Path, project: dict[str, Any]) -> list[str]:
     return ordered
 
 
+def merge_analysis_roles(
+    document: dict[str, Any],
+    existing_roles: list[list[Any]],
+    generated_roles: list[list[Any]],
+    generated_segments: list[list[Any]],
+) -> tuple[list[list[Any]], list[list[Any]], dict[str, Any]]:
+    def role_key(row: list[Any]) -> tuple[str, str]:
+        return str(row[2]).strip(), "".join(str(row[1]).split()).casefold()
+
+    existing = [deepcopy(row) for row in existing_roles if isinstance(row, list) and len(row) >= 8]
+    existing_by_key = {role_key(row): row for row in existing}
+    used_ids = {str(row[0]) for row in existing}
+    generated_to_final: dict[str, str] = {}
+    final_by_id = {str(row[0]): row for row in existing}
+    new_roles: list[list[Any]] = []
+    reused_roles = 0
+
+    def allocate_role_id(preferred: str) -> str:
+        if preferred and preferred not in used_ids:
+            used_ids.add(preferred)
+            return preferred
+        index = 1
+        while f"role_{index:03d}" in used_ids:
+            index += 1
+        allocated = f"role_{index:03d}"
+        used_ids.add(allocated)
+        return allocated
+
+    for generated in generated_roles:
+        if not isinstance(generated, list) or len(generated) < 8:
+            continue
+        generated_id = str(generated[0])
+        prior = existing_by_key.get(role_key(generated))
+        if prior is not None:
+            final_id = str(prior[0])
+            final_row = final_by_id[final_id]
+            reused_roles += 1
+        else:
+            final_row = deepcopy(generated)
+            final_id = allocate_role_id(generated_id)
+            final_row[0] = final_id
+            final_by_id[final_id] = final_row
+            new_roles.append(final_row)
+        generated_to_final[generated_id] = final_id
+
+    final_roles = existing + new_roles
+    role_name_by_id = {str(row[0]): str(row[1]) for row in final_roles}
+    final_segments: list[list[Any]] = []
+    for segment in generated_segments:
+        copied = deepcopy(segment)
+        source_id = str(copied[2])
+        final_id = generated_to_final.get(source_id, source_id)
+        copied[2] = final_id
+        copied[3] = role_name_by_id.get(final_id, copied[3])
+        final_segments.append(copied)
+
+    for character in document.get("characters") or []:
+        source_id = str(character.get("id") or "")
+        final_id = generated_to_final.get(source_id, source_id)
+        character["id"] = final_id
+        character["name"] = role_name_by_id.get(final_id, character.get("name"))
+    for segment in document.get("segments") or []:
+        source_id = str(segment.get("speaker_id") or "")
+        final_id = generated_to_final.get(source_id, source_id)
+        segment["speaker_id"] = final_id
+        segment["speaker_name"] = role_name_by_id.get(final_id, segment.get("speaker_name"))
+
+    return final_roles, final_segments, {
+        "existing_roles": len(existing),
+        "reused_roles": reused_roles,
+        "new_roles": len(new_roles),
+        "retained_unmentioned_roles": max(0, len(existing) - reused_roles),
+        "generated_to_final": generated_to_final,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -78,11 +155,13 @@ def main() -> int:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
     roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
+    roles, segments, linked_role_report = merge_analysis_roles(document, project.get("roles") or [], roles, segments)
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
     character_assets = normalize_character_assets(roles, project.get("character_assets"))
     document["director_memory_reapply"] = memory_report
+    document["linked_role_merge"] = linked_role_report
     write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
     document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
     history = list(project.get("director_history") or [])
@@ -103,7 +182,7 @@ def main() -> int:
         director_history=history, director_memory=memory_snapshot,
         character_assets=character_assets,
     )
-    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report}
+    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report, "linked_role_merge": linked_role_report}
     write_json(Path(args.result).resolve(), result)
     memory_message = f"，恢复历史分句 {memory_report.get('restored_segments', 0)} 条" if memory_report.get("applied") else ""
     write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": f"AI 文本导演完成{memory_message}"})

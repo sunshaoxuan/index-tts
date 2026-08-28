@@ -10,3 +10,5 @@
 | 真实 14B 路由与全文块执行成立 | `09838d0fc3ed404e93e392817d9cb4fe/input.json`、状态历史、Ollama `/api/ps` | high | 任务在后处理阶段终止 |
 | 干净镜像后处理失败来自空示例音色表 | `09838d0fc3ed404e93e392817d9cb4fe/worker.log` 与 `product_analysis_worker.py` | high | 原始 AI 文档未在失败前落盘 |
 | 工程存在可用正式音色 | 白夜行02项目 API 返回 22 个 `voice_files` | high | 失败时 `segments` 仍为 0 |
+| 关联角色资产按并集合并 | `merge_analysis_roles` 回归测试覆盖重叠复用、新增 ID 冲突、未出现角色保留和分句 ID 改写 | high | 仍需真实 14B 运行验收 |
+| 两个验收临时工程已清理 | 两次项目 DELETE API 成功，复查匹配数为 0 | high | API 删除无应用内回收站 |
