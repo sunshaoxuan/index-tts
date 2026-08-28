@@ -876,7 +876,7 @@ function Studio() {
   return <Layout className="studio-shell">
     <Header className="studio-header">
       <Flex justify="space-between" align="center">
-        <div className="brand-lockup"><div className="brand-mark">IV</div><div><Title level={4}>Index Voice Studio</Title><Text>Product Edition {runtimeHealth?.productVersion ?? '1.0.0'}</Text></div></div>
+        <div className="brand-lockup"><div className="brand-mark">IV</div><div><div className="brand-title-row"><Title level={4}>Index Voice Studio</Title><Text className="brand-version">v{runtimeHealth?.productVersion ?? '1.1.4'}</Text></div><Text>Product Edition</Text></div></div>
         <nav className="studio-nav" aria-label="工作台功能导航"><button type="button" onClick={() => openWorkspace('source')}>Workspace</button><button type="button" onClick={() => openWorkspace('roles')}>Voices</button><button type="button" onClick={() => openWorkspace('segments')}>Director</button><button type="button" onClick={() => openWorkspace('delivery')}>Delivery</button></nav>
       </Flex>
     </Header>

@@ -272,7 +272,7 @@ MIN_ADAPTIVE_CHUNK_CHARS = 320
 @dataclass(frozen=True)
 class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen3:8b"
+    model: str = "qwen3:14b"
     timeout_seconds: int = 600
     max_chunk_chars: int = 1400
     provider: str = "ollama"

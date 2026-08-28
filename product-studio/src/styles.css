@@ -40,6 +40,8 @@ body * { box-shadow: none !important; }
 .workbench-active .studio-header { border-bottom-color: transparent; background: transparent; }
 .brand-lockup { display: flex; align-items: center; gap: 12px; }
 .brand-lockup > div:last-child { display: grid; gap: 5px; }
+.brand-title-row { display: flex; align-items: baseline; gap: 7px; }
+.studio-header .brand-version { font-size: 8px; font-weight: 650; letter-spacing: .08em; opacity: .72; text-transform: none; }
 .studio-header h4 {
   margin: 0 !important;
   color: var(--cream) !important;

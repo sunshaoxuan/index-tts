@@ -50,6 +50,10 @@ def _character(role_id="narrator", name="旁白", kind="narrator"):
     }
 
 
+def test_director_config_defaults_to_qwen3_14b():
+    assert DirectorConfig().model == "qwen3:14b"
+
+
 def _segment(order, source_text, text, role_id="narrator", name="旁白", kind="narrator"):
     return {
         "order": order,
