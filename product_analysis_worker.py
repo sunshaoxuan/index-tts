@@ -61,12 +61,28 @@ def merge_analysis_roles(
     existing_roles: list[list[Any]],
     generated_roles: list[list[Any]],
     generated_segments: list[list[Any]],
+    existing_characters: list[dict[str, Any]] | None = None,
 ) -> tuple[list[list[Any]], list[list[Any]], dict[str, Any]]:
-    def role_key(row: list[Any]) -> tuple[str, str]:
-        return str(row[2]).strip(), "".join(str(row[1]).split()).casefold()
+    def name_key(kind: Any, name: Any) -> tuple[str, str]:
+        return str(kind).strip(), "".join(str(name).split()).casefold()
 
     existing = [deepcopy(row) for row in existing_roles if isinstance(row, list) and len(row) >= 8]
-    existing_by_key = {role_key(row): row for row in existing}
+    existing_by_id = {str(row[0]): row for row in existing}
+    existing_by_key = {name_key(row[2], row[1]): row for row in existing}
+    for character in existing_characters or []:
+        if not isinstance(character, dict):
+            continue
+        prior = existing_by_id.get(str(character.get("id") or ""))
+        if prior is None:
+            continue
+        for value in [character.get("name"), *(character.get("aliases") or [])]:
+            if str(value or "").strip():
+                existing_by_key.setdefault(name_key(prior[2], value), prior)
+    generated_characters = {
+        str(character.get("id") or ""): character
+        for character in document.get("characters") or []
+        if isinstance(character, dict)
+    }
     used_ids = {str(row[0]) for row in existing}
     generated_to_final: dict[str, str] = {}
     final_by_id = {str(row[0]): row for row in existing}
@@ -88,7 +104,15 @@ def merge_analysis_roles(
         if not isinstance(generated, list) or len(generated) < 8:
             continue
         generated_id = str(generated[0])
-        prior = existing_by_key.get(role_key(generated))
+        character = generated_characters.get(generated_id) or {}
+        candidate_names = [generated[1], character.get("name"), *(character.get("aliases") or [])]
+        prior = None
+        for value in candidate_names:
+            if not str(value or "").strip():
+                continue
+            prior = existing_by_key.get(name_key(generated[2], value))
+            if prior is not None:
+                break
         if prior is not None:
             final_id = str(prior[0])
             final_row = final_by_id[final_id]
@@ -158,7 +182,10 @@ def main() -> int:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
     roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
-    roles, segments, linked_role_report = merge_analysis_roles(document, project.get("roles") or [], roles, segments)
+    roles, segments, linked_role_report = merge_analysis_roles(
+        document, project.get("roles") or [], roles, segments,
+        (project.get("document") or {}).get("characters") or [],
+    )
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )

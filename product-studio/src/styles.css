@@ -538,7 +538,10 @@ body * { box-shadow: none !important; }
 .pitch-summary span { color: rgba(255, 237, 215, .56); font-size: 9px; text-transform: uppercase; }
 .pitch-summary strong { color: var(--cream); font-size: 11px; font-weight: 500; }
 .character-card .voice-preview { min-width: 0; }
-.character-card-actions { display: flex; justify-content: space-between; gap: 10px; }
+.character-card-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.character-card-secondary-actions { display: flex; align-items: center; gap: 6px; }
+.role-replacement-modal label { display: grid; gap: 8px; }
+.role-replacement-modal .ant-select { width: 100%; }
 .portrait-editor { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; align-items: start; }
 .portrait-editor-preview { aspect-ratio: 1; overflow: hidden; border: 1px dashed var(--cork); border-radius: 14px; }
 .portrait-editor-preview .character-portrait-placeholder { min-height: 100%; }
@@ -775,6 +778,8 @@ body * { box-shadow: none !important; }
   .director-memory-summary { grid-template-columns: minmax(0, 1fr); gap: 7px; }
   .role-focus-summary { grid-template-columns: minmax(0, 1fr); gap: 7px; }
   .character-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .character-card-actions, .character-card-secondary-actions { width: 100%; }
+  .character-card-actions > .ant-btn, .character-card-secondary-actions > .ant-btn:first-child { flex: 1; }
   .portrait-editor { grid-template-columns: minmax(0, 1fr); }
   .portrait-editor-preview { max-width: 280px; }
   .split-segment-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; }

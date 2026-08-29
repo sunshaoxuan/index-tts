@@ -84,3 +84,30 @@ def test_merge_analysis_roles_reuses_existing_assets_and_appends_new_roles():
         "retained_unmentioned_roles": 1,
         "generated_to_final": {"ai_narrator": "narrator", "ai_detective": "role_001", "role_001": "role_002"},
     }
+
+
+def test_merge_analysis_roles_reuses_user_confirmed_alias_from_previous_document():
+    existing = [
+        ["narrator", "旁白", "narrator", "旁白资产", "中性清晰", "voice-narrator", "自然叙述", "否"],
+        ["role_existing", "桐原弥生子", "character", "前篇角色资产", "成熟克制", "voice-existing", "自然叙述", "否"],
+    ]
+    generated = [
+        ["ai_wife", "死者妻子", "character", "本篇识别结果", "悲伤女性", "", "自然叙述", "是"],
+    ]
+    segments = [[1, "正文", "ai_wife", "死者妻子", "ZH", "甲。", "甲。", "中性叙述", "平静", 0.5, "自然", 200]]
+    document = {
+        "characters": [{"id": "ai_wife", "name": "死者妻子", "kind": "character", "aliases": ["老板娘"]}],
+        "segments": [{"speaker_id": "ai_wife", "speaker_name": "死者妻子"}],
+    }
+    previous_characters = [{"id": "role_existing", "name": "桐原弥生子", "kind": "character", "aliases": ["死者妻子", "弥生子"]}]
+
+    roles, merged_segments, report = merge_analysis_roles(document, existing, generated, segments, previous_characters)
+
+    assert roles == existing
+    assert merged_segments[0][2:4] == ["role_existing", "桐原弥生子"]
+    assert document["characters"][0]["id"] == "role_existing"
+    assert document["characters"][0]["name"] == "桐原弥生子"
+    assert document["segments"][0]["speaker_id"] == "role_existing"
+    assert report["reused_roles"] == 1
+    assert report["new_roles"] == 0
+    assert report["generated_to_final"] == {"ai_wife": "role_existing"}

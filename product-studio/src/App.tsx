@@ -4,7 +4,7 @@ import {
   Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, UserOutlined,
+  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
@@ -18,6 +18,7 @@ import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
 import { isProjectWorkspaceVisible, nextProjectActionsExpanded } from './projectActionVisibility';
 import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
+import { replaceProjectRole } from './roleReplacement';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
@@ -213,6 +214,8 @@ function Studio() {
   const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
   const [roleDraft, setRoleDraft] = useState<RoleRow>();
   const [roleAssetDraft, setRoleAssetDraft] = useState<CharacterAsset>();
+  const [roleReplacementSourceId, setRoleReplacementSourceId] = useState<string>();
+  const [roleReplacementTargetId, setRoleReplacementTargetId] = useState<string>();
   const [profileGenerating, setProfileGenerating] = useState(false);
   const [portraitGenerating, setPortraitGenerating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -281,6 +284,8 @@ function Studio() {
 
   useEffect(() => {
     setActiveRoleId(current => normalizeActiveRoleId(project?.roles ?? [], current));
+    setRoleReplacementSourceId(undefined);
+    setRoleReplacementTargetId(undefined);
   }, [project?.project_id, project?.roles]);
 
   useEffect(() => {
@@ -688,6 +693,19 @@ function Studio() {
     } catch (error) { message.error((error as Error).message); }
   };
 
+  const applyRoleReplacement = () => {
+    if (!project || !roleReplacementSourceId || !roleReplacementTargetId || jobRunning) return;
+    try {
+      const result = replaceProjectRole(project, roleReplacementSourceId, roleReplacementTargetId);
+      setProject(result.project);
+      setDirty(true);
+      setActiveRoleId(roleReplacementTargetId);
+      setRoleReplacementSourceId(undefined);
+      setRoleReplacementTargetId(undefined);
+      message.success(`已用“${result.targetRoleName}”替换“${result.sourceRoleName}”，同步更新 ${result.reassignedSegments} 条分句，请保存工程`);
+    } catch (error) { message.error((error as Error).message); }
+  };
+
   const updateScene = (sceneId: string, field: string, value: string | string[]) => {
     if (!project || jobRunning) return;
     const document = { ...(project.document ?? {}) };
@@ -982,7 +1000,7 @@ function Studio() {
                     <Paragraph ellipsis={{ rows: 4 }} title={row[3]}>{row[3]}</Paragraph>
                     <div className="pitch-summary"><span>建议基频</span><strong>{asset.pitch_min_hz} 至 {asset.pitch_max_hz} Hz</strong></div>
                     <VoicePreview voiceId={row[5]} />
-                    <div className="character-card-actions"><Button disabled={jobRunning} type="primary" icon={<EditOutlined />} onClick={event => { event.stopPropagation(); openRoleEditor(index); }}>打开角色卡片</Button><span onClick={stopRoleDeleteCardActivation} onKeyDown={stopRoleDeleteCardActivation}><Popconfirm disabled={jobRunning || row[0] === 'narrator'} title={`删除角色“${row[1]}”`} description={referencedSegments ? `该角色当前引用 ${referencedSegments} 条分句。确认后这些分句会重分配到旁白，角色设置和工程内关联会移除。` : '该角色没有分句引用。确认后角色设置和工程内关联会移除。'} okText="确认删除角色" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning || row[0] === 'narrator'} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm></span></div>
+                    <div className="character-card-actions"><Button disabled={jobRunning} type="primary" icon={<EditOutlined />} onClick={event => { event.stopPropagation(); openRoleEditor(index); }}>打开角色卡片</Button><div className="character-card-secondary-actions" onClick={stopRoleDeleteCardActivation} onKeyDown={stopRoleDeleteCardActivation}><Button disabled={jobRunning || row[0] === 'narrator'} icon={<SwapOutlined />} onClick={() => { setRoleReplacementSourceId(row[0]); setRoleReplacementTargetId(undefined); }}>替换为已有角色</Button><Popconfirm disabled={jobRunning || row[0] === 'narrator'} title={`删除角色“${row[1]}”`} description={referencedSegments ? `该角色当前引用 ${referencedSegments} 条分句。确认后这些分句会重分配到旁白，角色设置和工程内关联会移除。` : '该角色没有分句引用。确认后角色设置和工程内关联会移除。'} okText="确认删除角色" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removeRole(row[0])}><Button disabled={jobRunning || row[0] === 'narrator'} type="text" danger icon={<DeleteOutlined />} aria-label={`删除角色 ${row[1]}`} /></Popconfirm></div></div>
                   </div>
                 </Card>;
               })}
@@ -1020,6 +1038,13 @@ function Studio() {
         <label className="split-source-field"><Text strong>在原文中选择拆分位置</Text><textarea ref={splitSourceRef} readOnly aria-label="选择分句拆分位置" value={splitSource} onSelect={event => setSplitEditor(current => current ? { ...current, offset: event.currentTarget.selectionStart } : current)} /></label>
         <Text className="split-position">拆分位置 {splitEditor?.offset ?? 0} / {splitSource.length}</Text>
         <div className="split-preview"><section><Text strong>前半句</Text><p>{splitBefore || '尚无可朗读文字'}</p></section><section><Text strong>后半句</Text><p>{splitAfter || '尚无可朗读文字'}</p></section></div>
+      </Modal>
+      <Modal width={640} title="用已存在角色替换" open={Boolean(project && roleReplacementSourceId)} okText="确认替换并同步分句" cancelText="取消" okButtonProps={{ disabled: jobRunning || !roleReplacementTargetId }} onOk={applyRoleReplacement} onCancel={() => { setRoleReplacementSourceId(undefined); setRoleReplacementTargetId(undefined); }}>
+        {project && roleReplacementSourceId && <Space direction="vertical" size="large" className="modal-fields role-replacement-modal">
+          <Alert type="warning" showIcon message={`当前角色“${project.roles.find(row => row[0] === roleReplacementSourceId)?.[1] || roleReplacementSourceId}”会从本工程删除`} description={`该角色引用的 ${project.segments.filter(row => row[2] === roleReplacementSourceId).length} 条分句会统一改为目标角色。目标角色的资料、形象、稳定音色和全部候选保持不变，原角色的永久音色文件继续保留在共享音色库。保存工程后，受影响的旧片断和完整交付会按角色变化标记为过期。`} />
+          <label><Text strong>选择替换后的已有角色</Text><Select aria-label="选择替换后的已有角色" disabled={jobRunning} showSearch optionFilterProp="label" value={roleReplacementTargetId} onChange={setRoleReplacementTargetId} options={project.roles.filter(row => row[0] !== roleReplacementSourceId).map(row => ({ value: row[0], label: `${row[1]} · ${row[0]} · ${project.segments.filter(segment => segment[2] === row[0]).length} 条分句${row[5] ? ' · 已有稳定音色' : ' · 音色待定'}` }))} placeholder="搜索名称或角色 ID" /></label>
+          {roleReplacementTargetId && <Alert type="info" showIcon message={`替换后统一使用“${project.roles.find(row => row[0] === roleReplacementTargetId)?.[1]}”`} description="当前角色名称会记入目标角色别名，后续 AI 重新分析时可复用这次人工确认，减少同一人物再次被新增。" />}
+        </Space>}
       </Modal>
       <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
         {roleDraft && roleAssetDraft && presets && project && <div className="role-editor-grid">
