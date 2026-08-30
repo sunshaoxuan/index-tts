@@ -11,9 +11,9 @@
 | 服务恢复保留等待队列 | `job-queue.json` | 服务启动恢复集成测试 | 已通过 |
 | 文档与交付状态完整 | 需求、架构、调查和测试记录 | `git diff --check` 与文件检查 | 已通过 |
 | 隔离运行环境可用 | 页面、Console、截图 | 7865 DOM、空 Console、正式截图 | 已通过 |
-| 当前 7864 容器包含本次源码 | Docker 镜像与容器 | `1.1.34` 镜像 ID、容器镜像 ID及两项源码 SHA256 一致 | 已通过 |
+| 当前 7864 容器包含最终 `master` 源码 | Docker 镜像与容器 | `1.1.36` 的 revision 对应最终 `master`，关键源码 SHA256 与 `master` 工作树一致 | 已通过 |
 | 现行运行配置和持久数据保持 | GPU、网络、重启策略和挂载 | `docker inspect` 显示原有五项挂载、GPU、8 GiB 共享内存及 7864 端口保持 | 已通过 |
-| 现行页面运行正常 | 7864 页面、Console、截图 | DOM 完整加载现有工程，Console 无错误或警告，截图已保存 | 已通过 |
-| 版本管理交付 | 精确提交必要文件 | detached HEAD 与本机 `master` 分叉，远端缺少 `master`，等待明确历史处理授权 | 未通过 |
+| 现行页面运行正常 | 7864 页面、Console、截图 | DOM 完整加载现有工程和产品版本 1.1.5，Console 无错误或警告，截图已保存 | 已通过 |
+| 版本管理交付 | 精确提交必要文件 | `sunshaoxuan/index-tts` fork 的 `master`，本机 ref、跟踪 ref 和 GitHub ref 一致 | 已通过 |
 
-当前镜像与容器部署范围已经通过。完整源码版本管理交付仍需解决 `master` 历史边界后验收。
+全部初衷级验收条目已经通过。上游 `index-tts/index-tts` 的 `main` 保持不变，交付目标为 fork 的 `master`。

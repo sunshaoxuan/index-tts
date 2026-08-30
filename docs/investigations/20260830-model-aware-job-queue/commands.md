@@ -25,3 +25,14 @@
 8. `/api/health`、`/api/active-job`、GPU、IndexTTS 环境和 VoiceDesign 环境通过。
 9. 应用内浏览器检查 `http://127.0.0.1:7864/`，DOM 完整加载现有工程，Console 无 error 或 warning。
 10. 浏览器截图保存为 `artifacts/model-aware-job-queue/container-1.1.34-browser-home.png`。
+
+## 最终 master 交付与容器同步
+
+1. 将精确暂存内容提交并整合到本机 `master`，需求文档保留既有第 93 至 109 条，模型感知队列登记为第 110 条。
+2. 在整合后的 `master` 运行 Product Studio 全量测试，122 项全部通过；生产构建成功，处理 3103 个模块。
+3. 上游仓库拒绝当前账户写入后，经用户授权创建 `sunshaoxuan/index-tts` fork，并增加名为 `fork` 的 Git remote，原 `origin` 保持指向 `index-tts/index-tts`。
+4. 非强制推送本机 `master` 到 fork，并验证本机 `master`、`fork/master` 和 GitHub 实际 ref 一致；上游 `main` 保持原提交。
+5. 发现整合后的 `master` 与 `1.1.34` 容器源码哈希不同后，重新从最终 `master` 构建 `indextts25-product-studio:1.1.36`。
+6. 镜像层检查服务入口、模型调度器和两项相关测试的 SHA256 与最终 `master` 工作树一致。
+7. 活动任务为空闲后重新创建 7864 容器，保留 GPU、8 GiB 共享内存、网络、端口、重启策略和五项现行挂载。
+8. 最终容器必须通过 healthy、RestartCount、API、GPU、双 Python 环境、日志、页面 DOM、产品版本、Console 和截图验收。
