@@ -1,7 +1,5 @@
 # Changelog
 
-* 修复角色替换保存完成时出现全页面刷新感的问题。保存期间只锁定替换弹窗和背景交互，不再挂载全屏加载层，角色与分句持久化、慢网防重复和失败重试边界保持不变。
-
 本文件记录 IndexVoiceStudio 的产品版本。版本格式遵循 [Semantic Versioning](https://semver.org/)。IndexTTS 推理引擎保留独立版本号。
 
 ## [Unreleased]
