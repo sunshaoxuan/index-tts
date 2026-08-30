@@ -175,6 +175,10 @@ function normalizeCharacterAsset(role, source = {}) {
     portrait_style: normalizePortraitStyle(source.portrait_style),
     ...(source.portrait_notes ? { portrait_notes: String(source.portrait_notes) } : {}),
     ...(source.profile_updated_by ? { profile_updated_by: String(source.profile_updated_by) } : {}),
+    ...(source.age_source ? { age_source: String(source.age_source) } : {}),
+    ...(source.age_evidence ? { age_evidence: String(source.age_evidence) } : {}),
+    ...(source.gender_source ? { gender_source: String(source.gender_source) } : {}),
+    ...(source.gender_evidence ? { gender_evidence: String(source.gender_evidence) } : {}),
   };
 }
 

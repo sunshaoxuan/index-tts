@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from character_assets import normalize_character_assets
+from character_assets import normalize_character_assets, recommend_pitch_range
+from voice_controls import recommended_voice_traits
 from novel_project import NovelProjectStore, pronunciation_rows
 from director_memory import reapply_director_memory
 from text_director import DirectorConfig, OllamaTextDirector, document_to_tables
@@ -159,6 +160,59 @@ def merge_analysis_roles(
     }
 
 
+def apply_analysis_demographics(
+    document: dict[str, Any],
+    roles: list[list[Any]],
+    existing_assets: dict[str, Any] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    current = existing_assets if isinstance(existing_assets, dict) else {}
+    characters = {
+        str(item.get("id") or ""): item
+        for item in document.get("characters", [])
+        if isinstance(item, dict)
+    }
+    prepared = deepcopy(current)
+    analyzed = 0
+    changed = 0
+    for row in roles:
+        role_id = str(row[0])
+        character = characters.get(role_id, {})
+        source = deepcopy(prepared.get(role_id)) if isinstance(prepared.get(role_id), dict) else {}
+        prior_age = source.get("age")
+        prior_gender = source.get("gender")
+        inferred_age = character.get("age") if isinstance(character.get("age"), int) and not isinstance(character.get("age"), bool) else None
+        if str(row[2]) != "narrator" and inferred_age is None:
+            raise ValueError(f"角色 {row[1]} 缺少基于当前文章的年龄推断")
+        inferred_gender = character.get("gender") if character.get("gender") in {"female", "male", "unspecified"} else "unspecified"
+        demographic_changed = False
+        if inferred_age is not None:
+            inferred_age = max(5, min(100, inferred_age))
+            demographic_changed = prior_age is not None and int(prior_age) != inferred_age
+            source["age"] = inferred_age
+            source["age_source"] = "ai_article_inference"
+            source["age_evidence"] = str(character.get("age_evidence") or "").strip()
+        demographic_changed = demographic_changed or (prior_gender is not None and prior_gender != inferred_gender)
+        source["gender"] = inferred_gender
+        source["gender_source"] = "ai_article_inference"
+        source["gender_evidence"] = str(character.get("gender_evidence") or "").strip()
+        analyzed += 1
+        if demographic_changed:
+            age = int(source.get("age") or 35)
+            gender = str(source.get("gender") or "unspecified")
+            minimum, maximum, target = recommend_pitch_range(gender, age)
+            source.update({
+                "pitch_min_hz": minimum,
+                "pitch_max_hz": maximum,
+                "pitch_target_hz": target,
+                "voice_traits": recommended_voice_traits(age),
+            })
+            source.pop("voice_candidates", None)
+            row[7] = "是"
+            changed += 1
+        prepared[role_id] = source
+    return normalize_character_assets(roles, prepared), {"analyzed": analyzed, "changed": changed}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -189,9 +243,10 @@ def main() -> int:
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
-    character_assets = normalize_character_assets(roles, project.get("character_assets"))
+    character_assets, demographic_report = apply_analysis_demographics(document, roles, project.get("character_assets"))
     document["director_memory_reapply"] = memory_report
     document["linked_role_merge"] = linked_role_report
+    document["demographic_merge"] = demographic_report
     write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
     document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
     history = list(project.get("director_history") or [])
@@ -212,7 +267,7 @@ def main() -> int:
         director_history=history, director_memory=memory_snapshot,
         character_assets=character_assets,
     )
-    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report, "linked_role_merge": linked_role_report}
+    result = {"document": document, "roles": roles, "segments": segments, "guidance_routing": document["guidance_routing"], "director_memory_reapply": memory_report, "linked_role_merge": linked_role_report, "demographic_merge": demographic_report}
     write_json(Path(args.result).resolve(), result)
     memory_message = f"，恢复历史分句 {memory_report.get('restored_segments', 0)} 条" if memory_report.get("applied") else ""
     write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": f"AI 文本导演完成{memory_message}"})

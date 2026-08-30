@@ -132,7 +132,7 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["id", "name", "kind", "aliases", "profile", "voice_hint", "confidence", "evidence"],
+                "required": ["id", "name", "kind", "aliases", "profile", "voice_hint", "gender", "gender_evidence", "age", "age_evidence", "confidence", "evidence"],
                 "properties": {
                     "id": {"type": "string"},
                     "name": {"type": "string"},
@@ -140,6 +140,10 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
                     "aliases": {"type": "array", "items": {"type": "string"}},
                     "profile": {"type": "string"},
                     "voice_hint": {"type": "string"},
+                    "gender": {"type": "string", "enum": ["female", "male", "unspecified"]},
+                    "gender_evidence": {"type": "string"},
+                    "age": {"anyOf": [{"type": "integer", "minimum": 5, "maximum": 100}, {"type": "null"}]},
+                    "age_evidence": {"type": "string"},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "evidence": {"type": "string"},
                 },
@@ -656,9 +660,11 @@ class OllamaTextDirector:
 1. 人物使用稳定 ID，旁白固定为 narrator。姓名、职称、外貌称谓和关系称谓写入同一角色 aliases。
 2. 描述短语含副词或动作词时不得作为人物名称。新增人物必须提供 evidence 和 confidence。
 3. 场景记录地点、时间、参与角色 ID、叙事视角、基调和证据。场景转换需要时间、地点、人物集合或叙事视角变化依据。
-4. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
-5. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
-6. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
+4. gender 结合本块原文中的称谓、亲属关系、身份、行为和上下文推断 female 或 male，并在 gender_evidence 记录直接证据或推断依据。确实无法判断时填写 unspecified 并说明原因。
+5. 每个 character 的 age 都要结合本块原文中的明示年龄、亲属关系、身份、就学或职业阶段、时间线和行为语境推断整数，并在 age_evidence 记录直接证据或推断依据。范围年龄采用下限并保留完整范围。禁止无依据统一填写 35。narrator 可以填写 null。
+6. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
+7. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
+8. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
 
 本块原文：
 <<<SOURCE
@@ -714,6 +720,12 @@ SOURCE
                 if candidate.get("confidence", 0) > existing.get("confidence", 0):
                     for field in ("profile", "voice_hint", "confidence", "evidence"):
                         existing[field] = candidate.get(field, existing.get(field))
+                if candidate.get("gender") in {"female", "male"}:
+                    existing["gender"] = candidate["gender"]
+                    existing["gender_evidence"] = candidate.get("gender_evidence", "")
+                if candidate.get("age") is not None:
+                    existing["age"] = candidate["age"]
+                    existing["age_evidence"] = candidate.get("age_evidence", "")
             for value in [existing["name"], *existing.get("aliases", [])]:
                 alias_index[str(value).strip().casefold()] = existing
             local_to_global[candidate["id"]] = existing["id"]
@@ -851,9 +863,10 @@ SOURCE
 10. 用户导演补充：{guidance.strip() or '无'}。先进行语义拆分：作品级要求应用于全部轨道；点名角色、角色类型、主角、配角、身份描述或上下文指代的要求只应用于目标角色。把角色专属声音要求合并进目标角色的 voice_hint，把角色专属表演要求应用于该角色的 segments，禁止复制给无关角色。
 11. 每个角色的 profile 在本阶段只写 40 到 120 个中文字符，记录当前原文明确支持的身份、关系、行为和说话方式。详细人物小传由独立功能扩写，不能占用分句请求的输出预算。
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
-13. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
-14. 先识别本块 scene，记录地点、时间、参与人物、叙事视角、情绪基调和原文证据。每条 segment 必须引用本块 scenes 中的 scene_id。场景转换需要时间、地点、人物集合或叙事视角变化证据。
-15. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
+13. 每个 character 都必须根据当前原文的称谓、亲属关系、身份、行为、时间线和上下文推断 gender 与 age，并在对应 evidence 字段区分直接陈述和语境推断。明示信息优先，范围年龄采用下限，禁止无依据统一填写 35。已有角色资料只用于人物识别，不能代替当前文章的人口属性分析。
+14. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
+15. 先识别本块 scene，记录地点、时间、参与人物、叙事视角、情绪基调和原文证据。每条 segment 必须引用本块 scenes 中的 scene_id。场景转换需要时间、地点、人物集合或叙事视角变化证据。
+16. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
 
 已有角色表：{roster or '[]'}
 全文场景注册表：{scene_registry or '[]'}。优先复用其中的 scene id；当前块出现有证据的新场景时可以新增。
@@ -1036,6 +1049,8 @@ JSON Schema：{schema_text}
             if not isinstance(raw, dict):
                 raise DirectorError("角色项格式无效。")
             character = self._normalize_character(raw)
+            if character["kind"] != "narrator" and character.get("age") is None:
+                raise DirectorError(f"角色 {character['name']} 缺少基于当前文章的年龄推断。")
             if character["id"] in character_ids:
                 continue
             character_ids.add(character["id"])
@@ -1382,6 +1397,10 @@ JSON Schema：{schema_text}
             "kind": kind,
             "profile": str(raw.get("profile", "")).strip(),
             "voice_hint": str(raw.get("voice_hint", "")).strip(),
+            "gender": str(raw.get("gender", "unspecified")).strip() if str(raw.get("gender", "unspecified")).strip() in {"female", "male", "unspecified"} else "unspecified",
+            "gender_evidence": str(raw.get("gender_evidence", "")).strip(),
+            "age": max(5, min(100, int(raw["age"]))) if isinstance(raw.get("age"), int) and not isinstance(raw.get("age"), bool) else None,
+            "age_evidence": str(raw.get("age_evidence", "")).strip(),
         }
         if any(key in raw for key in ("aliases", "confidence", "evidence")):
             normalized.update({
@@ -1485,6 +1504,12 @@ JSON Schema：{schema_text}
                     candidate_score = len(candidate) - sum(30 for token in weak_tokens if token in candidate)
                     if candidate and candidate != existing.get("name") and candidate_score > current_score:
                         existing[field] = candidate
+                if character.get("gender") in {"female", "male"}:
+                    existing["gender"] = character["gender"]
+                    existing["gender_evidence"] = character.get("gender_evidence", "")
+                if character.get("age") is not None:
+                    existing["age"] = character["age"]
+                    existing["age_evidence"] = character.get("age_evidence", "")
             local_to_global[character["id"]] = existing["id"]
 
         local_scene_to_global: dict[str, str] = {}

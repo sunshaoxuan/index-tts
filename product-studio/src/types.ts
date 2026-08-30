@@ -70,6 +70,10 @@ export interface CharacterAsset {
   portrait_style: string;
   portrait_notes?: string;
   profile_updated_by?: string;
+  age_source?: string;
+  age_evidence?: string;
+  gender_source?: string;
+  gender_evidence?: string;
 }
 
 export interface ProjectPayload {

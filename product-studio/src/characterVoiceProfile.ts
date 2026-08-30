@@ -84,6 +84,10 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     portrait_style: PORTRAIT_STYLE_IDS.has(requestedPortraitStyle) ? requestedPortraitStyle : DEFAULT_PORTRAIT_STYLE,
     portrait_notes: input?.portrait_notes,
     profile_updated_by: input?.profile_updated_by,
+    age_source: input?.age_source,
+    age_evidence: input?.age_evidence,
+    gender_source: input?.gender_source,
+    gender_evidence: input?.gender_evidence,
   };
 }
 
@@ -97,5 +101,9 @@ export function updateAssetDemographics(asset: CharacterAsset, gender: Character
     pitch_max_hz: recommendation.max,
     pitch_target_hz: recommendation.target,
     voice_traits: recommendedVoiceTraits(age),
+    age_source: 'manual',
+    age_evidence: undefined,
+    gender_source: 'manual',
+    gender_evidence: undefined,
   };
 }

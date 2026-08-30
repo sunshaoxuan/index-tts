@@ -41,13 +41,21 @@ from text_director import (
 
 
 def _character(role_id="narrator", name="旁白", kind="narrator"):
-    return {
+    character = {
         "id": role_id,
         "name": name,
         "kind": kind,
         "profile": "测试角色",
         "voice_hint": "稳定自然",
     }
+    if kind != "narrator":
+        character.update({
+            "gender": "male",
+            "gender_evidence": "测试稿件中的人物称谓",
+            "age": 30,
+            "age_evidence": "测试稿件中的身份和时间线推断",
+        })
+    return character
 
 
 def test_director_config_defaults_to_qwen3_14b():
@@ -160,7 +168,8 @@ def test_narrator_aliases_merge_into_one_stable_track():
     result = director.analyze_document("雨夜。李明说：“你终于来了。”", content_type="novel")
 
     narrators = [item for item in result["characters"] if item["kind"] == "narrator"]
-    assert narrators == [{"id": "narrator", "name": "旁白", "kind": "narrator", "profile": "测试角色", "voice_hint": "稳定自然"}]
+    assert len(narrators) == 1
+    assert {key: narrators[0][key] for key in ("id", "name", "kind", "profile", "voice_hint")} == {"id": "narrator", "name": "旁白", "kind": "narrator", "profile": "测试角色", "voice_hint": "稳定自然"}
     assert all(item["speaker_name"] == "旁白" for item in result["segments"] if item["speaker_kind"] == "narrator")
 
 

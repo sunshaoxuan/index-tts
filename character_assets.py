@@ -69,5 +69,9 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
             "portrait_style": portrait_style,
             **({"portrait_notes": str(source["portrait_notes"])} if source.get("portrait_notes") else {}),
             **({"profile_updated_by": str(source["profile_updated_by"])} if source.get("profile_updated_by") else {}),
+            **({"age_source": str(source["age_source"])} if source.get("age_source") else {}),
+            **({"age_evidence": str(source["age_evidence"])} if source.get("age_evidence") else {}),
+            **({"gender_source": str(source["gender_source"])} if source.get("gender_source") else {}),
+            **({"gender_evidence": str(source["gender_evidence"])} if source.get("gender_evidence") else {}),
         }
     return result

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from product_analysis_worker import analysis_voice_ids, merge_analysis_roles
+from product_analysis_worker import analysis_voice_ids, apply_analysis_demographics, merge_analysis_roles
 
 
 def test_analysis_voice_ids_use_project_and_library_voices_without_examples(tmp_path: Path):
@@ -111,3 +111,57 @@ def test_merge_analysis_roles_reuses_user_confirmed_alias_from_previous_document
     assert report["reused_roles"] == 1
     assert report["new_roles"] == 0
     assert report["generated_to_final"] == {"ai_wife": "role_existing"}
+
+
+def test_alias_match_reuses_same_person_and_current_demographics_override_defaults():
+    existing = [["role_013", "桐原亮", "character", "桐原洋介的儿子。", "少年声线", "voice-child", "自然叙述", "否"]]
+    generated = [["role_001", "桐原亮司", "character", "桐原洋介的儿子，十至十一岁。", "男童声线", "voice-new", "自然叙述", "否"]]
+    document = {
+        "characters": [{
+            "id": "role_001", "name": "桐原亮司", "kind": "character", "aliases": ["桐原亮"],
+            "gender": "male", "gender_evidence": "原文称其为儿子", "age": 10, "age_evidence": "原文写明十至十一岁",
+        }],
+        "segments": [],
+    }
+
+    roles, _segments, report = merge_analysis_roles(document, existing, generated, [], [])
+    assets, demographics = apply_analysis_demographics(document, roles, {"role_013": {"gender": "unspecified", "age": 35}})
+
+    assert len(roles) == 1
+    assert roles[0][0] == "role_013"
+    assert document["characters"][0]["id"] == "role_013"
+    assert assets["role_013"]["age"] == 10
+    assert assets["role_013"]["gender"] == "male"
+    assert assets["role_013"]["pitch_min_hz"] == 190
+    assert assets["role_013"]["pitch_max_hz"] == 320
+    assert assets["role_013"]["age_source"] == "ai_article_inference"
+    assert assets["role_013"]["gender_source"] == "ai_article_inference"
+    assert roles[0][7] == "是"
+    assert report["reused_roles"] == 1
+    assert demographics == {"analyzed": 1, "changed": 1}
+
+
+def test_same_person_uses_current_article_inference_instead_of_inheriting_assets():
+    roles = [["role_013", "桐原亮", "character", "桐原洋介的儿子。", "少年声线", "voice-child", "自然叙述", "否"]]
+    document = {"characters": [{"id": "role_013", "name": "桐原亮", "kind": "character", "gender": "male", "gender_evidence": "根据儿子称谓推断", "age": 11, "age_evidence": "根据小学阶段和时间线推断约十一岁"}], "segments": []}
+
+    assets, report = apply_analysis_demographics(document, roles, {"role_013": {"gender": "male", "age": 10, "pitch_min_hz": 190, "pitch_max_hz": 320, "pitch_target_hz": 255}})
+
+    assert assets["role_013"]["age"] == 11
+    assert assets["role_013"]["gender"] == "male"
+    assert assets["role_013"]["pitch_target_hz"] == 255
+    assert assets["role_013"]["age_evidence"] == "根据小学阶段和时间线推断约十一岁"
+    assert roles[0][7] == "是"
+    assert report == {"analyzed": 1, "changed": 1}
+
+
+def test_character_without_current_article_age_inference_is_rejected():
+    roles = [["role_013", "桐原亮", "character", "人物小传", "少年声线", "voice-child", "自然叙述", "否"]]
+    document = {"characters": [{"id": "role_013", "name": "桐原亮", "kind": "character", "gender": "male", "age": None}], "segments": []}
+
+    try:
+        apply_analysis_demographics(document, roles, {"role_013": {"gender": "male", "age": 10}})
+    except ValueError as error:
+        assert "缺少基于当前文章的年龄推断" in str(error)
+    else:
+        raise AssertionError("缺少当前文章年龄推断时必须拒绝分析结果")
