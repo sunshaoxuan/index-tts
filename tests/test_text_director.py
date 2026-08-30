@@ -374,6 +374,53 @@ def test_ai_character_validation_does_not_require_value_change_for_basis_only_is
     assert document["characters"][0]["gender_basis"] == "linked_explicit"
 
 
+def test_ai_character_validation_can_reclassify_a_redundant_correction_as_pass():
+    class RedundantCorrectionDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            row = {
+                "id": "role_child", "canonical_id": "role_child", "name": "桐原亮司",
+                "profile": "桐原亮司是桐原洋介的儿子，就读小学五年级。",
+                "profile_evidence": "当前文章称其为儿子并写明小学五年级",
+                "gender": "male", "gender_evidence": "当前文章明确称其为儿子",
+                "gender_basis": "current_explicit", "age": 10,
+                "age_evidence": "关联文章写明小学五年级，年龄约为十至十一岁",
+                "age_basis": "linked_explicit",
+            }
+            redundant = {
+                "all_valid": False, "summary": "重复提出已经满足的年龄要求",
+                "characters": [{
+                    **row, "status": "corrected",
+                    "issues": ["年龄约为十至十一岁，应保存下限 10，并在 age_evidence 保留完整范围"],
+                }],
+            }
+            self.responses = [
+                redundant,
+                redundant,
+                {"all_valid": True, "summary": "当前值已经满足要求", "characters": [{**row, "status": "pass", "issues": []}]},
+            ]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            return self.responses.pop(0), {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [{
+            "id": "role_child", "name": "桐原亮司", "kind": "character", "aliases": [],
+            "profile": "桐原亮司是桐原洋介的儿子，就读小学五年级。", "voice_hint": "男童声",
+            "gender": "male", "gender_evidence": "当前文章明确称其为儿子", "gender_basis": "current_explicit",
+            "age": 10, "age_evidence": "关联文章写明小学五年级，年龄约为十至十一岁", "age_basis": "linked_explicit",
+        }],
+        "segments": [],
+        "scenes": [],
+    }
+
+    report = RedundantCorrectionDirector().validate_character_analysis(document, "桐原亮司抱着父亲的遗照。")
+
+    assert report["round_count"] == 1
+    assert report["rounds"][0]["repair_attempts"] == 2
+    assert report["all_valid"] is True
+
+
 def _segment(order, source_text, text, role_id="narrator", name="旁白", kind="narrator"):
     return {
         "order": order,

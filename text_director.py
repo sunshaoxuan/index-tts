@@ -772,13 +772,15 @@ LINKED_ARTICLES
                 if not inconsistencies:
                     break
                 repair_attempts += 1
-                if repair_attempts >= 2:
+                if repair_attempts >= 3:
                     raise DirectorValidationError(f"第 {round_index} 轮 AI 声明修正但字段未落实：{inconsistencies}")
                 _notify(progress, 0.9 + round_index * 0.015, f"第 {round_index} 轮修正未落实，正在要求 AI 重做")
                 request_prompt = (
                     prompt
                     + "\n\n上一次输出存在下列自相矛盾，status 虽为 corrected，要求修正的字段却没有改变。"
-                    + "请逐项真正修改对应字段后重新输出完整结果。年龄范围必须把 age 改成下限整数。\n"
+                    + "请逐项重新比较当前人物表和 issue。若字段确实错误，必须真正修改对应字段；"
+                    + "若当前字段已经满足 issue，例如 age 已为范围下限且 age_evidence 已保留完整范围，"
+                    + "必须把该人物改判为 pass 并清空 issues，不得重复报告已经满足的要求。\n"
                     + json.dumps(inconsistencies, ensure_ascii=False)
                     + "\n上一次输出："
                     + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
