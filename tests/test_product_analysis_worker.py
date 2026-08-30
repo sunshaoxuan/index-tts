@@ -177,6 +177,37 @@ def test_alias_match_reuses_same_person_and_current_demographics_override_defaul
     assert demographics == {"analyzed": 1, "changed": 1}
 
 
+def test_relationship_and_name_prefix_merge_kirihara_ryo_with_ryoji():
+    existing = [[
+        "role_013", "桐原亮", "character",
+        "桐原亮是桐原洋介与弥生子的儿子，目前读小学五年级。",
+        "男童声线", "voice-child", "自然叙述", "否",
+    ]]
+    generated = [[
+        "role_new", "桐原亮司", "character",
+        "桐原洋介的儿子，穿着小学五年级的校服。",
+        "男童声线", "", "自然叙述", "是",
+    ]]
+    document = {
+        "characters": [{
+            "id": "role_new", "name": "桐原亮司", "kind": "character",
+            "aliases": ["桐原洋介的儿子"], "profile": "桐原洋介的儿子，穿着小学五年级的校服。",
+            "gender": "male", "age": 10,
+        }],
+        "segments": [],
+    }
+
+    roles, _segments, report = merge_analysis_roles(document, existing, generated, [], [])
+
+    assert len(roles) == 1
+    assert roles[0][0] == "role_013"
+    assert report["generated_to_final"] == {"role_new": "role_013"}
+    assert report["new_roles"] == 0
+    assert document["characters"][0]["id"] == "role_013"
+    assert document["characters"][0]["name"] == "桐原亮"
+    assert "桐原亮司" in document["characters"][0]["aliases"]
+
+
 def test_same_person_uses_current_article_inference_instead_of_inheriting_assets():
     roles = [["role_013", "桐原亮", "character", "桐原洋介的儿子。", "少年声线", "voice-child", "自然叙述", "否"]]
     document = {"characters": [{"id": "role_013", "name": "桐原亮", "kind": "character", "gender": "male", "gender_evidence": "根据儿子称谓推断", "age": 11, "age_evidence": "根据小学阶段和时间线推断约十一岁"}], "segments": []}

@@ -4,6 +4,7 @@ import argparse
 from copy import deepcopy
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -135,6 +136,33 @@ def merge_analysis_roles(
     new_roles: list[list[Any]] = []
     reused_roles = 0
 
+    def relationship_prefix_match(generated: list[Any], character: dict[str, Any]) -> list[Any] | None:
+        generated_name = "".join(str(character.get("name") or generated[1]).split()).casefold()
+        generated_profile = str(character.get("profile") or generated[3])
+        relationships = re.findall(
+            r"([\u4e00-\u9fff]{2,8})的(儿子|女儿|妻子|丈夫|父亲|母亲)",
+            generated_profile,
+        )
+        if not relationships:
+            return None
+        matches: list[list[Any]] = []
+        for candidate in existing:
+            if str(candidate[2]).strip() != str(generated[2]).strip():
+                continue
+            candidate_name = "".join(str(candidate[1]).split()).casefold()
+            shorter = min(len(generated_name), len(candidate_name))
+            if shorter < 3 or not (generated_name.startswith(candidate_name) or candidate_name.startswith(generated_name)):
+                continue
+            candidate_profile = str(candidate[3])
+            if any(
+                subject not in {generated_name, candidate_name}
+                and subject in candidate_profile
+                and relation in candidate_profile[candidate_profile.find(subject):candidate_profile.find(subject) + 32]
+                for subject, relation in relationships
+            ):
+                matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
+
     def allocate_role_id(preferred: str) -> str:
         if preferred and preferred not in used_ids:
             used_ids.add(preferred)
@@ -159,6 +187,8 @@ def merge_analysis_roles(
             prior = existing_by_key.get(name_key(generated[2], value))
             if prior is not None:
                 break
+        if prior is None:
+            prior = relationship_prefix_match(generated, character)
         if prior is not None:
             final_id = str(prior[0])
             final_row = final_by_id[final_id]
@@ -187,8 +217,13 @@ def merge_analysis_roles(
     for character in document.get("characters") or []:
         source_id = str(character.get("id") or "")
         final_id = generated_to_final.get(source_id, source_id)
+        original_name = str(character.get("name") or "").strip()
         character["id"] = final_id
         character["name"] = role_name_by_id.get(final_id, character.get("name"))
+        if original_name and original_name != character["name"]:
+            aliases = {str(item).strip() for item in character.get("aliases") or [] if str(item).strip()}
+            aliases.add(original_name)
+            character["aliases"] = sorted(aliases)
     for segment in document.get("segments") or []:
         source_id = str(segment.get("speaker_id") or "")
         final_id = generated_to_final.get(source_id, source_id)
