@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Button, Card, Checkbox, Empty, Flex, Input, InputNumber, Layout, Modal,
-  Popconfirm, Progress, Select, Slider, Space, Spin, Switch, Table, Tabs, Tag, Typography,
+  Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
   AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LoadingOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
@@ -17,7 +17,7 @@ import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceContr
 import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerificationLabel } from './voiceCandidateSelection';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
-import { isProjectWorkspaceVisible, nextProjectActionsExpanded } from './projectActionVisibility';
+import { nextProjectActionDisplay, projectActionAvailability } from './projectActionMode';
 import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
 import { replaceProjectRole } from './roleReplacement';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
@@ -254,7 +254,6 @@ function Studio() {
     try { return normalizeProjectActionDockPlacement(JSON.parse(localStorage.getItem(PROJECT_ACTION_DOCK_STORAGE_KEY) || 'null'), window.innerWidth, window.innerHeight); }
     catch { return normalizeProjectActionDockPlacement(undefined, window.innerWidth, window.innerHeight); }
   });
-  const projectWorkspaceVisibleRef = useRef(false);
   const projectActionDockRef = useRef<HTMLDivElement>(null);
   const projectActionDragRef = useRef<{ pointerId: number; startX: number; startY: number; originLeft: number; originTop: number; width: number; height: number } | null>(null);
   const projectActionDragAbortRef = useRef<AbortController | null>(null);
@@ -299,6 +298,14 @@ function Studio() {
   const matchingFragmentCount = useMemo(() => countMatchingFragments(render.fragments, project?.segments ?? []), [render.fragments, project?.segments]);
   const missingFragmentCount = (project?.segments.length ?? 0) - matchingFragmentCount;
   const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
+  const projectActions = projectActionAvailability(activeTab, {
+    jobRunning,
+    dirty,
+    hasSource: Boolean(project?.source_text.trim()),
+    hasRoles: Boolean(project?.roles.length),
+    hasSegments: Boolean(project?.segments.length),
+  });
+  const workspaceLabels: Record<string, string> = { source: '全文与体裁', scenes: '场景分析', roles: '角色资产', segments: '分句导演', pronunciations: '全篇纠音', delivery: '完整音频与交付' };
 
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
@@ -415,26 +422,6 @@ function Studio() {
   }, []);
 
   useEffect(() => {
-    const section = document.getElementById('project');
-    if (!section) return;
-    const updateVisibility = (revealFromScroll = false) => {
-      const workspaceVisible = isProjectWorkspaceVisible(section.getBoundingClientRect(), window.innerHeight);
-      const wasWorkspaceVisible = projectWorkspaceVisibleRef.current;
-      projectWorkspaceVisibleRef.current = workspaceVisible;
-      setProjectActionsExpanded(expanded => revealFromScroll && workspaceVisible ? true : nextProjectActionsExpanded(wasWorkspaceVisible, workspaceVisible, expanded));
-    };
-    updateVisibility();
-    const revealOnScroll = () => updateVisibility(true);
-    const updateOnResize = () => updateVisibility(false);
-    window.addEventListener('scroll', revealOnScroll, { passive: true });
-    window.addEventListener('resize', updateOnResize);
-    return () => {
-      window.removeEventListener('scroll', revealOnScroll);
-      window.removeEventListener('resize', updateOnResize);
-    };
-  }, []);
-
-  useEffect(() => {
     try { localStorage.setItem(PROJECT_ACTION_DOCK_STORAGE_KEY, JSON.stringify(projectActionDock)); }
     catch { /* Local persistence is optional. */ }
   }, [projectActionDock]);
@@ -462,10 +449,10 @@ function Studio() {
 
   useEffect(() => {
     if (!project || !projectActionsExpanded || projectActionDragging) return;
-    let timer = window.setTimeout(() => setProjectActionsExpanded(false), PROJECT_ACTION_IDLE_COLLAPSE_MS);
+    let timer = window.setTimeout(() => setProjectActionsExpanded(current => nextProjectActionDisplay(current, 'idle-timeout')), PROJECT_ACTION_IDLE_COLLAPSE_MS);
     const restartTimer = () => {
       window.clearTimeout(timer);
-      timer = window.setTimeout(() => setProjectActionsExpanded(false), PROJECT_ACTION_IDLE_COLLAPSE_MS);
+      timer = window.setTimeout(() => setProjectActionsExpanded(current => nextProjectActionDisplay(current, 'idle-timeout')), PROJECT_ACTION_IDLE_COLLAPSE_MS);
     };
     window.addEventListener('pointerdown', restartTimer, { passive: true });
     window.addEventListener('keydown', restartTimer);
@@ -480,7 +467,7 @@ function Studio() {
       window.removeEventListener('resize', restartTimer);
       document.removeEventListener('visibilitychange', restartTimer);
     };
-  }, [project, projectActionsExpanded, projectActionDragging, activeTab]);
+  }, [project, projectActionsExpanded, projectActionDragging]);
 
   useEffect(() => {
     const containSelectWheel = (event: WheelEvent) => {
@@ -913,7 +900,6 @@ function Studio() {
 
   const openWorkspace = (key: string) => {
     setActiveTab(key);
-    setProjectActionsExpanded(true);
     window.requestAnimationFrame(() => document.getElementById('project')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
@@ -1001,13 +987,16 @@ function Studio() {
         {projectActionsExpanded ? <aside className="project-actions-float" aria-label={`项目生成操作，停靠在${projectActionDockLabels[projectActionDock.edge]}侧`}>
           <div className="project-actions-head" title="拖动到任意边缘停靠" onPointerDown={beginProjectActionDrag}>
             <span><DragOutlined /> Project Actions / 项目操作</span>
-            <button type="button" className="project-actions-collapse" aria-label="收缩项目操作" title={`收缩到${projectActionDockLabels[projectActionDock.edge]}侧边缘`} onPointerDown={event => event.stopPropagation()} onClick={() => setProjectActionsExpanded(false)}>{projectActionCollapseIcon}</button>
+            <button type="button" className="project-actions-collapse" aria-label="收缩项目操作" title={`收缩到${projectActionDockLabels[projectActionDock.edge]}侧边缘`} onPointerDown={event => event.stopPropagation()} onClick={() => setProjectActionsExpanded(current => nextProjectActionDisplay(current, 'manual-collapse'))}>{projectActionCollapseIcon}</button>
           </div>
-          <small className="project-actions-hint">拖动标题停靠四边 · 10 秒闲置收缩</small>
-          <Button disabled={jobRunning || !project.source_text.trim()} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
-          <Button disabled={jobRunning || !project.roles.length} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
-          <Button disabled={jobRunning || !project.segments.length} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
-        </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="拖动可停靠，点击展开" onPointerDown={beginProjectActionDrag} onClick={() => { if (!projectActionDragMovedRef.current) setProjectActionsExpanded(true); }}>{projectActionExpandIcon}<SoundOutlined /></button>}
+          <small className="project-actions-hint">手工展开 · 拖动停靠 · 10 秒闲置隐藏</small>
+          <small className="project-actions-context">当前工作区：{workspaceLabels[activeTab] || activeTab}</small>
+          <Button icon={<SettingOutlined />} disabled={!projectActions.settings} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
+          <Button icon={<SaveOutlined />} loading={saving} disabled={!projectActions.save} onClick={save}>保存当前工程</Button>
+          <Button disabled={!projectActions.analyze} title={activeTab === 'source' ? undefined : '请切换到“全文与体裁”'} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
+          <Button disabled={!projectActions.voice} title={activeTab === 'roles' ? undefined : '请切换到“角色资产”'} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
+          <Button disabled={!projectActions.render} title={activeTab === 'delivery' ? undefined : '请切换到“完整音频与交付”'} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
+        </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="拖动可停靠，点击手工展开" onPointerDown={beginProjectActionDrag} onClick={() => { if (!projectActionDragMovedRef.current) setProjectActionsExpanded(current => nextProjectActionDisplay(current, 'manual-expand')); }}>{projectActionExpandIcon}<SoundOutlined /></button>}
       </div>}
       <section className="project-section" id="project">
       <div className="project-bar">
@@ -1035,7 +1024,7 @@ function Studio() {
         </div>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
-        <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={key => { setActiveTab(key); setProjectActionsExpanded(true); }} items={[
+        <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
           { key: 'scenes', label: `场景分析 ${sceneRows.length}`, children: <Card title="场景连续性与低置信度复核"><Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '当前没有低于 0.7 的说话人归属'} description="场景数据来自最近一次 AI 全文分析。可在这里修订地点、时间、参与人物、叙事视角和基调；说话人归属请在分句导演表中修改。" />{sceneRows.length ? <div className="scene-card-grid">{sceneRows.map((scene, index) => { const sceneId = String(scene.id || `scene_${index + 1}`); return <Card key={sceneId} size="small" title={`${sceneId} · ${String(scene.location || '未说明')}`}><Space direction="vertical" size="middle" className="scene-fields"><div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label></div><label><Text strong>参与人物 ID</Text><Input disabled={jobRunning} value={Array.isArray(scene.participants) ? scene.participants.join('、') : ''} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean))} /></label><div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div><Text type="secondary">判断证据：{String(scene.evidence || '未记录')}</Text></Space></Card>; })}</div> : <Empty description="当前工程没有场景结构。使用全局 AI 设置选择模型后重新分析全文即可生成。" />}{lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}</Card> },
           { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}>
@@ -1104,13 +1093,12 @@ function Studio() {
         <Text className="split-position">拆分位置 {splitEditor?.offset ?? 0} / {splitSource.length}</Text>
         <div className="split-preview"><section><Text strong>前半句</Text><p>{splitBefore || '尚无可朗读文字'}</p></section><section><Text strong>后半句</Text><p>{splitAfter || '尚无可朗读文字'}</p></section></div>
       </Modal>
-      <Spin fullscreen spinning={roleReplacementSaving} size="large" tip="正在替换角色并保存工程，请勿关闭页面" />
       <Modal width={640} title="用已存在角色替换" open={Boolean(project && roleReplacementSourceId)} okText={roleReplacementSaving ? '正在替换并保存' : '确认替换并同步分句'} cancelText="取消" confirmLoading={roleReplacementSaving} closable={!roleReplacementSaving} keyboard={!roleReplacementSaving} maskClosable={!roleReplacementSaving} cancelButtonProps={{ disabled: roleReplacementSaving }} okButtonProps={{ disabled: jobRunning || roleReplacementSaving || !roleReplacementTargetId }} onOk={applyRoleReplacement} onCancel={() => { if (roleReplacementSavingRef.current) return; setRoleReplacementSourceId(undefined); setRoleReplacementTargetId(undefined); }}>
         {project && roleReplacementSourceId && <Space direction="vertical" size="large" className="modal-fields role-replacement-modal">
           <Alert type="warning" showIcon message={`当前角色“${project.roles.find(row => row[0] === roleReplacementSourceId)?.[1] || roleReplacementSourceId}”会从本工程删除`} description={`该角色引用的 ${project.segments.filter(row => row[2] === roleReplacementSourceId).length} 条分句会统一改为目标角色。目标角色的资料、形象、稳定音色和全部候选保持不变，原角色的永久音色文件继续保留在共享音色库。保存工程后，受影响的旧片断和完整交付会按角色变化标记为过期。`} />
           <label><Text strong>选择替换后的已有角色</Text><Select aria-label="选择替换后的已有角色" disabled={jobRunning || roleReplacementSaving} showSearch optionFilterProp="label" value={roleReplacementTargetId} onChange={setRoleReplacementTargetId} options={project.roles.filter(row => row[0] !== roleReplacementSourceId).map(row => ({ value: row[0], label: `${row[1]} · ${row[0]} · ${project.segments.filter(segment => segment[2] === row[0]).length} 条分句${row[5] ? ' · 已有稳定音色' : ' · 音色待定'}` }))} placeholder="搜索名称或角色 ID" /></label>
           {roleReplacementTargetId && <Alert type="info" showIcon message={`替换后统一使用“${project.roles.find(row => row[0] === roleReplacementTargetId)?.[1]}”`} description="当前角色名称会记入目标角色别名，后续 AI 重新分析时可复用这次人工确认，减少同一人物再次被新增。" />}
-          {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="页面已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭页面。" />}
+          {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="替换窗口和背景操作已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭窗口。" />}
         </Space>}
       </Modal>
       <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
