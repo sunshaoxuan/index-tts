@@ -4,12 +4,13 @@ import {
   Popconfirm, Progress, Select, Slider, Space, Spin, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
+  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LoadingOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState';
 import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
+import { deliveryAudioBufferedPercent, deliveryAudioErrorMessage, deliveryAudioRetryUrl, type DeliveryAudioStatus } from './deliveryAudioState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
@@ -121,25 +122,80 @@ function StudioAudio({ src, captions = [] }: { src: string; captions?: RenderCap
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [retry, setRetry] = useState(0);
+  const [status, setStatus] = useState<DeliveryAudioStatus>('loading');
+  const [statusMessage, setStatusMessage] = useState('正在读取完整音频信息');
+  const [bufferedPercent, setBufferedPercent] = useState(0);
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const retrySrc = deliveryAudioRetryUrl(src, retry);
   const timeline = useMemo(() => buildCaptionTimeline(captions), [captions]);
   const activeIndex = activeCaptionIndex(timeline, current);
+  useEffect(() => {
+    setRetry(0);
+    setPlaying(false);
+    setCurrent(0);
+    setDuration(0);
+    setBufferedPercent(0);
+    setStatus('loading');
+    setStatusMessage('正在读取完整音频信息');
+  }, [src]);
   useEffect(() => {
     if (activeIndex < 0) return;
     captionRefs.current.get(activeIndex)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [activeIndex]);
+  const updateBufferedProgress = (audio: HTMLAudioElement) => {
+    let bufferedEnd = 0;
+    for (let index = 0; index < audio.buffered.length; index += 1) bufferedEnd = Math.max(bufferedEnd, audio.buffered.end(index));
+    const nextPercent = deliveryAudioBufferedPercent(audio.duration, bufferedEnd);
+    setBufferedPercent(nextPercent);
+    return nextPercent;
+  };
   const toggle = async () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (audio.paused) await audio.play(); else audio.pause();
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    setStatus('buffering');
+    setStatusMessage('正在加载完整音频，加载完成后会自动播放');
+    try {
+      await audio.play();
+    } catch {
+      setPlaying(false);
+      setStatus('error');
+      setStatusMessage('播放未能开始，请重新加载后再试');
+    }
   };
   return <div className="studio-audio-block">
     <div className="studio-audio">
-      <audio ref={audioRef} src={src} preload="metadata" onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
-      <button type="button" onClick={toggle} aria-label={playing ? '暂停音频' : '播放音频'}>{playing ? <PauseOutlined /> : <CaretRightOutlined />}</button>
+      <audio
+        key={retrySrc}
+        ref={audioRef}
+        src={retrySrc}
+        preload="metadata"
+        onLoadStart={() => { setStatus('loading'); setStatusMessage('正在读取完整音频信息'); setBufferedPercent(0); }}
+        onLoadedMetadata={(event) => { setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0); updateBufferedProgress(event.currentTarget); setStatus('ready'); setStatusMessage('音频信息已读取，可以开始播放'); }}
+        onDurationChange={(event) => { setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0); updateBufferedProgress(event.currentTarget); }}
+        onProgress={(event) => { const percent = updateBufferedProgress(event.currentTarget); if (event.currentTarget.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) { setStatus('buffering'); setStatusMessage(`正在加载完整音频，已缓冲 ${percent}%`); } }}
+        onWaiting={(event) => { const percent = updateBufferedProgress(event.currentTarget); setStatus('buffering'); setStatusMessage(`网速较慢，正在缓冲完整音频，已缓冲 ${percent}%`); }}
+        onStalled={(event) => { const percent = updateBufferedProgress(event.currentTarget); setStatus('buffering'); setStatusMessage(`网络读取暂时停滞，已缓冲 ${percent}%`); }}
+        onCanPlay={(event) => { const percent = updateBufferedProgress(event.currentTarget); if (event.currentTarget.paused) { setStatus('ready'); setStatusMessage(percent ? `已经可以播放，已缓冲 ${percent}%` : '已经可以播放'); } }}
+        onPlaying={(event) => { const percent = updateBufferedProgress(event.currentTarget); setPlaying(true); setStatus('playing'); setStatusMessage(percent ? `正在播放，已缓冲 ${percent}%` : '正在播放'); }}
+        onTimeUpdate={(event) => { setCurrent(event.currentTarget.currentTime); updateBufferedProgress(event.currentTarget); }}
+        onPause={() => { setPlaying(false); setStatus('paused'); setStatusMessage('播放已暂停'); }}
+        onEnded={() => { setPlaying(false); setStatus('ready'); setStatusMessage('播放完成，可以重新播放'); }}
+        onError={(event) => { setPlaying(false); setStatus('error'); setStatusMessage(deliveryAudioErrorMessage(event.currentTarget.error?.code)); }}
+      />
+      <button type="button" onClick={toggle} aria-label={playing ? '暂停音频' : status === 'buffering' ? '完整音频加载中' : '播放音频'}>{playing ? <PauseOutlined /> : status === 'buffering' ? <LoadingOutlined spin /> : <CaretRightOutlined />}</button>
       <span>{formatAudioTime(current)}</span>
       <input aria-label="音频进度" type="range" min={0} max={safeDuration} step={0.1} value={Math.min(current, safeDuration)} onInput={(event) => { const value = Number(event.currentTarget.value); setCurrent(value); if (audioRef.current) audioRef.current.currentTime = value; }} />
       <span>{formatAudioTime(safeDuration)}</span>
+    </div>
+    <div className={`studio-audio-status studio-audio-status-${status}`} aria-live="polite" aria-atomic="true">
+      <div className="studio-audio-status-copy"><span>{status === 'loading' || status === 'buffering' ? <LoadingOutlined spin /> : status === 'error' ? <AudioOutlined /> : <SoundOutlined />}</span><strong>{statusMessage}</strong><span>{safeDuration ? `缓冲 ${bufferedPercent}%` : '等待音频时长'}</span></div>
+      <Progress percent={bufferedPercent} showInfo={false} size="small" status={status === 'error' ? 'exception' : status === 'playing' ? 'active' : 'normal'} />
+      {status === 'error' && <Button size="small" icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>重新加载完整音频</Button>}
     </div>
     {timeline.length > 0 && <section className="delivery-captions" aria-label="随播放滚动的角色字幕" aria-live="polite">
       <header><span>Playback Script / 播放字幕</span><strong>{activeIndex >= 0 ? `${activeIndex + 1} / ${timeline.length}` : timeline.length}</strong></header>

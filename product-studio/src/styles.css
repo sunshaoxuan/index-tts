@@ -660,6 +660,22 @@ body * { box-shadow: none !important; }
 }
 .studio-audio span { color: var(--cream); font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .studio-audio input[type="range"] { width: 100%; min-width: 0; height: 1px; accent-color: var(--cream); background: var(--cork); }
+.studio-audio-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 14px; padding: 10px 12px; border-bottom: 1px dashed var(--cork); background: rgba(188, 86, 34, .06); }
+.studio-audio-status-copy { min-width: 0; display: flex; align-items: center; gap: 8px; color: rgba(255, 237, 215, .76); font-size: 11px; line-height: 1.45; }
+.studio-audio-status-copy strong { min-width: 0; overflow: hidden; color: var(--cream); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.studio-audio-status-copy > span:last-child { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.studio-audio-status .ant-progress { grid-column: 1 / -1; margin: 0; line-height: 1; }
+.studio-audio-status .ant-progress-inner { background: rgba(255, 237, 215, .14); }
+.studio-audio-status .ant-progress-bg { background: var(--orange) !important; }
+.studio-audio-status-buffering, .studio-audio-status-loading { background: rgba(230, 138, 71, .1); }
+.studio-audio-status-error { background: rgba(194, 63, 48, .12); }
+@media (max-width: 520px) {
+  .studio-audio-status { grid-template-columns: 1fr; }
+  .studio-audio-status-copy { flex-wrap: wrap; }
+  .studio-audio-status-copy strong { width: calc(100% - 30px); white-space: normal; }
+  .studio-audio-status-copy > span:last-child { margin-left: 30px; }
+  .studio-audio-status .ant-btn { width: 100%; }
+}
 .delivery-captions { margin-top: 12px; padding: 0 14px 14px; border: 1px dashed var(--line-medium); border-radius: 10px; background: rgba(56, 36, 22, .3); }
 .delivery-captions header { display: flex; justify-content: space-between; align-items: center; padding: 14px 2px 10px; color: rgba(255, 237, 215, .58); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
 .delivery-captions header strong { color: var(--cream); font-variant-numeric: tabular-nums; }
