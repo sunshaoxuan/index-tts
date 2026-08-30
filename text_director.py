@@ -900,19 +900,26 @@ LINKED_ARTICLES
             ) or row["canonical_id"] != row["id"]
             if not changed:
                 inconsistencies.append(f"{row['id']} 标记 corrected，但没有任何字段变化：{issue_text}")
-                continue
             age_value_issue_text = re.sub(
                 r"age_(?:basis|evidence)|年龄(?:证据类型|证据|依据|来源)",
                 "",
                 issue_text,
                 flags=re.IGNORECASE,
             )
+            requested_age_match = re.search(
+                r"(?:下限|年龄(?:值)?(?:应为|改为)|age\s*(?:应为|改为|=|should\s+be))\s*[:：]?\s*(\d{1,3})",
+                age_value_issue_text,
+                flags=re.IGNORECASE,
+            )
+            requested_age = int(requested_age_match.group(1)) if requested_age_match else None
             age_value_change_required = (
                 any(token in age_value_issue_text for token in ("年龄", "age", "岁"))
                 and any(token in age_value_issue_text for token in ("应为", "改为", "下限", "不是", "错误", "不合理"))
+                and (requested_age is None or requested_age != row["age"])
             )
             if age_value_change_required and row["age"] == original.get("age"):
-                inconsistencies.append(f"{row['id']} 的 issue 要求修改年龄值，age 仍为 {row['age']}：{issue_text}")
+                target = f"，issue 要求 age={requested_age}" if requested_age is not None else ""
+                inconsistencies.append(f"{row['id']} 的 issue 要求修改年龄值，age 仍为 {row['age']}{target}：{issue_text}")
             gender_value_issue_text = re.sub(
                 r"gender_(?:basis|evidence)|性别(?:证据类型|证据|依据|来源)",
                 "",

@@ -319,6 +319,23 @@ def test_ai_character_validation_retries_when_declared_age_fix_was_not_applied()
     assert document["characters"][0]["age"] == 10
 
 
+def test_ai_character_validation_reports_the_current_and_requested_age_on_no_change():
+    original = {
+        "id": "role_child", "name": "孩子", "profile": "孩子是小学五年级学生。",
+        "gender": "male", "gender_evidence": "文章称其为儿子", "gender_basis": "current_explicit",
+        "age": 11, "age_evidence": "小学五年级", "age_basis": "current_inference",
+    }
+    row = {
+        **original, "canonical_id": "role_child", "status": "corrected",
+        "issues": ["年龄约为十至十一岁，应保存下限 10，并在 age_evidence 保留完整范围"],
+        "profile_evidence": "文章写明小学五年级",
+    }
+
+    inconsistencies = OllamaTextDirector._character_validation_inconsistencies([original], [row])
+
+    assert any("age 仍为 11，issue 要求 age=10" in item for item in inconsistencies)
+
+
 def test_ai_character_validation_does_not_require_value_change_for_basis_only_issue():
     class BasisRepairDirector(OllamaTextDirector):
         def __init__(self):
