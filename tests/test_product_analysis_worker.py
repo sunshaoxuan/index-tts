@@ -3,6 +3,7 @@ from pathlib import Path
 from product_analysis_worker import (
     analysis_voice_ids,
     apply_analysis_demographics,
+    apply_validated_character_profiles,
     linked_article_demographic_reference,
     merge_analysis_roles,
 )
@@ -300,3 +301,20 @@ def test_demographic_merge_preserves_linked_roles_absent_from_current_ai_roster(
     assert assets["role_linked"]["pitch_target_hz"] == 210
     assert assets["role_linked"]["voice_candidates"] == [{"voice_id": "voice-linked"}]
     assert report == {"analyzed": 1, "changed": 0}
+
+
+def test_validated_ai_profile_replaces_old_role_bio_without_changing_voice_fields():
+    roles = [[
+        "role_013", "桐原亮", "character", "旧小传写年龄未说明。",
+        "低沉而沉默的男孩声音。", "voice-child", "沉稳舒缓", "否",
+    ]]
+    document = {"characters": [{
+        "id": "role_013", "name": "桐原亮", "kind": "character",
+        "profile": "桐原洋介的儿子，穿着小学五年级校服，十至十一岁。",
+    }]}
+
+    report = apply_validated_character_profiles(document, roles)
+
+    assert roles[0][3] == "桐原洋介的儿子，穿着小学五年级校服，十至十一岁。"
+    assert roles[0][4:] == ["低沉而沉默的男孩声音。", "voice-child", "沉稳舒缓", "否"]
+    assert report == {"analyzed": 1, "changed": 1}

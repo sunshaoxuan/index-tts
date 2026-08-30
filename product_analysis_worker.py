@@ -323,6 +323,31 @@ def apply_analysis_demographics(
     return normalize_character_assets(roles, prepared), {"analyzed": analyzed, "changed": changed}
 
 
+def apply_validated_character_profiles(
+    document: dict[str, Any],
+    roles: list[list[Any]],
+) -> dict[str, int]:
+    characters = {
+        str(item.get("id") or ""): item
+        for item in document.get("characters", [])
+        if isinstance(item, dict) and item.get("kind") != "narrator"
+    }
+    analyzed = 0
+    changed = 0
+    for row in roles:
+        character = characters.get(str(row[0]))
+        if character is None:
+            continue
+        profile = str(character.get("profile") or "").strip()
+        if not profile:
+            raise ValueError(f"本次 AI 人物 {row[1]} 缺少逐轮校验后的小传")
+        analyzed += 1
+        if str(row[3]).strip() != profile:
+            row[3] = profile
+            changed += 1
+    return {"analyzed": analyzed, "changed": changed}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -367,9 +392,11 @@ def main() -> int:
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
+    profile_report = apply_validated_character_profiles(document, roles)
     character_assets, demographic_report = apply_analysis_demographics(document, roles, project.get("character_assets"))
     document["director_memory_reapply"] = memory_report
     document["linked_role_merge"] = linked_role_report
+    document["profile_merge"] = profile_report
     document["demographic_merge"] = demographic_report
     write_json(status_path, {"phase": "routing_guidance", "fraction": 0.98, "message": "正在用 AI 分配导演补充的角色影响范围"})
     document["guidance_routing"] = director.resolve_guidance(project.get("guidance", ""), roles)
