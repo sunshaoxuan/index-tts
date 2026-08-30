@@ -280,6 +280,45 @@ def test_ai_character_validation_rejects_a_round_that_omits_any_person():
         IncompleteDirector(DirectorConfig(model="fake")).validate_character_analysis(document, "人物出现。")
 
 
+def test_ai_character_validation_retries_when_declared_age_fix_was_not_applied():
+    class RepairDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            base = {
+                "id": "role_child", "canonical_id": "role_child", "name": "孩子",
+                "profile": "孩子是小学五年级学生，年龄范围为十至十一岁。",
+                "profile_evidence": "文章写明小学五年级，关联文章给出十至十一岁",
+                "gender": "male", "gender_evidence": "文章称其为儿子",
+                "gender_basis": "current_explicit", "age_evidence": "关联文章明确写明十至十一岁",
+                "age_basis": "linked_explicit",
+            }
+            self.responses = [
+                {"all_valid": False, "summary": "年龄应保存下限", "characters": [{**base, "status": "corrected", "issues": ["年龄范围应保存下限 10"], "age": 11}]},
+                {"all_valid": False, "summary": "已经落实年龄修正", "characters": [{**base, "status": "corrected", "issues": ["年龄范围应保存下限 10"], "age": 10}]},
+                {"all_valid": True, "summary": "全部通过", "characters": [{**base, "status": "pass", "issues": [], "age": 10}]},
+            ]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            return self.responses.pop(0), {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [{
+            "id": "role_child", "name": "孩子", "kind": "character", "aliases": [],
+            "profile": "孩子是小学五年级学生。", "voice_hint": "男童声",
+            "gender": "male", "gender_evidence": "文章称其为儿子", "gender_basis": "current_explicit",
+            "age": 11, "age_evidence": "小学五年级", "age_basis": "current_inference",
+        }],
+        "segments": [],
+        "scenes": [],
+    }
+
+    report = RepairDirector().validate_character_analysis(document, "孩子是小学五年级学生。")
+
+    assert report["round_count"] == 2
+    assert report["rounds"][0]["repair_attempts"] == 1
+    assert document["characters"][0]["age"] == 10
+
+
 def _segment(order, source_text, text, role_id="narrator", name="旁白", kind="narrator"):
     return {
         "order": order,

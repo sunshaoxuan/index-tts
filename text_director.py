@@ -744,24 +744,45 @@ CURRENT_ARTICLE
 {linked_evidence or '无'}
 LINKED_ARTICLES
 """.strip()
-            result, metrics = self._request_structured(
-                prompt,
-                CHARACTER_VALIDATION_SCHEMA,
-                system="你只输出严格符合 JSON Schema 的逐人人物设定校验结果。",
-                schema_name="character_validation",
-                context_tokens=12288,
-                keep_alive="30m",
-            )
-            rows = result.get("characters")
-            if not isinstance(rows, list):
-                raise DirectorValidationError(f"第 {round_index} 轮人物设定校验缺少 characters")
             expected_ids = {str(item.get("id") or "") for item in people}
-            actual_ids = [str(item.get("id") or "") for item in rows if isinstance(item, dict)]
-            if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
-                missing = sorted(expected_ids.difference(actual_ids))
-                extra = sorted(set(actual_ids).difference(expected_ids))
-                raise DirectorValidationError(f"第 {round_index} 轮人物设定校验覆盖不完整：缺少 {missing}，多出 {extra}")
-            normalized_rows = [self._normalize_character_validation(item, expected_ids) for item in rows]
+            request_prompt = prompt
+            repair_attempts = 0
+            total_metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
+            while True:
+                result, metrics = self._request_structured(
+                    request_prompt,
+                    CHARACTER_VALIDATION_SCHEMA,
+                    system="你只输出严格符合 JSON Schema 的逐人人物设定校验结果。",
+                    schema_name="character_validation",
+                    context_tokens=12288,
+                    keep_alive="30m",
+                )
+                for key in total_metrics:
+                    total_metrics[key] += metrics.get(key, 0)
+                rows = result.get("characters")
+                if not isinstance(rows, list):
+                    raise DirectorValidationError(f"第 {round_index} 轮人物设定校验缺少 characters")
+                actual_ids = [str(item.get("id") or "") for item in rows if isinstance(item, dict)]
+                if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+                    missing = sorted(expected_ids.difference(actual_ids))
+                    extra = sorted(set(actual_ids).difference(expected_ids))
+                    raise DirectorValidationError(f"第 {round_index} 轮人物设定校验覆盖不完整：缺少 {missing}，多出 {extra}")
+                normalized_rows = [self._normalize_character_validation(item, expected_ids) for item in rows]
+                inconsistencies = self._character_validation_inconsistencies(people, normalized_rows)
+                if not inconsistencies:
+                    break
+                repair_attempts += 1
+                if repair_attempts >= 2:
+                    raise DirectorValidationError(f"第 {round_index} 轮 AI 声明修正但字段未落实：{inconsistencies}")
+                _notify(progress, 0.9 + round_index * 0.015, f"第 {round_index} 轮修正未落实，正在要求 AI 重做")
+                request_prompt = (
+                    prompt
+                    + "\n\n上一次输出存在下列自相矛盾，status 虽为 corrected，要求修正的字段却没有改变。"
+                    + "请逐项真正修改对应字段后重新输出完整结果。年龄范围必须把 age 改成下限整数。\n"
+                    + json.dumps(inconsistencies, ensure_ascii=False)
+                    + "\n上一次输出："
+                    + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                )
             self._apply_character_validation(document, normalized_rows)
             statuses = {item["id"]: item["status"] for item in normalized_rows}
             round_valid = (
@@ -776,9 +797,10 @@ LINKED_ARTICLES
                 "summary": str(result.get("summary") or "").strip(),
                 "statuses": statuses,
                 "issues": {item["id"]: item["issues"] for item in normalized_rows if item["issues"]},
-                "prompt_tokens": metrics.get("prompt_tokens", 0),
-                "output_tokens": metrics.get("output_tokens", 0),
-                "duration_seconds": metrics.get("duration_seconds", 0.0),
+                "repair_attempts": repair_attempts,
+                "prompt_tokens": total_metrics["prompt_tokens"],
+                "output_tokens": total_metrics["output_tokens"],
+                "duration_seconds": total_metrics["duration_seconds"],
             })
             if round_valid:
                 return {
@@ -857,6 +879,39 @@ LINKED_ARTICLES
             "age_evidence": age_evidence,
             "age_basis": age_basis,
         }
+
+    @staticmethod
+    def _character_validation_inconsistencies(
+        people: list[dict[str, Any]],
+        rows: list[dict[str, Any]],
+    ) -> list[str]:
+        before = {str(item.get("id") or ""): item for item in people}
+        inconsistencies: list[str] = []
+        for row in rows:
+            if row["status"] != "corrected":
+                continue
+            original = before[row["id"]]
+            issue_text = " ".join(row["issues"])
+            changed = any(
+                row.get(field) != original.get(field)
+                for field in ("name", "profile", "gender", "gender_evidence", "gender_basis", "age", "age_evidence", "age_basis")
+            ) or row["canonical_id"] != row["id"]
+            if not changed:
+                inconsistencies.append(f"{row['id']} 标记 corrected，但没有任何字段变化：{issue_text}")
+                continue
+            age_value_change_required = (
+                any(token in issue_text for token in ("年龄", "age", "岁"))
+                and any(token in issue_text for token in ("应为", "改为", "下限", "不是", "错误", "不合理"))
+            )
+            if age_value_change_required and row["age"] == original.get("age"):
+                inconsistencies.append(f"{row['id']} 的 issue 要求修改年龄值，age 仍为 {row['age']}：{issue_text}")
+            gender_value_change_required = (
+                any(token in issue_text for token in ("性别", "gender"))
+                and any(token in issue_text for token in ("应为", "改为", "错误", "不合理"))
+            )
+            if gender_value_change_required and row["gender"] == original.get("gender"):
+                inconsistencies.append(f"{row['id']} 的 issue 要求修改性别值，gender 仍为 {row['gender']}：{issue_text}")
+        return inconsistencies
 
     @staticmethod
     def _apply_character_validation(document: dict[str, Any], rows: list[dict[str, Any]]) -> None:
