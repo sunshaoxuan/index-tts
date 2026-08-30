@@ -727,9 +727,10 @@ class OllamaTextDirector:
 4. 校验 profile 是否准确介绍身份、关系、行为、经历和叙事作用，删除原文不支持的断言，保留“稿件未说明”等不确定边界。profile 必须能让后续声音和形象生成正确理解人物。
 5. 人口属性证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。关联文章已经明确写出年龄的人物，当前文章只有父亲、母亲、子女等关系身份时必须保留关联文章明示年龄。
 6. age_basis 和 gender_basis 必须填写 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
-7. 发现错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。修正字段必须准确解决本轮 issues，下一轮不得继续报告已经修正的问题。证据仍不足或互相冲突时 status 填 uncertain。
-8. 只有本轮每个人物都无需再修改、没有重复身份、没有 unresolved issue 时，所有 status 才能为 pass 且 all_valid 为 true。只要本轮进行了任何修正，all_valid 必须为 false，由下一轮复核修正结果。
-9. characters 必须覆盖人物表全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
+7. 当前文章没有直接写年龄数字或性别词本身不构成问题。只要已经使用最高优先级的可用证据，并由关联文章明示或文章语境得到合理结论，就应判为 pass。不得仅因证据来自关联文章、称谓、就学阶段、职业阶段或人物关系而填 uncertain 或重复报告 issue。
+8. 发现真实错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。修正字段必须准确解决本轮 issues，下一轮不得继续报告已经修正的问题。只有证据相互冲突、无法选择合理结论时才填 uncertain。
+9. 只有本轮每个人物都无需再修改、没有重复身份、没有 unresolved issue 时，所有 status 才能为 pass 且 all_valid 为 true。只要本轮进行了任何修正，all_valid 必须为 false，由下一轮复核修正结果。
+10. characters 必须覆盖人物表全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
 
 当前人物表：{roster}
 
