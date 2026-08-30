@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Button, Card, Checkbox, Empty, Flex, Input, InputNumber, Layout, Modal,
-  Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
+  Popconfirm, Progress, Select, Slider, Space, Spin, Switch, Table, Tabs, Tag, Typography,
 } from 'antd';
 import {
   AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
@@ -216,6 +216,8 @@ function Studio() {
   const [roleAssetDraft, setRoleAssetDraft] = useState<CharacterAsset>();
   const [roleReplacementSourceId, setRoleReplacementSourceId] = useState<string>();
   const [roleReplacementTargetId, setRoleReplacementTargetId] = useState<string>();
+  const [roleReplacementSaving, setRoleReplacementSaving] = useState(false);
+  const roleReplacementSavingRef = useRef(false);
   const [profileGenerating, setProfileGenerating] = useState(false);
   const [portraitGenerating, setPortraitGenerating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -693,17 +695,24 @@ function Studio() {
     } catch (error) { message.error((error as Error).message); }
   };
 
-  const applyRoleReplacement = () => {
-    if (!project || !roleReplacementSourceId || !roleReplacementTargetId || jobRunning) return;
+  const applyRoleReplacement = async () => {
+    if (!project || !roleReplacementSourceId || !roleReplacementTargetId || jobRunning || roleReplacementSavingRef.current) return;
+    roleReplacementSavingRef.current = true;
+    setRoleReplacementSaving(true);
     try {
       const result = replaceProjectRole(project, roleReplacementSourceId, roleReplacementTargetId);
-      setProject(result.project);
-      setDirty(true);
+      const savedProject = await api.save(result.project);
+      setProject(savedProject);
+      setDirty(false);
       setActiveRoleId(roleReplacementTargetId);
       setRoleReplacementSourceId(undefined);
       setRoleReplacementTargetId(undefined);
-      message.success(`已用“${result.targetRoleName}”替换“${result.sourceRoleName}”，同步更新 ${result.reassignedSegments} 条分句，请保存工程`);
-    } catch (error) { message.error((error as Error).message); }
+      message.success(`已用“${result.targetRoleName}”替换“${result.sourceRoleName}”，同步更新 ${result.reassignedSegments} 条分句并保存工程`);
+    } catch (error) { message.error(`角色替换保存失败：${(error as Error).message}。源角色仍保留，请重试`); }
+    finally {
+      roleReplacementSavingRef.current = false;
+      setRoleReplacementSaving(false);
+    }
   };
 
   const updateScene = (sceneId: string, field: string, value: string | string[]) => {
@@ -1039,11 +1048,13 @@ function Studio() {
         <Text className="split-position">拆分位置 {splitEditor?.offset ?? 0} / {splitSource.length}</Text>
         <div className="split-preview"><section><Text strong>前半句</Text><p>{splitBefore || '尚无可朗读文字'}</p></section><section><Text strong>后半句</Text><p>{splitAfter || '尚无可朗读文字'}</p></section></div>
       </Modal>
-      <Modal width={640} title="用已存在角色替换" open={Boolean(project && roleReplacementSourceId)} okText="确认替换并同步分句" cancelText="取消" okButtonProps={{ disabled: jobRunning || !roleReplacementTargetId }} onOk={applyRoleReplacement} onCancel={() => { setRoleReplacementSourceId(undefined); setRoleReplacementTargetId(undefined); }}>
+      <Spin fullscreen spinning={roleReplacementSaving} size="large" tip="正在替换角色并保存工程，请勿关闭页面" />
+      <Modal width={640} title="用已存在角色替换" open={Boolean(project && roleReplacementSourceId)} okText={roleReplacementSaving ? '正在替换并保存' : '确认替换并同步分句'} cancelText="取消" confirmLoading={roleReplacementSaving} closable={!roleReplacementSaving} keyboard={!roleReplacementSaving} maskClosable={!roleReplacementSaving} cancelButtonProps={{ disabled: roleReplacementSaving }} okButtonProps={{ disabled: jobRunning || roleReplacementSaving || !roleReplacementTargetId }} onOk={applyRoleReplacement} onCancel={() => { if (roleReplacementSavingRef.current) return; setRoleReplacementSourceId(undefined); setRoleReplacementTargetId(undefined); }}>
         {project && roleReplacementSourceId && <Space direction="vertical" size="large" className="modal-fields role-replacement-modal">
           <Alert type="warning" showIcon message={`当前角色“${project.roles.find(row => row[0] === roleReplacementSourceId)?.[1] || roleReplacementSourceId}”会从本工程删除`} description={`该角色引用的 ${project.segments.filter(row => row[2] === roleReplacementSourceId).length} 条分句会统一改为目标角色。目标角色的资料、形象、稳定音色和全部候选保持不变，原角色的永久音色文件继续保留在共享音色库。保存工程后，受影响的旧片断和完整交付会按角色变化标记为过期。`} />
-          <label><Text strong>选择替换后的已有角色</Text><Select aria-label="选择替换后的已有角色" disabled={jobRunning} showSearch optionFilterProp="label" value={roleReplacementTargetId} onChange={setRoleReplacementTargetId} options={project.roles.filter(row => row[0] !== roleReplacementSourceId).map(row => ({ value: row[0], label: `${row[1]} · ${row[0]} · ${project.segments.filter(segment => segment[2] === row[0]).length} 条分句${row[5] ? ' · 已有稳定音色' : ' · 音色待定'}` }))} placeholder="搜索名称或角色 ID" /></label>
+          <label><Text strong>选择替换后的已有角色</Text><Select aria-label="选择替换后的已有角色" disabled={jobRunning || roleReplacementSaving} showSearch optionFilterProp="label" value={roleReplacementTargetId} onChange={setRoleReplacementTargetId} options={project.roles.filter(row => row[0] !== roleReplacementSourceId).map(row => ({ value: row[0], label: `${row[1]} · ${row[0]} · ${project.segments.filter(segment => segment[2] === row[0]).length} 条分句${row[5] ? ' · 已有稳定音色' : ' · 音色待定'}` }))} placeholder="搜索名称或角色 ID" /></label>
           {roleReplacementTargetId && <Alert type="info" showIcon message={`替换后统一使用“${project.roles.find(row => row[0] === roleReplacementTargetId)?.[1]}”`} description="当前角色名称会记入目标角色别名，后续 AI 重新分析时可复用这次人工确认，减少同一人物再次被新增。" />}
+          {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="页面已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭页面。" />}
         </Space>}
       </Modal>
       <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
