@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from product_analysis_worker import analysis_voice_ids, apply_analysis_demographics, merge_analysis_roles
+from product_analysis_worker import (
+    analysis_voice_ids,
+    apply_analysis_demographics,
+    linked_article_demographic_reference,
+    merge_analysis_roles,
+)
 
 
 def test_analysis_voice_ids_use_project_and_library_voices_without_examples(tmp_path: Path):
@@ -35,6 +40,37 @@ def test_analysis_voice_ids_fall_back_to_optional_example_voices(tmp_path: Path)
     (examples / "voice_01.wav").write_bytes(b"RIFF")
 
     assert analysis_voice_ids(tmp_path, {}) == ["voice_01.wav"]
+
+
+def test_linked_article_text_is_supplied_as_ai_demographic_reference():
+    projects = {
+        "article-02": {
+            "project_id": "article-02",
+            "title": "白夜行02",
+            "source_text": "被害人的年龄是五十二岁。桐原洋介是桐原当铺老板。",
+            "linked_projects": [{"source_project_id": "article-01"}],
+        },
+        "article-01": {
+            "project_id": "article-01",
+            "title": "白夜行01",
+            "source_text": "死者年约四十五到五十出头。",
+            "linked_projects": [],
+        },
+    }
+
+    class Store:
+        def load(self, project_id):
+            return projects[project_id]
+
+    current = {
+        "project_id": "article-03",
+        "linked_projects": [{"source_project_id": "article-02"}],
+    }
+    reference = linked_article_demographic_reference(Store(), current)
+
+    assert "白夜行02" in reference
+    assert "被害人的年龄是五十二岁" in reference
+    assert "白夜行01" in reference
 
 
 def test_merge_analysis_roles_reuses_existing_assets_and_appends_new_roles():

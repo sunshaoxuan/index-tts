@@ -57,6 +57,51 @@ def analysis_voice_ids(root: Path, project: dict[str, Any]) -> list[str]:
     return ordered
 
 
+def linked_article_demographic_reference(
+    store: NovelProjectStore,
+    project: dict[str, Any],
+    max_chars: int = 24000,
+) -> str:
+    """Load linked article text for AI demographic reconciliation.
+
+    The current article remains the primary source. Linked article text is sent
+    back through the AI so explicit demographic facts can outrank weaker
+    relationship based estimates without copying asset values directly.
+    """
+    current_id = str(project.get("project_id") or "")
+    pending = [
+        str(item.get("source_project_id") or "").strip()
+        for item in project.get("linked_projects") or []
+        if isinstance(item, dict) and str(item.get("source_project_id") or "").strip()
+    ]
+    seen = {current_id}
+    references: list[str] = []
+    remaining = max(0, int(max_chars))
+    while pending and remaining > 0:
+        project_id = pending.pop(0)
+        if project_id in seen:
+            continue
+        seen.add(project_id)
+        try:
+            linked = store.load(project_id)
+        except (FileNotFoundError, KeyError, ValueError):
+            continue
+        source = str(linked.get("source_text") or "").strip()
+        if source:
+            header = f"关联文章《{str(linked.get('title') or project_id).strip()}》：\n"
+            entry = header + source
+            references.append(entry[:remaining])
+            remaining -= min(len(entry), remaining)
+        pending.extend(
+            str(item.get("source_project_id") or "").strip()
+            for item in linked.get("linked_projects") or []
+            if isinstance(item, dict)
+            and str(item.get("source_project_id") or "").strip()
+            and str(item.get("source_project_id") or "").strip() not in seen
+        )
+    return "\n\n".join(references)
+
+
 def merge_analysis_roles(
     document: dict[str, Any],
     existing_roles: list[list[Any]],
@@ -191,10 +236,12 @@ def apply_analysis_demographics(
             source["age"] = inferred_age
             source["age_source"] = "ai_article_inference"
             source["age_evidence"] = str(character.get("age_evidence") or "").strip()
+            source["age_basis"] = str(character.get("age_basis") or "unknown")
         demographic_changed = demographic_changed or (prior_gender is not None and prior_gender != inferred_gender)
         source["gender"] = inferred_gender
         source["gender_source"] = "ai_article_inference"
         source["gender_evidence"] = str(character.get("gender_evidence") or "").strip()
+        source["gender_basis"] = str(character.get("gender_basis") or "unknown")
         analyzed += 1
         if demographic_changed:
             age = int(source.get("age") or 35)
@@ -234,7 +281,21 @@ def main() -> int:
     director.health_summary()
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
-    document = director.analyze_document(project["source_text"], content_type=project["content_type"], guidance=project.get("guidance", ""), progress=progress)
+    demographic_reference = linked_article_demographic_reference(store, project)
+    document = director.analyze_document(
+        project["source_text"],
+        content_type=project["content_type"],
+        guidance=project.get("guidance", ""),
+        progress=progress,
+        demographic_reference_text=demographic_reference,
+    )
+    document["character_validation"] = director.validate_character_analysis(
+        document,
+        project["source_text"],
+        demographic_reference_text=demographic_reference,
+        max_rounds=3,
+        progress=progress,
+    )
     roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
     roles, segments, linked_role_report = merge_analysis_roles(
         document, project.get("roles") or [], roles, segments,

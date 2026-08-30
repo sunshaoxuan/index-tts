@@ -142,8 +142,10 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
                     "voice_hint": {"type": "string"},
                     "gender": {"type": "string", "enum": ["female", "male", "unspecified"]},
                     "gender_evidence": {"type": "string"},
+                    "gender_basis": {"type": "string", "enum": ["current_explicit", "linked_explicit", "current_inference", "linked_inference", "unknown"]},
                     "age": {"anyOf": [{"type": "integer", "minimum": 5, "maximum": 100}, {"type": "null"}]},
                     "age_evidence": {"type": "string"},
+                    "age_basis": {"type": "string", "enum": ["current_explicit", "linked_explicit", "current_inference", "linked_inference", "unknown"]},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "evidence": {"type": "string"},
                 },
@@ -271,6 +273,50 @@ class DirectorServiceError(DirectorError):
 
 
 MIN_ADAPTIVE_CHUNK_CHARS = 320
+DEMOGRAPHIC_BASIS_PRIORITY = {
+    "unknown": 0,
+    "linked_inference": 1,
+    "current_inference": 2,
+    "linked_explicit": 3,
+    "current_explicit": 4,
+}
+
+CHARACTER_VALIDATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["all_valid", "summary", "characters"],
+    "properties": {
+        "all_valid": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "characters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "id", "canonical_id", "name", "status", "issues",
+                    "profile", "profile_evidence", "gender", "gender_evidence",
+                    "gender_basis", "age", "age_evidence", "age_basis",
+                ],
+                "properties": {
+                    "id": {"type": "string"},
+                    "canonical_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pass", "corrected", "uncertain"]},
+                    "issues": {"type": "array", "items": {"type": "string"}},
+                    "profile": {"type": "string"},
+                    "profile_evidence": {"type": "string"},
+                    "gender": {"type": "string", "enum": ["female", "male", "unspecified"]},
+                    "gender_evidence": {"type": "string"},
+                    "gender_basis": {"type": "string", "enum": ["current_explicit", "linked_explicit", "current_inference", "linked_inference", "unknown"]},
+                    "age": {"type": "integer", "minimum": 5, "maximum": 100},
+                    "age_evidence": {"type": "string"},
+                    "age_basis": {"type": "string", "enum": ["current_explicit", "linked_explicit", "current_inference", "linked_inference", "unknown"]},
+                },
+            },
+        },
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -522,6 +568,7 @@ class OllamaTextDirector:
         content_type: str = "auto",
         guidance: str = "",
         progress: Callable[..., Any] | None = None,
+        demographic_reference_text: str = "",
     ) -> dict[str, Any]:
         source = normalize_source_text(text)
         if not source:
@@ -550,7 +597,12 @@ class OllamaTextDirector:
         if self.config.staged_analysis:
             _notify(progress, 0.01, "AI 正在建立全文角色与场景注册表")
             try:
-                global_characters, global_scenes, context_metrics = self._analyze_context(source, content_type, guidance)
+                global_characters, global_scenes, context_metrics = self._analyze_context(
+                    source,
+                    content_type,
+                    guidance,
+                    demographic_reference_text,
+                )
                 metrics["prompt_tokens"] += context_metrics["prompt_tokens"]
                 metrics["output_tokens"] += context_metrics["output_tokens"]
                 metrics["duration_seconds"] += context_metrics["duration_seconds"]
@@ -647,7 +699,204 @@ class OllamaTextDirector:
             "metrics": metrics,
         }
 
-    def _analyze_context(self, source: str, requested_type: str, guidance: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    def validate_character_analysis(
+        self,
+        document: dict[str, Any],
+        source_text: str,
+        demographic_reference_text: str = "",
+        max_rounds: int = 3,
+        progress: Callable[..., Any] | None = None,
+    ) -> dict[str, Any]:
+        rounds: list[dict[str, Any]] = []
+        max_rounds = max(1, min(5, int(max_rounds)))
+        for round_index in range(1, max_rounds + 1):
+            people = [item for item in document.get("characters") or [] if item.get("kind") == "character"]
+            if not people:
+                return {"all_valid": True, "round_count": 0, "rounds": [], "summary": "没有需要校验的人物"}
+            _notify(progress, 0.9 + round_index * 0.02, f"AI 正在进行第 {round_index} 轮人物设定校验")
+            current_evidence = self._character_validation_evidence(source_text, people)
+            linked_evidence = self._character_validation_evidence(demographic_reference_text, people)
+            roster = json.dumps(people, ensure_ascii=False, separators=(",", ":"))
+            prompt = f"""
+你是长篇作品的人物设定审校员。现在进行第 {round_index}/{max_rounds} 轮逐人校验。
+
+必须逐一检查人物表中的每一个人物，任何人物都不能遗漏：
+1. 校验规范名称、aliases 和人物关系，识别同一人物的简称、全名、关系称谓或译名差异。重复人物的 canonical_id 指向保留人物 ID，两个条目输出一致的修正人口属性。
+2. 校验 age 是否符合原文明示年龄、年龄范围、就学阶段、亲属关系、职业阶段、时间线和行为。禁止把 35 当作缺省值。
+3. 校验 gender 是否符合称谓、亲属关系、代词、身份和上下文，证据不足时允许 unspecified。
+4. 校验 profile 是否准确介绍身份、关系、行为、经历和叙事作用，删除原文不支持的断言，保留“稿件未说明”等不确定边界。profile 必须能让后续声音和形象生成正确理解人物。
+5. 人口属性证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。桐原洋介一类在关联文章明确写出年龄的人物，当前文章只有父亲身份时必须保留关联文章明示年龄。
+6. age_basis 和 gender_basis 必须填写 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
+7. 发现错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。证据仍不足或互相冲突时 status 填 uncertain。
+8. 只有本轮每个人物都无需再修改、没有重复身份、没有 unresolved issue 时，所有 status 才能为 pass 且 all_valid 为 true。只要本轮进行了任何修正，all_valid 必须为 false，由下一轮复核修正结果。
+9. characters 必须覆盖人物表全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
+
+当前人物表：{roster}
+
+当前文章人物证据：
+<<<CURRENT_ARTICLE
+{current_evidence or '无'}
+CURRENT_ARTICLE
+
+关联文章人物证据：
+<<<LINKED_ARTICLES
+{linked_evidence or '无'}
+LINKED_ARTICLES
+""".strip()
+            result, metrics = self._request_structured(
+                prompt,
+                CHARACTER_VALIDATION_SCHEMA,
+                system="你只输出严格符合 JSON Schema 的逐人人物设定校验结果。",
+                schema_name="character_validation",
+                context_tokens=12288,
+                keep_alive="30m",
+            )
+            rows = result.get("characters")
+            if not isinstance(rows, list):
+                raise DirectorValidationError(f"第 {round_index} 轮人物设定校验缺少 characters")
+            expected_ids = {str(item.get("id") or "") for item in people}
+            actual_ids = [str(item.get("id") or "") for item in rows if isinstance(item, dict)]
+            if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+                missing = sorted(expected_ids.difference(actual_ids))
+                extra = sorted(set(actual_ids).difference(expected_ids))
+                raise DirectorValidationError(f"第 {round_index} 轮人物设定校验覆盖不完整：缺少 {missing}，多出 {extra}")
+            normalized_rows = [self._normalize_character_validation(item, expected_ids) for item in rows]
+            self._apply_character_validation(document, normalized_rows)
+            statuses = {item["id"]: item["status"] for item in normalized_rows}
+            round_valid = (
+                bool(result.get("all_valid"))
+                and all(status == "pass" for status in statuses.values())
+                and all(not item["issues"] for item in normalized_rows)
+                and all(item["canonical_id"] == item["id"] for item in normalized_rows)
+            )
+            rounds.append({
+                "round": round_index,
+                "all_valid": round_valid,
+                "summary": str(result.get("summary") or "").strip(),
+                "statuses": statuses,
+                "issues": {item["id"]: item["issues"] for item in normalized_rows if item["issues"]},
+                "prompt_tokens": metrics.get("prompt_tokens", 0),
+                "output_tokens": metrics.get("output_tokens", 0),
+                "duration_seconds": metrics.get("duration_seconds", 0.0),
+            })
+            if round_valid:
+                return {
+                    "all_valid": True,
+                    "round_count": round_index,
+                    "rounds": rounds,
+                    "summary": rounds[-1]["summary"],
+                }
+        unresolved = rounds[-1].get("issues") if rounds else {}
+        raise DirectorValidationError(f"人物年龄、性别与小传经过 {max_rounds} 轮 AI 校验后仍未全部通过：{unresolved}")
+
+    @staticmethod
+    def _character_validation_evidence(source: str, people: list[dict[str, Any]], max_chars: int = 30000) -> str:
+        source = normalize_source_text(str(source or ""))
+        if len(source) <= max_chars:
+            return source
+        names = {
+            str(value).strip()
+            for person in people
+            for value in [person.get("name"), *(person.get("aliases") or [])]
+            if str(value or "").strip()
+        }
+        paragraphs = [item.strip() for item in source.split("\n") if item.strip()]
+        selected: list[str] = []
+        for index, paragraph in enumerate(paragraphs):
+            if any(name in paragraph for name in names) or any(token in paragraph for token in ("岁", "年龄", "男孩", "女孩", "儿子", "女儿", "丈夫", "妻子", "父亲", "母亲")):
+                for nearby in range(max(0, index - 1), min(len(paragraphs), index + 2)):
+                    if paragraphs[nearby] not in selected:
+                        selected.append(paragraphs[nearby])
+        evidence = "\n".join(selected)
+        return evidence[:max_chars]
+
+    @staticmethod
+    def _normalize_character_validation(raw: dict[str, Any], expected_ids: set[str]) -> dict[str, Any]:
+        role_id = str(raw.get("id") or "").strip()
+        canonical_id = str(raw.get("canonical_id") or role_id).strip()
+        if canonical_id not in expected_ids:
+            raise DirectorValidationError(f"人物 {role_id} 的 canonical_id 无效：{canonical_id}")
+        status = str(raw.get("status") or "uncertain")
+        if status not in {"pass", "corrected", "uncertain"}:
+            status = "uncertain"
+        age = raw.get("age")
+        if not isinstance(age, int) or isinstance(age, bool) or not 5 <= age <= 100:
+            raise DirectorValidationError(f"人物 {role_id} 的校验年龄无效")
+        profile = str(raw.get("profile") or "").strip()
+        if len(profile) < 10:
+            raise DirectorValidationError(f"人物 {role_id} 的校验小传过短")
+        profile_evidence = str(raw.get("profile_evidence") or "").strip()
+        age_evidence = str(raw.get("age_evidence") or "").strip()
+        gender = str(raw.get("gender") or "unspecified")
+        gender_evidence = str(raw.get("gender_evidence") or "").strip()
+        age_basis = str(raw.get("age_basis") or "unknown")
+        gender_basis = str(raw.get("gender_basis") or "unknown")
+        if not profile_evidence or not age_evidence:
+            raise DirectorValidationError(f"人物 {role_id} 的小传或年龄缺少校验证据")
+        if gender not in {"female", "male", "unspecified"}:
+            raise DirectorValidationError(f"人物 {role_id} 的校验性别无效")
+        if gender != "unspecified" and not gender_evidence:
+            raise DirectorValidationError(f"人物 {role_id} 的性别缺少校验证据")
+        if age_basis not in DEMOGRAPHIC_BASIS_PRIORITY or age_basis == "unknown":
+            raise DirectorValidationError(f"人物 {role_id} 的年龄证据类型无效")
+        if gender_basis not in DEMOGRAPHIC_BASIS_PRIORITY:
+            raise DirectorValidationError(f"人物 {role_id} 的性别证据类型无效")
+        return {
+            "id": role_id,
+            "canonical_id": canonical_id,
+            "name": str(raw.get("name") or "").strip(),
+            "status": status,
+            "issues": [str(item).strip() for item in raw.get("issues") or [] if str(item).strip()],
+            "profile": profile,
+            "profile_evidence": profile_evidence,
+            "gender": gender,
+            "gender_evidence": gender_evidence,
+            "gender_basis": gender_basis,
+            "age": age,
+            "age_evidence": age_evidence,
+            "age_basis": age_basis,
+        }
+
+    @staticmethod
+    def _apply_character_validation(document: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        characters = {str(item.get("id") or ""): item for item in document.get("characters") or []}
+        mapping = {row["id"]: row["canonical_id"] for row in rows}
+        for role_id, canonical_id in mapping.items():
+            if mapping.get(canonical_id, canonical_id) != canonical_id:
+                raise DirectorValidationError(f"人物合并目标必须是稳定根 ID：{role_id} -> {canonical_id}")
+        for row in rows:
+            character = characters[row["id"]]
+            if row["name"]:
+                character["name"] = row["name"]
+            for field in ("profile", "gender", "gender_evidence", "gender_basis", "age", "age_evidence", "age_basis"):
+                character[field] = row[field]
+            character["profile_evidence"] = row["profile_evidence"]
+        for role_id, canonical_id in mapping.items():
+            if role_id == canonical_id:
+                continue
+            source = characters[role_id]
+            target = characters[canonical_id]
+            aliases = set(target.get("aliases") or [])
+            aliases.update([source.get("name"), *(source.get("aliases") or [])])
+            target["aliases"] = sorted(str(item).strip() for item in aliases if str(item or "").strip() and str(item).strip() != target.get("name"))
+        document["characters"] = [item for item in document.get("characters") or [] if mapping.get(str(item.get("id") or ""), str(item.get("id") or "")) == str(item.get("id") or "")]
+        name_by_id = {str(item.get("id") or ""): str(item.get("name") or "") for item in document["characters"]}
+        for segment in document.get("segments") or []:
+            current = str(segment.get("speaker_id") or "")
+            final = mapping.get(current, current)
+            segment["speaker_id"] = final
+            segment["speaker_name"] = name_by_id.get(final, segment.get("speaker_name"))
+            segment["speaker_candidates"] = list(dict.fromkeys(mapping.get(str(item), str(item)) for item in segment.get("speaker_candidates") or []))
+        for scene in document.get("scenes") or []:
+            scene["participants"] = list(dict.fromkeys(mapping.get(str(item), str(item)) for item in scene.get("participants") or []))
+
+    def _analyze_context(
+        self,
+        source: str,
+        requested_type: str,
+        guidance: str,
+        demographic_reference_text: str = "",
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         context_chunks = split_document(source, max(4000, min(12000, self.config.max_chunk_chars * 3)))
         characters: list[dict[str, Any]] = []
         scenes: list[dict[str, Any]] = []
@@ -660,8 +909,8 @@ class OllamaTextDirector:
 1. 人物使用稳定 ID，旁白固定为 narrator。姓名、职称、外貌称谓和关系称谓写入同一角色 aliases。
 2. 描述短语含副词或动作词时不得作为人物名称。新增人物必须提供 evidence 和 confidence。
 3. 场景记录地点、时间、参与角色 ID、叙事视角、基调和证据。场景转换需要时间、地点、人物集合或叙事视角变化依据。
-4. gender 结合本块原文中的称谓、亲属关系、身份、行为和上下文推断 female 或 male，并在 gender_evidence 记录直接证据或推断依据。确实无法判断时填写 unspecified 并说明原因。
-5. 每个 character 的 age 都要结合本块原文中的明示年龄、亲属关系、身份、就学或职业阶段、时间线和行为语境推断整数，并在 age_evidence 记录直接证据或推断依据。范围年龄采用下限并保留完整范围。禁止无依据统一填写 35。narrator 可以填写 null。
+4. gender 结合本块原文和已关联文章证据中的称谓、亲属关系、身份、行为和上下文推断 female 或 male，并在 gender_evidence 记录证据。gender_basis 必须标记为 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
+5. 每个 character 的 age 都要结合本块原文和已关联文章证据中的明示年龄、亲属关系、身份、就学或职业阶段、时间线和行为语境推断整数，并在 age_evidence 记录证据。age_basis 使用与 gender_basis 相同的五类值。证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。范围年龄采用下限并保留完整范围。禁止无依据统一填写 35。narrator 可以填写 null。
 6. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
 7. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
 8. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
@@ -670,6 +919,11 @@ class OllamaTextDirector:
 <<<SOURCE
 {chunk}
 SOURCE
+
+已关联文章证据只用于识别本块人物和推断人口属性，不注册仅在关联文章出现的人物，不生成关联文章场景或分句：
+<<<LINKED_ARTICLE_EVIDENCE
+{demographic_reference_text.strip() or '无'}
+LINKED_ARTICLE_EVIDENCE
 """.strip()
             result, current_metrics = self._request_structured(
                 prompt,
@@ -720,12 +974,14 @@ SOURCE
                 if candidate.get("confidence", 0) > existing.get("confidence", 0):
                     for field in ("profile", "voice_hint", "confidence", "evidence"):
                         existing[field] = candidate.get(field, existing.get(field))
-                if candidate.get("gender") in {"female", "male"}:
+                if candidate.get("gender") in {"female", "male"} and cls._demographic_candidate_wins(existing, candidate, "gender"):
                     existing["gender"] = candidate["gender"]
                     existing["gender_evidence"] = candidate.get("gender_evidence", "")
-                if candidate.get("age") is not None:
+                    existing["gender_basis"] = candidate.get("gender_basis", "unknown")
+                if candidate.get("age") is not None and cls._demographic_candidate_wins(existing, candidate, "age"):
                     existing["age"] = candidate["age"]
                     existing["age_evidence"] = candidate.get("age_evidence", "")
+                    existing["age_basis"] = candidate.get("age_basis", "unknown")
             for value in [existing["name"], *existing.get("aliases", [])]:
                 alias_index[str(value).strip().casefold()] = existing
             local_to_global[candidate["id"]] = existing["id"]
@@ -863,7 +1119,7 @@ SOURCE
 10. 用户导演补充：{guidance.strip() or '无'}。先进行语义拆分：作品级要求应用于全部轨道；点名角色、角色类型、主角、配角、身份描述或上下文指代的要求只应用于目标角色。把角色专属声音要求合并进目标角色的 voice_hint，把角色专属表演要求应用于该角色的 segments，禁止复制给无关角色。
 11. 每个角色的 profile 在本阶段只写 40 到 120 个中文字符，记录当前原文明确支持的身份、关系、行为和说话方式。详细人物小传由独立功能扩写，不能占用分句请求的输出预算。
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
-13. 每个 character 都必须根据当前原文的称谓、亲属关系、身份、行为、时间线和上下文推断 gender 与 age，并在对应 evidence 字段区分直接陈述和语境推断。明示信息优先，范围年龄采用下限，禁止无依据统一填写 35。已有角色资料只用于人物识别，不能代替当前文章的人口属性分析。
+13. 每个 character 都必须根据当前原文和全文角色注册表推断 gender 与 age，并在对应 evidence 字段记录证据。gender_basis 与 age_basis 必须标记为 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。范围年龄采用下限，禁止无依据统一填写 35。角色资产字段只用于人物识别，全文注册表中的关联文章证据可以参与本次 AI 人口属性分析。
 14. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
 15. 先识别本块 scene，记录地点、时间、参与人物、叙事视角、情绪基调和原文证据。每条 segment 必须引用本块 scenes 中的 scene_id。场景转换需要时间、地点、人物集合或叙事视角变化证据。
 16. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
@@ -1399,8 +1655,10 @@ JSON Schema：{schema_text}
             "voice_hint": str(raw.get("voice_hint", "")).strip(),
             "gender": str(raw.get("gender", "unspecified")).strip() if str(raw.get("gender", "unspecified")).strip() in {"female", "male", "unspecified"} else "unspecified",
             "gender_evidence": str(raw.get("gender_evidence", "")).strip(),
+            "gender_basis": str(raw.get("gender_basis", "unknown")).strip() if str(raw.get("gender_basis", "unknown")).strip() in DEMOGRAPHIC_BASIS_PRIORITY else "unknown",
             "age": max(5, min(100, int(raw["age"]))) if isinstance(raw.get("age"), int) and not isinstance(raw.get("age"), bool) else None,
             "age_evidence": str(raw.get("age_evidence", "")).strip(),
+            "age_basis": str(raw.get("age_basis", "unknown")).strip() if str(raw.get("age_basis", "unknown")).strip() in DEMOGRAPHIC_BASIS_PRIORITY else "unknown",
         }
         if any(key in raw for key in ("aliases", "confidence", "evidence")):
             normalized.update({
@@ -1409,6 +1667,12 @@ JSON Schema：{schema_text}
                 "evidence": str(raw.get("evidence", "")).strip(),
             })
         return normalized
+
+    @staticmethod
+    def _demographic_candidate_wins(existing: dict[str, Any], candidate: dict[str, Any], field: str) -> bool:
+        existing_basis = str(existing.get(f"{field}_basis") or "unknown")
+        candidate_basis = str(candidate.get(f"{field}_basis") or "unknown")
+        return DEMOGRAPHIC_BASIS_PRIORITY.get(candidate_basis, 0) >= DEMOGRAPHIC_BASIS_PRIORITY.get(existing_basis, 0)
 
     @staticmethod
     def _normalize_scene(raw: dict[str, Any], default_index: int) -> dict[str, Any]:
@@ -1504,12 +1768,14 @@ JSON Schema：{schema_text}
                     candidate_score = len(candidate) - sum(30 for token in weak_tokens if token in candidate)
                     if candidate and candidate != existing.get("name") and candidate_score > current_score:
                         existing[field] = candidate
-                if character.get("gender") in {"female", "male"}:
+                if character.get("gender") in {"female", "male"} and OllamaTextDirector._demographic_candidate_wins(existing, character, "gender"):
                     existing["gender"] = character["gender"]
                     existing["gender_evidence"] = character.get("gender_evidence", "")
-                if character.get("age") is not None:
+                    existing["gender_basis"] = character.get("gender_basis", "unknown")
+                if character.get("age") is not None and OllamaTextDirector._demographic_candidate_wins(existing, character, "age"):
                     existing["age"] = character["age"]
                     existing["age_evidence"] = character.get("age_evidence", "")
+                    existing["age_basis"] = character.get("age_basis", "unknown")
             local_to_global[character["id"]] = existing["id"]
 
         local_scene_to_global: dict[str, str] = {}

@@ -62,6 +62,224 @@ def test_director_config_defaults_to_qwen3_14b():
     assert DirectorConfig().model == "qwen3:14b"
 
 
+def test_context_prompt_uses_linked_article_demographics_with_explicit_priority():
+    director = OllamaTextDirector(DirectorConfig(model="fake", staged_analysis=True))
+    prompts = []
+
+    def request_structured(prompt, schema, **kwargs):
+        prompts.append(prompt)
+        return {
+            "content_type": "novel",
+            "title": "测试",
+            "characters": [],
+            "scenes": [],
+        }, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.01}
+
+    director._request_structured = request_structured
+    director._analyze_context(
+        "桐原洋介的儿子抱着遗照。",
+        "novel",
+        "",
+        "被害人的年龄是五十二岁。",
+    )
+
+    assert "被害人的年龄是五十二岁" in prompts[0]
+    assert "当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断" in prompts[0]
+    assert "不注册仅在关联文章出现的人物" in prompts[0]
+
+
+def test_linked_explicit_demographics_survive_weaker_current_inference():
+    global_characters = [{
+        "id": "role_007",
+        "name": "桐原洋介",
+        "kind": "character",
+        "aliases": [],
+        "profile": "桐原当铺老板",
+        "voice_hint": "成熟男声",
+        "gender": "male",
+        "gender_evidence": "关联文章明确称为丈夫",
+        "gender_basis": "linked_explicit",
+        "age": 52,
+        "age_evidence": "关联文章明确写明五十二岁",
+        "age_basis": "linked_explicit",
+    }]
+    result = {
+        "characters": [{
+            "id": "local-father",
+            "name": "桐原洋介",
+            "kind": "character",
+            "aliases": [],
+            "profile": "小学五年级学生的父亲",
+            "voice_hint": "成年男声",
+            "gender": "male",
+            "gender_evidence": "当前文章称其为父亲",
+            "gender_basis": "current_inference",
+            "age": 35,
+            "age_evidence": "根据孩子就学阶段推断",
+            "age_basis": "current_inference",
+        }],
+        "scenes": [],
+        "segments": [],
+    }
+
+    OllamaTextDirector._merge_chunk(result, global_characters, [], [])
+
+    assert global_characters[0]["age"] == 52
+    assert global_characters[0]["age_basis"] == "linked_explicit"
+
+
+def test_current_explicit_demographics_override_linked_explicit_value():
+    existing = [{
+        "id": "role_007", "name": "桐原洋介", "kind": "character", "aliases": [],
+        "profile": "旧篇人物", "voice_hint": "成熟男声", "gender": "male",
+        "gender_evidence": "关联文章明确称为丈夫", "gender_basis": "linked_explicit",
+        "age": 52, "age_evidence": "关联文章明确写明五十二岁", "age_basis": "linked_explicit",
+    }]
+    result = {
+        "characters": [{
+            "id": "local-father", "name": "桐原洋介", "kind": "character", "aliases": [],
+            "profile": "当前篇人物", "voice_hint": "成熟男声", "gender": "male",
+            "gender_evidence": "当前文章明确称为男性", "gender_basis": "current_explicit",
+            "age": 53, "age_evidence": "当前文章明确写明五十三岁", "age_basis": "current_explicit",
+        }],
+        "scenes": [],
+        "segments": [],
+    }
+
+    OllamaTextDirector._merge_chunk(result, existing, [], [])
+
+    assert existing[0]["age"] == 53
+    assert existing[0]["age_basis"] == "current_explicit"
+
+
+def test_ai_character_validation_rechecks_corrections_until_every_person_passes():
+    class ValidationDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            self.responses = [
+                {
+                    "all_valid": False,
+                    "summary": "修正桐原洋介年龄",
+                    "characters": [{
+                        "id": "role_007", "canonical_id": "role_007", "name": "桐原洋介",
+                        "status": "corrected", "issues": ["35 岁缺少依据，关联文章明示 52 岁"],
+                        "profile": "桐原洋介是五十二岁的桐原当铺老板，也是桐原亮司的父亲。",
+                        "profile_evidence": "关联文章写明年龄和当铺老板身份",
+                        "gender": "male", "gender_evidence": "原文称其为丈夫和父亲",
+                        "gender_basis": "current_explicit", "age": 52,
+                        "age_evidence": "关联文章明确写明被害人的年龄是五十二岁",
+                        "age_basis": "linked_explicit",
+                    }],
+                },
+                {
+                    "all_valid": True,
+                    "summary": "全部人物设定通过",
+                    "characters": [{
+                        "id": "role_007", "canonical_id": "role_007", "name": "桐原洋介",
+                        "status": "pass", "issues": [],
+                        "profile": "桐原洋介是五十二岁的桐原当铺老板，也是桐原亮司的父亲。",
+                        "profile_evidence": "关联文章写明年龄和当铺老板身份",
+                        "gender": "male", "gender_evidence": "原文称其为丈夫和父亲",
+                        "gender_basis": "current_explicit", "age": 52,
+                        "age_evidence": "关联文章明确写明被害人的年龄是五十二岁",
+                        "age_basis": "linked_explicit",
+                    }],
+                },
+            ]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            return self.responses.pop(0), {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [{
+            "id": "role_007", "name": "桐原洋介", "kind": "character", "aliases": [],
+            "profile": "桐原洋介是当铺老板。", "voice_hint": "成年男声",
+            "gender": "male", "gender_evidence": "原文称父亲", "gender_basis": "current_inference",
+            "age": 35, "age_evidence": "根据父亲身份推断", "age_basis": "current_inference",
+        }],
+        "segments": [],
+        "scenes": [],
+    }
+
+    report = ValidationDirector().validate_character_analysis(
+        document,
+        "桐原洋介的儿子抱着遗照。",
+        "被害人的年龄是五十二岁。",
+    )
+
+    assert report["all_valid"] is True
+    assert report["round_count"] == 2
+    assert document["characters"][0]["age"] == 52
+    assert report["rounds"][0]["statuses"] == {"role_007": "corrected"}
+    assert report["rounds"][1]["statuses"] == {"role_007": "pass"}
+
+
+def test_ai_character_validation_merges_duplicate_identity_then_rechecks():
+    class ValidationDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            shared = {
+                "profile": "桐原亮司是桐原洋介的儿子，也是小学五年级学生。",
+                "profile_evidence": "当前文章写明父子关系和五年级身份",
+                "gender": "male", "gender_evidence": "原文称其为儿子",
+                "gender_basis": "current_explicit", "age": 10,
+                "age_evidence": "原文写作十至十一岁，范围取下限",
+                "age_basis": "linked_explicit",
+            }
+            self.responses = [
+                {
+                    "all_valid": False,
+                    "summary": "合并重复人物",
+                    "characters": [
+                        {"id": "role_013", "canonical_id": "role_013", "name": "桐原亮", "status": "corrected", "issues": ["补充全名别名"], **shared},
+                        {"id": "role_014", "canonical_id": "role_013", "name": "桐原亮司", "status": "corrected", "issues": ["与桐原亮为同一人物"], **shared},
+                    ],
+                },
+                {
+                    "all_valid": True,
+                    "summary": "合并后人物设定通过",
+                    "characters": [
+                        {"id": "role_013", "canonical_id": "role_013", "name": "桐原亮", "status": "pass", "issues": [], **shared},
+                    ],
+                },
+            ]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            return self.responses.pop(0), {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [
+            {"id": "role_013", "name": "桐原亮", "kind": "character", "aliases": [], "profile": "男孩", "voice_hint": "男童声"},
+            {"id": "role_014", "name": "桐原亮司", "kind": "character", "aliases": [], "profile": "桐原洋介的儿子", "voice_hint": "成年男声"},
+        ],
+        "segments": [{"speaker_id": "role_014", "speaker_name": "桐原亮司", "speaker_candidates": ["role_014"]}],
+        "scenes": [{"participants": ["role_013", "role_014"]}],
+    }
+
+    report = ValidationDirector().validate_character_analysis(document, "桐原亮司是桐原洋介的儿子。")
+
+    assert report["round_count"] == 2
+    assert [item["id"] for item in document["characters"]] == ["role_013"]
+    assert "桐原亮司" in document["characters"][0]["aliases"]
+    assert document["segments"][0]["speaker_id"] == "role_013"
+    assert document["scenes"][0]["participants"] == ["role_013"]
+
+
+def test_ai_character_validation_rejects_a_round_that_omits_any_person():
+    class IncompleteDirector(OllamaTextDirector):
+        def _request_structured(self, prompt, schema, **kwargs):
+            return {"all_valid": True, "summary": "遗漏人物", "characters": []}, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [{"id": "role_001", "name": "人物", "kind": "character", "aliases": [], "profile": "测试人物小传", "voice_hint": "测试声音"}],
+        "segments": [],
+        "scenes": [],
+    }
+
+    with pytest.raises(DirectorValidationError, match="覆盖不完整"):
+        IncompleteDirector(DirectorConfig(model="fake")).validate_character_analysis(document, "人物出现。")
+
+
 def _segment(order, source_text, text, role_id="narrator", name="旁白", kind="narrator"):
     return {
         "order": order,
