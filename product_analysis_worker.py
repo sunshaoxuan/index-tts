@@ -135,8 +135,13 @@ def merge_analysis_roles(
     final_by_id = {str(row[0]): row for row in existing}
     new_roles: list[list[Any]] = []
     reused_roles = 0
+    merged_duplicate_existing_roles: dict[str, str] = {}
 
-    def relationship_prefix_match(generated: list[Any], character: dict[str, Any]) -> list[Any] | None:
+    def relationship_prefix_match(
+        generated: list[Any],
+        character: dict[str, Any],
+        exclude_ids: set[str] | None = None,
+    ) -> list[Any] | None:
         generated_name = "".join(str(character.get("name") or generated[1]).split()).casefold()
         generated_profile = str(character.get("profile") or generated[3])
         relationships = re.findall(
@@ -147,6 +152,8 @@ def merge_analysis_roles(
             return None
         matches: list[list[Any]] = []
         for candidate in existing:
+            if str(candidate[0]) in (exclude_ids or set()):
+                continue
             if str(candidate[2]).strip() != str(generated[2]).strip():
                 continue
             candidate_name = "".join(str(candidate[1]).split()).casefold()
@@ -187,8 +194,21 @@ def merge_analysis_roles(
             prior = existing_by_key.get(name_key(generated[2], value))
             if prior is not None:
                 break
-        if prior is None:
-            prior = relationship_prefix_match(generated, character)
+        relationship_prior = relationship_prefix_match(
+            generated,
+            character,
+            {str(prior[0])} if prior is not None else set(),
+        )
+        if (
+            prior is not None
+            and relationship_prior is not None
+            and not str(prior[5] or "").strip()
+            and str(relationship_prior[5] or "").strip()
+        ):
+            merged_duplicate_existing_roles[str(prior[0])] = str(relationship_prior[0])
+            prior = relationship_prior
+        elif prior is None:
+            prior = relationship_prior
         if prior is not None:
             final_id = str(prior[0])
             final_row = final_by_id[final_id]
@@ -203,7 +223,7 @@ def merge_analysis_roles(
             new_roles.append(final_row)
         generated_to_final[generated_id] = final_id
 
-    final_roles = existing + new_roles
+    final_roles = [row for row in existing if str(row[0]) not in merged_duplicate_existing_roles] + new_roles
     role_name_by_id = {str(row[0]): str(row[1]) for row in final_roles}
     final_segments: list[list[Any]] = []
     for segment in generated_segments:
@@ -235,7 +255,8 @@ def merge_analysis_roles(
         "reused_roles": reused_roles,
         "new_roles": len(new_roles),
         "new_roles_pending_voice_selection": len(new_roles),
-        "retained_unmentioned_roles": max(0, len(existing) - reused_roles),
+        "retained_unmentioned_roles": max(0, len(final_roles) - len(new_roles) - reused_roles),
+        "merged_duplicate_existing_roles": merged_duplicate_existing_roles,
         "generated_to_final": generated_to_final,
     }
 

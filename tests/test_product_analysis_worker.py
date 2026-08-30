@@ -118,6 +118,7 @@ def test_merge_analysis_roles_reuses_existing_assets_and_appends_new_roles():
         "new_roles": 1,
         "new_roles_pending_voice_selection": 1,
         "retained_unmentioned_roles": 1,
+        "merged_duplicate_existing_roles": {},
         "generated_to_final": {"ai_narrator": "narrator", "ai_detective": "role_001", "role_001": "role_002"},
     }
 
@@ -205,6 +206,42 @@ def test_relationship_and_name_prefix_merge_kirihara_ryo_with_ryoji():
     assert report["new_roles"] == 0
     assert document["characters"][0]["id"] == "role_013"
     assert document["characters"][0]["name"] == "桐原亮"
+    assert "桐原亮司" in document["characters"][0]["aliases"]
+
+
+def test_relationship_merge_removes_unvoiced_existing_full_name_duplicate():
+    existing = [
+        [
+            "role_013", "桐原亮", "character",
+            "桐原亮是桐原洋介与弥生子的儿子，目前读小学五年级。",
+            "男童声线", "voice-child", "自然叙述", "否",
+        ],
+        [
+            "role_008", "桐原亮司", "character",
+            "桐原洋介的儿子，穿着小学五年级的校服。",
+            "男童声线", "", "自然叙述", "是",
+        ],
+    ]
+    generated = [[
+        "ai_child", "桐原亮司", "character",
+        "桐原洋介的儿子，穿着小学五年级的校服。",
+        "男童声线", "", "自然叙述", "是",
+    ]]
+    document = {
+        "characters": [{
+            "id": "ai_child", "name": "桐原亮司", "kind": "character",
+            "aliases": ["桐原洋介的儿子"], "profile": "桐原洋介的儿子，穿着小学五年级的校服。",
+            "gender": "male", "age": 10,
+        }],
+        "segments": [],
+    }
+
+    roles, _segments, report = merge_analysis_roles(document, existing, generated, [], [])
+
+    assert [row[0] for row in roles] == ["role_013"]
+    assert report["generated_to_final"] == {"ai_child": "role_013"}
+    assert report["merged_duplicate_existing_roles"] == {"role_008": "role_013"}
+    assert document["characters"][0]["id"] == "role_013"
     assert "桐原亮司" in document["characters"][0]["aliases"]
 
 
