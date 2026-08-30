@@ -46,3 +46,14 @@ def test_age_defaults_create_distinct_voice_trait_profiles():
     assert child["voice_traits"]["brightness"] > older["voice_traits"]["brightness"]
     assert child["voice_traits"]["resonance"] > older["voice_traits"]["resonance"]
     assert older["voice_traits"]["roughness"] > child["voice_traits"]["roughness"]
+
+
+def test_demographic_evidence_basis_survives_asset_normalization():
+    roles = [["role_001", "桐原洋介", "character", "被害人。", "成年男声", "", "自然叙述", "否"]]
+    assets = normalize_character_assets(roles, {"role_001": {
+        "gender": "male", "gender_evidence": "关联文章称其为男性", "gender_basis": "linked_explicit",
+        "age": 52, "age_evidence": "关联文章明确写明五十二岁", "age_basis": "linked_explicit",
+    }})
+
+    assert assets["role_001"]["age_basis"] == "linked_explicit"
+    assert assets["role_001"]["gender_basis"] == "linked_explicit"

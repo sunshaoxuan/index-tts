@@ -221,13 +221,20 @@ def apply_analysis_demographics(
     changed = 0
     for row in roles:
         role_id = str(row[0])
-        character = characters.get(role_id, {})
+        character = characters.get(role_id)
         source = deepcopy(prepared.get(role_id)) if isinstance(prepared.get(role_id), dict) else {}
+        if str(row[2]) != "narrator" and character is None:
+            existing_age = source.get("age")
+            if not isinstance(existing_age, int) or isinstance(existing_age, bool):
+                raise ValueError(f"保留角色 {row[1]} 不在本次 AI 人物表且缺少既有年龄")
+            prepared[role_id] = source
+            continue
+        character = character or {}
         prior_age = source.get("age")
         prior_gender = source.get("gender")
         inferred_age = character.get("age") if isinstance(character.get("age"), int) and not isinstance(character.get("age"), bool) else None
         if str(row[2]) != "narrator" and inferred_age is None:
-            raise ValueError(f"角色 {row[1]} 缺少基于当前文章的年龄推断")
+            raise ValueError(f"本次 AI 人物 {row[1]} 缺少文章证据支持的年龄推断")
         inferred_gender = character.get("gender") if character.get("gender") in {"female", "male", "unspecified"} else "unspecified"
         demographic_changed = False
         if inferred_age is not None:

@@ -198,6 +198,37 @@ def test_character_without_current_article_age_inference_is_rejected():
     try:
         apply_analysis_demographics(document, roles, {"role_013": {"gender": "male", "age": 10}})
     except ValueError as error:
-        assert "缺少基于当前文章的年龄推断" in str(error)
+        assert "缺少文章证据支持的年龄推断" in str(error)
     else:
         raise AssertionError("缺少当前文章年龄推断时必须拒绝分析结果")
+
+
+def test_demographic_merge_preserves_linked_roles_absent_from_current_ai_roster():
+    roles = [
+        ["role_current", "当前人物", "character", "当前人物小传", "男声", "", "自然叙述", "否"],
+        ["role_linked", "关联人物", "character", "关联人物小传", "女声", "", "自然叙述", "否"],
+    ]
+    document = {
+        "characters": [{
+            "id": "role_current", "name": "当前人物", "kind": "character",
+            "gender": "male", "gender_evidence": "文章称其为父亲", "gender_basis": "current_explicit",
+            "age": 52, "age_evidence": "关联文章明确写明五十二岁", "age_basis": "linked_explicit",
+        }],
+        "segments": [],
+    }
+    existing_assets = {
+        "role_linked": {
+            "gender": "female", "age": 55, "pitch_min_hz": 165,
+            "pitch_max_hz": 255, "pitch_target_hz": 210, "voice_candidates": [{"voice_id": "voice-linked"}],
+        }
+    }
+
+    assets, report = apply_analysis_demographics(document, roles, existing_assets)
+
+    assert assets["role_current"]["age"] == 52
+    assert assets["role_current"]["age_basis"] == "linked_explicit"
+    assert assets["role_linked"]["age"] == 55
+    assert assets["role_linked"]["gender"] == "female"
+    assert assets["role_linked"]["pitch_target_hz"] == 210
+    assert assets["role_linked"]["voice_candidates"] == [{"voice_id": "voice-linked"}]
+    assert report == {"analyzed": 1, "changed": 0}
