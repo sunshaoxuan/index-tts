@@ -768,6 +768,7 @@ LINKED_ARTICLES
                     extra = sorted(set(actual_ids).difference(expected_ids))
                     raise DirectorValidationError(f"第 {round_index} 轮人物设定校验覆盖不完整：缺少 {missing}，多出 {extra}")
                 normalized_rows = [self._normalize_character_validation(item, expected_ids) for item in rows]
+                reconciled_redundant_issues = self._reconcile_redundant_character_corrections(people, normalized_rows)
                 inconsistencies = self._character_validation_inconsistencies(people, normalized_rows)
                 if not inconsistencies:
                     break
@@ -788,7 +789,7 @@ LINKED_ARTICLES
             self._apply_character_validation(document, normalized_rows)
             statuses = {item["id"]: item["status"] for item in normalized_rows}
             round_valid = (
-                bool(result.get("all_valid"))
+                (bool(result.get("all_valid")) or bool(reconciled_redundant_issues))
                 and all(status == "pass" for status in statuses.values())
                 and all(not item["issues"] for item in normalized_rows)
                 and all(item["canonical_id"] == item["id"] for item in normalized_rows)
@@ -800,6 +801,7 @@ LINKED_ARTICLES
                 "statuses": statuses,
                 "issues": {item["id"]: item["issues"] for item in normalized_rows if item["issues"]},
                 "repair_attempts": repair_attempts,
+                "reconciled_redundant_issues": reconciled_redundant_issues,
                 "prompt_tokens": total_metrics["prompt_tokens"],
                 "output_tokens": total_metrics["output_tokens"],
                 "duration_seconds": total_metrics["duration_seconds"],
@@ -881,6 +883,51 @@ LINKED_ARTICLES
             "age_evidence": age_evidence,
             "age_basis": age_basis,
         }
+
+    @staticmethod
+    def _reconcile_redundant_character_corrections(
+        people: list[dict[str, Any]],
+        rows: list[dict[str, Any]],
+    ) -> list[str]:
+        before = {str(item.get("id") or ""): item for item in people}
+        reconciled: list[str] = []
+        age_range_pattern = re.compile(
+            r"(?:\d{1,3}|[零〇一二两三四五六七八九十百]+)\s*(?:至|到|[-~～])\s*"
+            r"(?:\d{1,3}|[零〇一二两三四五六七八九十百]+)"
+        )
+        for row in rows:
+            if row["status"] != "corrected" or not row["issues"]:
+                continue
+            original = before[row["id"]]
+            changed = any(
+                row.get(field) != original.get(field)
+                for field in (
+                    "name", "profile", "profile_evidence", "gender", "gender_evidence",
+                    "gender_basis", "age", "age_evidence", "age_basis",
+                )
+            ) or row["canonical_id"] != row["id"]
+            if changed or not age_range_pattern.search(row["age_evidence"]):
+                continue
+            requested_ages: list[int] = []
+            only_resolved_age_issues = True
+            for issue in row["issues"]:
+                if any(token in issue for token in ("性别", "gender", "小传", "profile", "姓名", "name", "重复", "合并", "canonical")):
+                    only_resolved_age_issues = False
+                    break
+                match = re.search(
+                    r"(?:下限|年龄(?:值)?(?:应为|改为)|age\s*(?:应为|改为|=|should\s+be))\s*[:：]?\s*(\d{1,3})",
+                    issue,
+                    flags=re.IGNORECASE,
+                )
+                if not match:
+                    only_resolved_age_issues = False
+                    break
+                requested_ages.append(int(match.group(1)))
+            if only_resolved_age_issues and requested_ages and all(age == row["age"] for age in requested_ages):
+                reconciled.append(f"{row['id']} 的年龄目标已为 {row['age']}，且 age_evidence 已保留范围")
+                row["status"] = "pass"
+                row["issues"] = []
+        return reconciled
 
     @staticmethod
     def _character_validation_inconsistencies(
