@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { classifyPendingJobs, jobModelKey } from './model-job-scheduler.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(here, '..', '..');
@@ -811,8 +812,32 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     return { roles, characterAssets, voiceFiles: [...new Set(voiceFiles)], pronunciations, linkedProjects };
   }
   const activeJobFile = path.join(jobRoot, 'active-job.json');
+  const queueFile = path.join(jobRoot, 'job-queue.json');
   let activeJob;
+  let pendingJobs = [];
+  let lastModelKey = '';
+  let scheduling = false;
   await mkdir(jobRoot, { recursive: true });
+  try {
+    const storedQueue = JSON.parse(await readFile(queueFile, 'utf8'));
+    lastModelKey = String(storedQueue.last_model_key || '');
+    pendingJobs = (Array.isArray(storedQueue.pending) ? storedQueue.pending : []).map(item => ({
+      jobId: safeProjectId(item.jobId),
+      kind: String(item.kind),
+      projectId: safeProjectId(item.projectId),
+      modelKey: String(item.modelKey),
+      dependencies: (Array.isArray(item.dependencies) ? item.dependencies : []).map(value => safeProjectId(value)),
+      createdAt: String(item.createdAt),
+    }));
+  } catch {}
+  const persistQueue = async () => {
+    const temporary = `${queueFile}.tmp`;
+    await writeFile(temporary, `${JSON.stringify({ version: 1, last_model_key: lastModelKey, pending: pendingJobs }, null, 2)}\n`, 'utf8');
+    await rename(temporary, queueFile);
+  };
+  const projectJobLock = projectId => activeJob?.projectId === projectId
+    ? activeJob
+    : pendingJobs.find(job => job.projectId === projectId);
   const clearActiveJob = async (jobId) => {
     if (activeJob?.jobId === jobId) activeJob = undefined;
     try {
@@ -861,6 +886,17 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
     } catch {}
   }
+  const recoveredPendingJobs = [];
+  for (const job of pendingJobs) {
+    try {
+      const status = JSON.parse(await readFile(path.join(jobRoot, job.jobId, 'status.json'), 'utf8'));
+      if (!['complete', 'error'].includes(status.phase)) recoveredPendingJobs.push(job);
+    } catch {}
+  }
+  if (recoveredPendingJobs.length !== pendingJobs.length) {
+    pendingJobs = recoveredPendingJobs;
+    await persistQueue();
+  }
   await app.register(fastifyStatic, { root: distRoot, wildcard: false });
 
   app.get('/api/health', async () => ({ status: 'ok', productVersion, runtime: process.version, architecture: 'react-antd-node-python', voiceModel: await voiceRuntimeHealth(repoRoot) }));
@@ -869,7 +905,10 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     try {
       const status = JSON.parse(await readFile(path.join(jobRoot, activeJob.jobId, 'status.json'), 'utf8'));
       if (['complete', 'error'].includes(status.phase)) {
+        lastModelKey = activeJob.modelKey || lastModelKey;
         await clearActiveJob(activeJob.jobId);
+        await persistQueue();
+        void scheduleQueue();
         return { available: false };
       }
       return { available: true, ...activeJob, ...status };
@@ -1018,8 +1057,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   app.put('/api/projects/:id', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
-      if (activeJob?.projectId === id) {
-        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+      const projectLock = projectJobLock(id);
+      if (projectLock) {
+        const error = new Error(`工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成`);
         error.statusCode = 409;
         throw error;
       }
@@ -1041,8 +1081,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   app.delete('/api/projects/:id', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
-      if (activeJob?.projectId === id) {
-        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+      const projectLock = projectJobLock(id);
+      if (projectLock) {
+        const error = new Error(`工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成`);
         error.statusCode = 409;
         throw error;
       }
@@ -1062,7 +1103,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     try {
       const id = safeProjectId(request.params.id);
       const roleId = safeProjectId(request.params.roleId);
-      if (activeJob?.projectId === id) return reply.code(409).send({ error: `工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成` });
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
       const settings = await readAiMediaSettings(aiMediaSettingsFile);
       if (!settings.endpoint || !settings.api_key || !settings.text_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和人物小传模型');
       const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
@@ -1087,7 +1129,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     try {
       const id = safeProjectId(request.params.id);
       const roleId = safeProjectId(request.params.roleId);
-      if (activeJob?.projectId === id) return reply.code(409).send({ error: `工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成` });
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
       const settings = await readAiMediaSettings(aiMediaSettingsFile);
       if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
       const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
@@ -1172,8 +1215,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     try {
       const id = safeProjectId(request.params.id);
       const renderId = safeProjectId(request.params.renderId);
-      if (activeJob?.projectId === id) {
-        const error = new Error(`工程版本已被任务 ${activeJob.jobId} 锁定，请等待任务完成`);
+      const projectLock = projectJobLock(id);
+      if (projectLock) {
+        const error = new Error(`工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成`);
         error.statusCode = 409;
         throw error;
       }
@@ -1189,24 +1233,129 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       return reply.code(statusCode).send({ error: error.code === 'ENOENT' ? '交付记录不存在' : error.message });
     }
   });
-  async function startJob(projectId, kind, options = {}) {
-    if (activeJob) {
-      const error = new Error(`任务 ${activeJob.jobId} 正在运行，请等待完成后再启动新任务`);
-      error.statusCode = 409;
-      throw error;
+  async function queuedStatusMap() {
+    const ids = new Set(pendingJobs.flatMap(job => job.dependencies || []));
+    const statuses = {};
+    await Promise.all([...ids].map(async jobId => {
+      try { statuses[jobId] = JSON.parse(await readFile(path.join(jobRoot, jobId, 'status.json'), 'utf8')).phase; }
+      catch { statuses[jobId] = 'missing'; }
+    }));
+    return statuses;
+  }
+
+  async function refreshQueuedStatuses() {
+    const statuses = await queuedStatusMap();
+    await Promise.all(pendingJobs.map(async (job, index) => {
+      const blocked = job.dependencies.some(jobId => statuses[jobId] !== 'complete');
+      const message = blocked ? `等待依赖任务完成：${job.dependencies.filter(jobId => statuses[jobId] !== 'complete').join('、')}` : `等待模型调度：${job.modelKey}`;
+      await writeFile(path.join(jobRoot, job.jobId, 'status.json'), JSON.stringify({
+        phase: 'queued', fraction: 0, message, modelKey: job.modelKey, dependencies: job.dependencies, queuePosition: index + 1,
+      }), 'utf8');
+    }));
+  }
+
+  async function launchPreparedJob(job) {
+    const dir = path.join(jobRoot, job.jobId);
+    const input = path.join(dir, 'input.json');
+    const status = path.join(dir, 'status.json');
+    const result = path.join(dir, 'result.json');
+    const worker = job.kind === 'analyze' ? 'product_analysis_worker.py' : job.kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
+    activeJob = { ...job };
+    await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: `模型队列已选中任务：${job.modelKey}`, modelKey: job.modelKey, dependencies: job.dependencies, queuePosition: 0 }), 'utf8');
+    await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
+    const python = workerPython(repoRoot);
+    const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
+    const child = launchWorker
+      ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
+      : spawnWorker(python, workerArgs, {
+        cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
+      });
+    const log = path.join(dir, 'worker.log');
+    const chunks = [];
+    let settled = false;
+    const finish = async (code, spawnError) => {
+      if (settled) return;
+      settled = true;
+      try {
+        const logText = Buffer.concat(chunks).toString('utf8');
+        await writeFile(log, logText, 'utf8');
+        let prior = {};
+        try { prior = JSON.parse(await readFile(status, 'utf8')); } catch {}
+        if (spawnError) {
+          await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${spawnError.message}`, modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
+        } else if (code && code !== 0) {
+          const workerDetail = logText.trim().split(/\r?\n/u).at(-1);
+          const detail = String(prior.phase === 'error' && prior.message ? prior.message : workerDetail || `Worker 退出码 ${code}`);
+          await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail, modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
+        } else if (!['complete', 'error'].includes(prior.phase)) {
+          await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: 'Worker 已退出，但没有写入完成状态', modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
+        }
+      } finally {
+        lastModelKey = job.modelKey;
+        await clearActiveJob(job.jobId);
+        await persistQueue();
+        void scheduleQueue();
+      }
+    };
+    child.stdout?.on('data', chunk => chunks.push(chunk));
+    child.stderr?.on('data', chunk => chunks.push(chunk));
+    child.on('close', code => { void finish(code); });
+    child.on('error', error => { void finish(undefined, error); });
+    if (!launchWorker) {
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
     }
+    activeJob.pid = Number.isSafeInteger(child.pid) ? child.pid : undefined;
+    await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
+  }
+
+  async function scheduleQueue() {
+    if (scheduling) return;
+    scheduling = true;
+    try {
+      if (activeJob) {
+        await refreshQueuedStatuses();
+        return;
+      }
+      while (!activeJob && pendingJobs.length) {
+        const statuses = await queuedStatusMap();
+        const classified = classifyPendingJobs(pendingJobs, statuses, lastModelKey);
+        if (classified.failed.length) {
+          const failedIds = new Set(classified.failed.map(item => item.job.jobId));
+          for (const { job, failedDependency, dependencyStatus } of classified.failed) {
+            const reason = dependencyStatus === 'missing' ? '状态记录缺失' : '未成功';
+            await writeFile(path.join(jobRoot, job.jobId, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `依赖任务 ${failedDependency} ${reason}，当前任务已终止`, modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
+          }
+          pendingJobs = pendingJobs.filter(job => !failedIds.has(job.jobId));
+          await persistQueue();
+          continue;
+        }
+        if (!classified.next) break;
+        const next = classified.next;
+        pendingJobs = pendingJobs.filter(job => job.jobId !== next.jobId);
+        await persistQueue();
+        try { await launchPreparedJob(next); }
+        catch (error) {
+          await writeFile(path.join(jobRoot, next.jobId, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务启动失败：${error.message}`, modelKey: next.modelKey, dependencies: next.dependencies }), 'utf8');
+          await clearActiveJob(next.jobId);
+        }
+      }
+      await refreshQueuedStatuses();
+    } finally {
+      scheduling = false;
+    }
+  }
+
+  async function startJob(projectId, kind, options = {}) {
     const id = safeProjectId(projectId);
     await access(path.join(projectRoot, id, 'project.json'));
     const jobId = randomUUID().replaceAll('-', '');
-    activeJob = { jobId, kind, projectId: id };
+    const dir = path.join(jobRoot, jobId);
+    await mkdir(dir, { recursive: true });
+    const payload = { root: repoRoot, project_id: id, ...options };
     try {
-      const dir = path.join(jobRoot, jobId);
-      await mkdir(dir, { recursive: true });
-      const input = path.join(dir, 'input.json');
-      const status = path.join(dir, 'status.json');
-      const result = path.join(dir, 'result.json');
-      const worker = kind === 'analyze' ? 'product_analysis_worker.py' : kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
-      const payload = { root: repoRoot, project_id: id, ...options };
       if (kind === 'analyze' || kind === 'voice') {
         const settings = await readAiMediaSettings(aiMediaSettingsFile);
         if (settings.director_provider === 'compatible') {
@@ -1226,53 +1375,17 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           settings_file: aiMediaSettingsFile,
         };
       }
-      await writeFile(input, JSON.stringify(payload), 'utf8');
-      await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入队列' }), 'utf8');
-      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
-      const python = workerPython(repoRoot);
-      const workerArgs = [path.join(repoRoot, worker), '--input', input, '--result', result, '--status', status];
-      const child = launchWorker
-        ? launchWorker({ python, args: workerArgs, cwd: repoRoot, env: { ...process.env, PYTHONUTF8: '1' } })
-        : spawnWorker(python, workerArgs, {
-          cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
-        });
-      const log = path.join(dir, 'worker.log');
-      const chunks = [];
-      const workerSpawned = launchWorker ? undefined : new Promise((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-      });
-      child.stdout?.on('data', chunk => chunks.push(chunk));
-      child.stderr?.on('data', chunk => chunks.push(chunk));
-      child.on('close', async code => {
-        try {
-          const logText = Buffer.concat(chunks).toString('utf8');
-          await writeFile(log, logText, 'utf8');
-          if (code && code !== 0) {
-            let prior = {};
-            try { prior = JSON.parse(await readFile(status, 'utf8')); } catch {}
-            const workerDetail = logText.trim().split(/\r?\n/).at(-1);
-            const detail = String(prior.phase === 'error' && prior.message ? prior.message : workerDetail || `Worker 退出码 ${code}`);
-            await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail }), 'utf8');
-          }
-        } finally {
-          await clearActiveJob(jobId);
-        }
-      });
-      child.on('error', async error => {
-        try {
-          await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${error.message}` }), 'utf8');
-        } finally {
-          await clearActiveJob(jobId);
-        }
-      });
-      if (workerSpawned) await workerSpawned;
-      activeJob.pid = Number.isSafeInteger(child.pid) ? child.pid : undefined;
-      await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
-      return { jobId, kind };
+      const dependencies = [activeJob, ...pendingJobs].filter(job => job?.projectId === id).map(job => job.jobId);
+      const modelKey = jobModelKey(kind, payload.config);
+      const queuedJob = { jobId, kind, projectId: id, modelKey, dependencies, createdAt: new Date().toISOString() };
+      await writeFile(path.join(dir, 'input.json'), JSON.stringify(payload), 'utf8');
+      await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入模型队列', modelKey, dependencies, queuePosition: pendingJobs.length + 1 }), 'utf8');
+      pendingJobs.push(queuedJob);
+      await persistQueue();
+      await scheduleQueue();
+      return { jobId, kind, modelKey, dependencies };
     } catch (error) {
-      try { await writeFile(path.join(jobRoot, jobId, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务启动失败：${error.message}` }), 'utf8'); } catch {}
-      await clearActiveJob(jobId);
+      try { await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务入队失败：${error.message}` }), 'utf8'); } catch {}
       throw error;
     }
   }
@@ -1426,6 +1539,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     } catch { return reply.code(404).send({ error: '工程片断缓存不存在' }); }
   });
   app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: '接口不存在' }) : reply.sendFile('index.html'));
+  await scheduleQueue();
   return app;
 }
 

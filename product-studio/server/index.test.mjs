@@ -901,7 +901,7 @@ test('replaces name-only character metadata with actionable biography and voice 
   await app.close();
 });
 
-test('allows one worker at a time and records a failed worker as error', async () => {
+test('queues a dependent job for the same project and propagates an earlier failure', async () => {
   const { root, project } = await fixture();
   let child;
   const app = await buildApp({ repoRoot: root, launchWorker: () => {
@@ -913,15 +913,13 @@ test('allows one worker at a time and records a failed worker as error', async (
   const started = await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} });
   assert.equal(started.statusCode, 202);
   const active = await app.inject('/api/active-job');
-  assert.deepEqual(active.json(), {
-    available: true,
-    jobId: started.json().jobId,
-    kind: 'analyze',
-    projectId: 'demo',
-    phase: 'queued',
-    fraction: 0,
-    message: '任务已进入队列',
-  });
+  assert.equal(active.json().available, true);
+  assert.equal(active.json().jobId, started.json().jobId);
+  assert.equal(active.json().kind, 'analyze');
+  assert.equal(active.json().projectId, 'demo');
+  assert.equal(active.json().phase, 'queued');
+  assert.equal(active.json().modelKey, 'director:ollama:http://127.0.0.1:11434:qwen3:14b');
+  assert.deepEqual(active.json().dependencies, []);
   const lockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(lockedSave.statusCode, 409);
   assert.match(lockedSave.json().error, /工程版本已被任务.*锁定/);
@@ -929,8 +927,12 @@ test('allows one worker at a time and records a failed worker as error', async (
   assert.equal(lockedDelete.statusCode, 409);
   assert.match(lockedDelete.json().error, /工程版本已被任务.*锁定/);
   await access(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'));
-  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
-  assert.equal(rejected.statusCode, 409);
+  const queued = await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} });
+  assert.equal(queued.statusCode, 202);
+  assert.deepEqual(queued.json().dependencies, [started.json().jobId]);
+  const queuedStatus = (await app.inject(`/api/jobs/${queued.json().jobId}`)).json();
+  assert.equal(queuedStatus.phase, 'queued');
+  assert.match(queuedStatus.message, /等待依赖任务完成/);
   child.stderr.write('fixture worker failed');
   child.stderr.end();
   child.stdout.end();
@@ -939,6 +941,9 @@ test('allows one worker at a time and records a failed worker as error', async (
   const status = await app.inject(`/api/jobs/${started.json().jobId}`);
   assert.equal(status.json().phase, 'error');
   assert.match(status.json().message, /fixture worker failed/);
+  const dependentStatus = await app.inject(`/api/jobs/${queued.json().jobId}`);
+  assert.equal(dependentStatus.json().phase, 'error');
+  assert.match(dependentStatus.json().message, /依赖任务.*未成功/);
   assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
   const unlockedSave = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(unlockedSave.statusCode, 200);
@@ -959,11 +964,91 @@ test('returns JSON and keeps the server alive when the worker executable cannot 
   } });
 
   const response = await app.inject({ method: 'POST', url: '/api/projects/demo/voices', payload: {} });
-  assert.equal(response.statusCode, 400);
+  assert.equal(response.statusCode, 202);
   assert.match(response.headers['content-type'], /^application\/json/);
-  assert.match(response.json().error, /ENOENT/);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const failed = await app.inject(`/api/jobs/${response.json().jobId}`);
+  assert.equal(failed.json().phase, 'error');
+  assert.match(failed.json().message, /ENOENT/);
   assert.equal((await app.inject('/api/health')).statusCode, 200);
   assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  await app.close();
+});
+
+test('runs independent work for the resident model before switching models', async () => {
+  const { root, project } = await fixture();
+  for (const projectId of ['voice-project', 'render-project']) {
+    const directory = path.join(root, 'outputs', 'novel-projects', projectId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'project.json'), JSON.stringify({ ...project, project_id: projectId, title: projectId }));
+  }
+  const children = [];
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    children.push(child);
+    return child;
+  } });
+
+  const firstRender = (await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} })).json();
+  const waitingVoice = (await app.inject({ method: 'POST', url: '/api/projects/voice-project/voices', payload: {} })).json();
+  const waitingRender = (await app.inject({ method: 'POST', url: '/api/projects/render-project/render', payload: {} })).json();
+  assert.equal(children.length, 1);
+  assert.deepEqual(waitingVoice.dependencies, []);
+  assert.deepEqual(waitingRender.dependencies, []);
+
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', firstRender.jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
+  children[0].emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const secondActive = (await app.inject('/api/active-job')).json();
+  assert.equal(secondActive.jobId, waitingRender.jobId);
+  assert.equal(secondActive.modelKey, 'indextts:index-tts-2.5');
+  assert.equal(children.length, 2);
+
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', waitingRender.jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
+  children[1].emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const thirdActive = (await app.inject('/api/active-job')).json();
+  assert.equal(thirdActive.jobId, waitingVoice.jobId);
+  assert.equal(thirdActive.modelKey, 'voice-design:qwen3-tts-1.7b');
+
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', waitingVoice.jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
+  children[2].emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  await app.close();
+});
+
+test('restores a persisted waiting job and dispatches it after service startup', async () => {
+  const { root } = await fixture();
+  const jobId = 'persistedqueuejob';
+  const jobDir = path.join(root, 'runtime-output', 'product-jobs', jobId);
+  await mkdir(jobDir, { recursive: true });
+  await writeFile(path.join(jobDir, 'input.json'), JSON.stringify({ root, project_id: 'demo' }));
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'queued', fraction: 0, message: '等待服务恢复' }));
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', 'job-queue.json'), JSON.stringify({
+    version: 1,
+    last_model_key: 'indextts:index-tts-2.5',
+    pending: [{ jobId, kind: 'render', projectId: 'demo', modelKey: 'indextts:index-tts-2.5', dependencies: [], createdAt: '2026-08-30T00:00:00.000Z' }],
+  }));
+  let child;
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    return child;
+  } });
+
+  const active = (await app.inject('/api/active-job')).json();
+  assert.equal(active.jobId, jobId);
+  assert.equal(active.modelKey, 'indextts:index-tts-2.5');
+  assert.deepEqual(active.dependencies, []);
+  const persisted = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-jobs', 'job-queue.json'), 'utf8'));
+  assert.deepEqual(persisted.pending, []);
+
+  await writeFile(path.join(jobDir, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
+  child.emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 30));
   await app.close();
 });
 

@@ -51,6 +51,10 @@ Linux 容器的可用主内存读取 `/proc/meminfo` 中的 `MemAvailable`，使
 
 IndexTTS 音频合成由持久 Render Runtime 处理。Node 继续为每个产品作业启动轻量 Worker 以维持活动作业 PID、工程锁和服务恢复契约，Worker 把实际请求原子写入 Render Runtime 队列并等待终态。Runtime 首次请求加载 IndexTTS 2.5，完成后保留模型；后续完整渲染和分句重新生成复用同一模型与锁。VoiceDesign 与 Render Runtime 具有双向释放协议，角色音色生成前释放 IndexTTS，音频合成首次加载或释放后重载前释放 VoiceDesign，避免两个 GPU 模型同时驻留。
 
+Node 产品服务在 `runtime-output/product-jobs/job-queue.json` 持久保存后台模型任务队列。全文分析的模型键由 Provider、Endpoint 和模型名组成，角色音色与音频合成分别使用 VoiceDesign 和 IndexTTS 稳定模型键。同一工程的后续任务显式依赖此前仍活动或等待的任务，其他工程任务可以独立进入可运行集合。调度器先拦截未完成依赖并传播依赖失败，再从可运行集合中优先选择与上一驻留模型相同的任务，同模型内按进入时间和任务 ID 稳定排序。活动任务与等待任务都会锁定对应工程，防止队列输入在执行前发生漂移。任务状态公开 `modelKey`、`dependencies` 和 `queuePosition`，服务恢复时会清理已终止记录并继续调度有效等待项。
+
+当前后台模型队列覆盖 AI 全文分析、角色音色生成、完整音频、严格串接和分句重新生成。人物小传扩写与角色画像仍是请求内完成的即时兼容服务调用，不写入该后台队列。
+
 Node 服务恢复时还会检查 Render Runtime 的 `busy` 状态和 `.processing` 请求信封。只有运行时 PID 存活、请求 ID 合法、输入与状态文件严格位于一个产品任务目录、工程存在且任务状态未结束时才接管。接管任务继续使用原任务 ID、状态文件和已生成片断，并恢复工程锁；状态进入 `complete` 或 `error` 后清除活动任务记录。
 
 `DELETE /api/projects/:id` 只接受合法工程 ID，要求目标严格位于 `outputs/novel-projects` 的单层工程目录并存在 `project.json`。活动任务锁定同一工程时返回 409。删除成功后移除该工程完整目录，`outputs/voice-library` 永久音色库不在目标范围内。前端二次确认展示工程名称和删除范围，完成后重新读取工程列表并切换到剩余工程。
