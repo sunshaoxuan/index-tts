@@ -247,6 +247,21 @@ body * { box-shadow: none !important; }
 .section-label { margin-bottom: 24px; color: var(--cream); font-size: 12px; font-weight: 500; text-transform: uppercase; }
 .project-select { width: min(620px, 100%); display: grid; gap: 8px; text-transform: uppercase; }
 .project-select .ant-select { width: 100%; }
+.project-switch-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(238, 169, 93, .5);
+  background: rgba(56, 36, 22, .72);
+}
+.project-switch-status > div { display: grid; gap: 3px; }
+.project-switch-status .ant-typography { color: var(--cream); }
+.project-switch-spinner { color: var(--orange); animation: project-switch-spin .85s linear infinite; }
+.project-switch-status .project-switch-spinner { font-size: 24px; }
+.project-switch-error { margin-top: 18px; }
+@keyframes project-switch-spin { to { transform: rotate(360deg); } }
 .project-state {
   padding: 6px 12px;
   border: 1px dashed var(--cream);
@@ -355,6 +370,7 @@ body * { box-shadow: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .project-actions-dock { transition-duration: .01ms; }
   .project-actions-float, .project-actions-trigger { animation-duration: .01ms; }
+  .project-switch-spinner { animation-duration: 2.4s; }
 }
 .job-progress-float {
   position: fixed;

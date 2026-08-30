@@ -18,6 +18,7 @@ import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerifi
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
 import { nextProjectActionDisplay, projectActionAvailability } from './projectActionMode';
+import { beginProjectSwitch, failProjectSwitch, isCurrentProjectSwitch, type ProjectSwitchState } from './projectSwitchState';
 import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
 import { replaceProjectRole } from './roleReplacement';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
@@ -244,6 +245,9 @@ function Studio() {
   const [projects, setProjects] = useState<Array<{ label: string; value: string; roleCount: number }>>([]);
   const [projectId, setProjectId] = useState<string>();
   const [project, setProject] = useState<ProjectPayload>();
+  const [projectSwitch, setProjectSwitch] = useState<ProjectSwitchState>({ phase: 'idle' });
+  const projectSwitchRef = useRef<ProjectSwitchState>({ phase: 'idle' });
+  const projectSwitchSequenceRef = useRef(0);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -307,27 +311,47 @@ function Studio() {
   });
   const workspaceLabels: Record<string, string> = { source: '全文与体裁', scenes: '场景分析', roles: '角色资产', segments: '分句导演', pronunciations: '全篇纠音', delivery: '完整音频与交付' };
 
+  const updateProjectSwitch = (next: ProjectSwitchState) => {
+    projectSwitchRef.current = next;
+    setProjectSwitch(next);
+  };
+
+  const switchProject = async (targetId: string, availableProjects = projects, force = false) => {
+    if (!targetId || (!force && targetId === projectId) || projectSwitchRef.current.phase === 'loading') return;
+    const sequence = ++projectSwitchSequenceRef.current;
+    const targetLabel = availableProjects.find(item => item.value === targetId)?.label || targetId;
+    updateProjectSwitch(beginProjectSwitch(sequence, targetId, targetLabel));
+    try {
+      const [data, latest] = await Promise.all([api.project(targetId), api.latestRender(targetId)]);
+      if (!isCurrentProjectSwitch(projectSwitchRef.current, sequence, targetId)) return;
+      setProjectId(targetId);
+      setProject(data);
+      setRender(latest);
+      setDirty(false);
+      setSelectedSegmentOrders([]);
+      setSegmentPage(1);
+      setShowMissingSegmentsOnly(false);
+      setSplitEditor(undefined);
+      updateProjectSwitch({ phase: 'idle' });
+    } catch (error) {
+      const errorMessage = (error as Error).message;
+      const failedState = failProjectSwitch(projectSwitchRef.current, sequence, targetId, errorMessage);
+      if (failedState === projectSwitchRef.current) return;
+      updateProjectSwitch(failedState);
+      message.error(`工程“${targetLabel}”读取失败：${errorMessage}`);
+    }
+  };
+
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
       setPresets(p); setProjects(list); setRuntimeHealth(health); setAiMediaSettings(mediaSettings);
       setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, directorProvider: mediaSettings.directorProvider, directorModel: mediaSettings.directorModel, ollamaEndpoint: mediaSettings.ollamaEndpoint, directorMaxChunkChars: mediaSettings.directorMaxChunkChars, imageModel: mediaSettings.imageModel, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
       if (active.available && active.jobId && active.kind && active.projectId) {
-        setProjectId(active.projectId);
+        void switchProject(active.projectId, list);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
-      } else if (list[0]) setProjectId(list[0].value);
+      } else if (list[0]) void switchProject(list[0].value, list);
     }).catch((error) => message.error(error.message));
   }, [message]);
-
-  useEffect(() => {
-    if (!projectId) return;
-    setSelectedSegmentOrders([]);
-    setSegmentPage(1);
-    setShowMissingSegmentsOnly(false);
-    setSplitEditor(undefined);
-    Promise.all([api.project(projectId), api.latestRender(projectId)]).then(([data, latest]) => {
-      setProject(data); setRender(latest); setDirty(false);
-    }).catch((error) => message.error(error.message));
-  }, [projectId, message]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -566,7 +590,8 @@ function Studio() {
     try {
       const created = await api.createProject(newTitle, newContentType, newSourceProjectIds);
       const list = await api.projects();
-      setProjects(list); setProjectId(created.project_id); setCreateOpen(false); setNewTitle(''); setNewSourceProjectIds([]);
+      setProjects(list); setCreateOpen(false); setNewTitle(''); setNewSourceProjectIds([]);
+      void switchProject(created.project_id, list);
       const importedRoleCount = created.linked_projects?.reduce((total, item) => total + item.roles.length, 0) || 0;
       const importedVoiceCount = created.linked_projects?.reduce((total, item) => total + item.roles.reduce((roleTotal, role) => roleTotal + role.available_voice_ids.length, 0), 0) || 0;
       const importedPronunciationCount = created.linked_projects?.reduce((total, item) => total + (item.pronunciations?.imported_count || 0), 0) || 0;
@@ -583,14 +608,14 @@ function Studio() {
       const list = await api.projects();
       const nextProjectId = list[0]?.value;
       setProjects(list);
-      setProjectId(nextProjectId);
       setDirty(false);
       setSelectedSegmentOrders([]);
       setSplitEditor(undefined);
       if (!nextProjectId) {
+        setProjectId(undefined);
         setProject(undefined);
         setRender({ available: false });
-      }
+      } else void switchProject(nextProjectId, list, true);
       message.success(`工程“${project.title}”已删除`);
     } catch (error) { message.error((error as Error).message); }
     finally { setDeletingProject(false); }
@@ -1002,7 +1027,7 @@ function Studio() {
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
-          <div className="project-select"><Text strong>打开声音工程</Text><Select disabled={jobRunning} showSearch value={projectId} options={projects} onChange={setProjectId} suffixIcon={<FolderOpenOutlined />} /></div>
+          <div className="project-select"><Text strong>打开声音工程</Text><Select aria-label="打开声音工程" disabled={jobRunning || projectSwitch.phase === 'loading'} showSearch value={projectSwitch.phase === 'loading' ? projectSwitch.targetId : projectId} options={projects} onChange={value => void switchProject(value)} suffixIcon={projectSwitch.phase === 'loading' ? <LoadingOutlined className="project-switch-spinner" /> : <FolderOpenOutlined />} /></div>
           <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
           <Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
           <Popconfirm disabled={jobRunning || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>
@@ -1012,6 +1037,8 @@ function Studio() {
           {dirty ? <span className="project-state">有未保存修改，请点击保存</span> : <span className="project-state">所有修改已保存</span>}
           <span className={`model-state${runtimeHealth?.voiceModel.modelLoaded ? ' model-state-hot' : ''}`} title={runtimeHealth?.voiceModel.pid ? `VoiceDesign Runtime PID ${runtimeHealth.voiceModel.pid}` : '首次生成音色时按需加载'}>{runtimeHealth?.voiceModel.modelLoaded ? 'Voice Model Hot / 音色模型已驻留' : 'Voice Model Cold / 首次使用时加载'}</span>
         </Flex>
+        {projectSwitch.phase === 'loading' && <div className="project-switch-status" role="status" aria-live="polite"><LoadingOutlined className="project-switch-spinner" /><div><Text strong>正在切换到“{projectSwitch.targetLabel}”</Text><Text>正在读取远程工程和最近交付，当前工程会保留到读取成功。</Text></div></div>}
+        {projectSwitch.phase === 'error' && <Alert className="project-switch-error" type="error" showIcon message={`工程“${projectSwitch.targetLabel}”读取失败，当前工程保持不变`} description={projectSwitch.message} action={<Button size="small" onClick={() => void switchProject(projectSwitch.targetId)}>重新读取</Button>} />}
         {job && !jobRunning && <div className={`job-result job-result-${job.phase}`}><Text>{job.message}</Text></div>}
       </div>
       {job && jobRunning && <aside className="job-progress-float" role="status" aria-live="polite" aria-label={`${jobLabels[job.kind]}进度`}>
