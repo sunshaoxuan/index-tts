@@ -5,16 +5,20 @@ import test from 'node:test';
 const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 
 test('locks the complete role replacement workflow until project persistence finishes', () => {
+  const replacementHandler = app.slice(app.indexOf('const applyRoleReplacement'), app.indexOf('const updateScene'));
   assert.match(app, /const \[roleReplacementSaving, setRoleReplacementSaving\] = useState\(false\)/);
   assert.match(app, /roleReplacementSavingRef\.current = true;[\s\S]*setRoleReplacementSaving\(true\);[\s\S]*await api\.save\(result\.project\)/);
   assert.match(app, /finally \{[\s\S]*roleReplacementSavingRef\.current = false;[\s\S]*setRoleReplacementSaving\(false\)/);
-  assert.match(app, /<Spin fullscreen spinning=\{roleReplacementSaving\}[\s\S]*正在替换角色并保存工程，请勿关闭页面/);
+  assert.doesNotMatch(app, /<Spin fullscreen spinning=\{roleReplacementSaving\}/);
+  assert.doesNotMatch(replacementHandler, /setProject\(undefined\)/);
+  assert.doesNotMatch(replacementHandler, /location\.reload|window\.location/);
   assert.match(app, /confirmLoading=\{roleReplacementSaving\}/);
   assert.match(app, /closable=\{!roleReplacementSaving\}/);
   assert.match(app, /keyboard=\{!roleReplacementSaving\}/);
   assert.match(app, /maskClosable=\{!roleReplacementSaving\}/);
   assert.match(app, /cancelButtonProps=\{\{ disabled: roleReplacementSaving \}\}/);
   assert.match(app, /disabled=\{jobRunning \|\| roleReplacementSaving\}/);
+  assert.match(app, /替换窗口和背景操作已经锁定/);
 });
 
 test('keeps the replacement dialog open with a retryable error when persistence fails', () => {
