@@ -704,7 +704,7 @@ class OllamaTextDirector:
         document: dict[str, Any],
         source_text: str,
         demographic_reference_text: str = "",
-        max_rounds: int = 3,
+        max_rounds: int = 5,
         progress: Callable[..., Any] | None = None,
     ) -> dict[str, Any]:
         rounds: list[dict[str, Any]] = []
@@ -713,7 +713,7 @@ class OllamaTextDirector:
             people = [item for item in document.get("characters") or [] if item.get("kind") == "character"]
             if not people:
                 return {"all_valid": True, "round_count": 0, "rounds": [], "summary": "没有需要校验的人物"}
-            _notify(progress, 0.9 + round_index * 0.02, f"AI 正在进行第 {round_index} 轮人物设定校验")
+            _notify(progress, 0.9 + round_index * 0.015, f"AI 正在进行第 {round_index} 轮人物设定校验")
             current_evidence = self._character_validation_evidence(source_text, people)
             linked_evidence = self._character_validation_evidence(demographic_reference_text, people)
             roster = json.dumps(people, ensure_ascii=False, separators=(",", ":"))
@@ -722,12 +722,12 @@ class OllamaTextDirector:
 
 必须逐一检查人物表中的每一个人物，任何人物都不能遗漏：
 1. 校验规范名称、aliases 和人物关系，识别同一人物的简称、全名、关系称谓或译名差异。重复人物的 canonical_id 指向保留人物 ID，两个条目输出一致的修正人口属性。
-2. 校验 age 是否符合原文明示年龄、年龄范围、就学阶段、亲属关系、职业阶段、时间线和行为。禁止把 35 当作缺省值。
+2. 校验 age 是否符合原文明示年龄、年龄范围、就学阶段、亲属关系、职业阶段、时间线和行为。age 必须输出一个整数；原文给出 10 至 11 岁等范围时保存下限 10，并在 age_evidence 保留完整范围。禁止把 35 当作缺省值。
 3. 校验 gender 是否符合称谓、亲属关系、代词、身份和上下文，证据不足时允许 unspecified。
 4. 校验 profile 是否准确介绍身份、关系、行为、经历和叙事作用，删除原文不支持的断言，保留“稿件未说明”等不确定边界。profile 必须能让后续声音和形象生成正确理解人物。
-5. 人口属性证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。桐原洋介一类在关联文章明确写出年龄的人物，当前文章只有父亲身份时必须保留关联文章明示年龄。
+5. 人口属性证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。关联文章已经明确写出年龄的人物，当前文章只有父亲、母亲、子女等关系身份时必须保留关联文章明示年龄。
 6. age_basis 和 gender_basis 必须填写 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
-7. 发现错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。证据仍不足或互相冲突时 status 填 uncertain。
+7. 发现错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。修正字段必须准确解决本轮 issues，下一轮不得继续报告已经修正的问题。证据仍不足或互相冲突时 status 填 uncertain。
 8. 只有本轮每个人物都无需再修改、没有重复身份、没有 unresolved issue 时，所有 status 才能为 pass 且 all_valid 为 true。只要本轮进行了任何修正，all_valid 必须为 false，由下一轮复核修正结果。
 9. characters 必须覆盖人物表全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
 

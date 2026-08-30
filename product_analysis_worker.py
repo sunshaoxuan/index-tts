@@ -293,7 +293,7 @@ def main() -> int:
         document,
         project["source_text"],
         demographic_reference_text=demographic_reference,
-        max_rounds=3,
+        max_rounds=5,
         progress=progress,
     )
     roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
