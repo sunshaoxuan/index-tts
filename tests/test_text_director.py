@@ -319,6 +319,61 @@ def test_ai_character_validation_retries_when_declared_age_fix_was_not_applied()
     assert document["characters"][0]["age"] == 10
 
 
+def test_ai_character_validation_does_not_require_value_change_for_basis_only_issue():
+    class BasisRepairDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            base = {
+                "id": "role_father", "canonical_id": "role_father", "name": "父亲",
+                "profile": "父亲是文章中的被害人，也是小学男生的父亲。",
+                "profile_evidence": "当前文章称其为父亲，关联文章称其为被害人",
+                "gender": "male", "gender_evidence": "关联文章明确称其为男性",
+                "age": 52, "age_evidence": "关联文章明确写明被害人的年龄是五十二岁",
+            }
+            self.responses = [
+                {
+                    "all_valid": False,
+                    "summary": "修正证据类型",
+                    "characters": [{
+                        **base, "status": "corrected",
+                        "issues": ["age_basis 应为 linked_explicit，而非 unknown；gender_basis 应为 linked_explicit，而非 unknown"],
+                        "age_basis": "linked_explicit", "gender_basis": "linked_explicit",
+                    }],
+                },
+                {
+                    "all_valid": True,
+                    "summary": "全部通过",
+                    "characters": [{
+                        **base, "status": "pass", "issues": [],
+                        "age_basis": "linked_explicit", "gender_basis": "linked_explicit",
+                    }],
+                },
+            ]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            return self.responses.pop(0), {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [{
+            "id": "role_father", "name": "父亲", "kind": "character", "aliases": [],
+            "profile": "父亲是文章中的被害人，也是小学男生的父亲。", "voice_hint": "成年男性",
+            "gender": "male", "gender_evidence": "关联文章明确称其为男性", "gender_basis": "unknown",
+            "age": 52, "age_evidence": "关联文章明确写明被害人的年龄是五十二岁", "age_basis": "unknown",
+        }],
+        "segments": [],
+        "scenes": [],
+    }
+
+    report = BasisRepairDirector().validate_character_analysis(document, "父亲的遗照由儿子抱着。")
+
+    assert report["round_count"] == 2
+    assert report["rounds"][0]["repair_attempts"] == 0
+    assert document["characters"][0]["age"] == 52
+    assert document["characters"][0]["age_basis"] == "linked_explicit"
+    assert document["characters"][0]["gender"] == "male"
+    assert document["characters"][0]["gender_basis"] == "linked_explicit"
+
+
 def _segment(order, source_text, text, role_id="narrator", name="旁白", kind="narrator"):
     return {
         "order": order,
