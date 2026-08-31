@@ -2,12 +2,12 @@ name: indextts25
 
 services:
   studio:
-    image: indextts25-product-studio:1.1.39
+    image: indextts25-product-studio:1.1.40
     build:
       context: .
       dockerfile: Dockerfile.app-update
       args:
-        BASE_IMAGE: indextts25-product-studio:1.1.38
+        BASE_IMAGE: indextts25-product-studio:1.1.39
         APP_REVISION: ${INDEXTTS_APP_REVISION:-working-tree}
     container_name: indextts25-product-studio
     restart: unless-stopped
@@ -25,6 +25,18 @@ services:
       - type: bind
         source: C:/workspace/IndexTTS-2.5/models/checkpoints
         target: /app/checkpoints
+      - type: bind
+        source: C:/workspace/IndexTTS-2.5/runtime-packages/torch
+        target: /app/.venv/lib/python3.11/site-packages/torch
+        read_only: true
+      - type: bind
+        source: C:/workspace/IndexTTS-2.5/runtime-packages/nvidia
+        target: /app/.venv/lib/python3.11/site-packages/nvidia
+        read_only: true
+      - type: bind
+        source: C:/workspace/IndexTTS-2.5/runtime-packages/triton
+        target: /app/.venv/lib/python3.11/site-packages/triton
+        read_only: true
       - type: bind
         source: D:/workspace/IndexTTS-2.5/outputs
         target: /app/outputs
