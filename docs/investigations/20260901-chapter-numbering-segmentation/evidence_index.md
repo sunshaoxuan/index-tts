@@ -12,4 +12,5 @@
 | 三个实际工程已持久化为统一章节 | 三个 `project.json` 中 `segments` 与 `director_memory.segments` 的唯一章节值均为“第 1 章” | 高 | 运行数据未纳入 Git |
 | 白夜行01视觉显示为短编号 | `artifacts/chapter-numbering-segmentation/white-night-01-chapter-rows.png` | 高 | 截图覆盖第一页 |
 | 白夜行03原长台词章节已消失 | `artifacts/chapter-numbering-segmentation/white-night-03-chapter-rows.png`，第一页 20 行均显示“第 1 章” | 高 | 截图覆盖第一页，全部 154 行由物理数据复核覆盖 |
-| 生产运行正常 | Docker inspect 为 running、healthy、RestartCount 0，`/api/health` 为 ok | 高 | 验收时点快照 |
+| 当前生产运行正常 | `1.1.51-705fd39` 的 Docker inspect 为 running、healthy、RestartCount 0，`/api/health` 为 ok | 高 | 验收时点快照 |
+| 当前生产镜像仍正确显示章节 | `artifacts/chapter-numbering-segmentation/white-night-03-current-production-rows.png` | 高 | 截图覆盖第一页，物理数据复核覆盖全部 154 行 |
