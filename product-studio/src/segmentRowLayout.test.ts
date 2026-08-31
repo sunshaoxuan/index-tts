@@ -17,11 +17,17 @@ test('segment table renders one composite director column with dedicated directi
 test('segment rows use responsive grids and suppress horizontal table scrolling', () => {
   assert.match(styles, /\.segment-table \.ant-table-body \{ overflow-x: hidden !important; \}/);
   assert.match(styles, /\.segment-row-primary \{[^}]*grid-template-columns:/s);
-  assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:/s);
+  assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:[^}]*grid-template-areas: "source synthesis tempo pause" "fragment fragment fragment fragment";/s);
   assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns:/s);
-  assert.match(styles, /\.segment-source-field, \.segment-synthesis-field, \.segment-fragment-field \{ grid-column: 1 \/ -1; \}/);
-  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns: 170px minmax\(260px, 1fr\) 100px;/s);
+  assert.match(styles, /\.segment-fragment-field \{ grid-area: fragment;[^}]*border-top:/s);
+  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns: minmax\(190px, \.45fr\) minmax\(320px, 1fr\) minmax\(116px, \.28fr\);/s);
   assert.match(styles, /\.segment-emotion-preview, \.segment-generation-mode-field \{ grid-column: 1 \/ -1; \}/);
+});
+
+test('candidate audio uses the full row with three, two, and one column breakpoints', () => {
+  assert.match(styles, /\.segment-candidate-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(240px, 1fr\)\);/s);
+  assert.match(styles, /@media \(max-width: 1200px\) \{[^}]*\.segment-row-secondary \{[^}]*grid-template-areas: "source synthesis" "tempo pause" "fragment fragment";[^}]*\}[^}]*\.segment-candidate-grid \{ grid-template-columns: repeat\(2, minmax\(220px, 1fr\)\); \}/s);
+  assert.match(styles, /@media \(max-width: 800px\) \{[\s\S]*\.segment-row-secondary \{ grid-template-areas: "source source" "synthesis synthesis" "tempo pause" "fragment fragment"; \}[\s\S]*\.segment-candidate-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
 });
 
 test('segment rows expose explicit IndexTTS emotion direction detail and weight controls', () => {
@@ -59,8 +65,11 @@ test('adjacent segment records use strong alternating surfaces and an inset seco
 });
 
 test('segment labels and values remain readable at production viewport sizes', () => {
-  assert.match(styles, /\.segment-field > span:first-child \{[^}]*font-size: 12px;[^}]*font-weight: 650/s);
-  assert.match(styles, /\.segment-field > strong \{[^}]*font-size: 14px/s);
-  assert.match(styles, /\.segment-source-field \.ant-typography \{[^}]*font-size: 14px/s);
-  assert.match(styles, /\.segment-fragment-cell > \.ant-typography \{[^}]*font-size: 12px/s);
+  assert.match(styles, /\.segment-field > span:first-child \{[^}]*font-size: 14px;[^}]*font-weight: 650/s);
+  assert.match(styles, /\.segment-field > strong \{[^}]*font-size: 16px/s);
+  assert.match(styles, /\.segment-source-field \.ant-typography \{[^}]*font-size: 16px/s);
+  assert.match(styles, /\.segment-fragment-cell > \.ant-typography \{[^}]*font-size: 14px;[^}]*white-space: normal/s);
+  assert.match(styles, /\.segment-fragment-cell \.ant-btn \{[^}]*font-size: 14px;/s);
+  assert.match(styles, /\.segment-candidate \.ant-typography, \.segment-candidate small \{[^}]*font-size: 13px;/s);
+  assert.match(styles, /\.segment-field :is\(\.ant-select-selector, \.ant-input-number-input, \.ant-input, textarea\) \{ font-size: 15px !important; \}/);
 });
