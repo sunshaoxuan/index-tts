@@ -43,6 +43,26 @@ def split_chapters(text: str) -> list[dict[str, Any]]:
     return chapters
 
 
+def assign_numbered_chapter_sections(source_text: str, segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    source = str(source_text or "")
+    chapters = split_chapters(source)
+    cursor = 0
+    assigned: list[dict[str, Any]] = []
+    for segment in segments:
+        updated = dict(segment)
+        segment_source = str(updated.get("source_text") or "")
+        located = source.find(segment_source, cursor) if segment_source else -1
+        position = located if located >= 0 else min(cursor, max(0, len(source) - 1))
+        chapter = next(
+            (item for item in chapters if item["start"] <= position < item["end"]),
+            chapters[-1] if chapters else {"index": 1},
+        )
+        updated["section"] = f"第 {chapter['index']} 章"
+        cursor = located + len(segment_source) if located >= 0 else min(len(source), cursor + len(segment_source))
+        assigned.append(updated)
+    return assigned
+
+
 def normalize_pronunciations(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return []

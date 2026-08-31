@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyPendingJobs, jobModelKey } from './model-job-scheduler.mjs';
+import { assignNumberedChapterSections, splitChapters } from './chapterSections.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(here, '..', '..');
@@ -207,22 +208,27 @@ function safeSlug(value) {
   return String(value || 'project').normalize('NFKC').replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'project';
 }
 
-function splitChapters(text) {
-  const source = String(text || '');
-  const pattern = /^[ \t]*(第[零〇一二三四五六七八九十百千万两\d]+[章节卷回部篇]|Chapter[ \t]+\d+)[ \t]*[^\n]*$/gimu;
-  const matches = [...source.matchAll(pattern)];
-  if (!matches.length) return source ? [{ index: 1, title: '全文', start: 0, end: source.length }] : [];
-  const boundaries = matches[0].index > 0 ? [{ start: 0, title: '序章' }] : [];
-  boundaries.push(...matches.map(match => ({ start: match.index, title: match[0].trim() })));
-  return boundaries.map((item, index) => ({ index: index + 1, title: item.title, start: item.start, end: boundaries[index + 1]?.start ?? source.length }));
-}
-
 function closestPreset(value, options, rules, fallback) {
   const text = String(value || '').trim();
   if (options.includes(text)) return text;
   const lower = text.toLowerCase();
   for (const [pattern, preset] of rules) if (pattern.test(lower)) return preset;
   return fallback;
+}
+
+function normalizeChapterSections(payload) {
+  const copy = structuredClone(payload);
+  copy.chapters = splitChapters(copy.source_text);
+  copy.segments = assignNumberedChapterSections(copy.source_text, copy.chapters, copy.segments);
+  if (copy.director_memory && typeof copy.director_memory === 'object' && Array.isArray(copy.director_memory.segments)) {
+    const memorySource = String(copy.director_memory.source_text ?? copy.source_text ?? '');
+    copy.director_memory.segments = assignNumberedChapterSections(
+      memorySource,
+      splitChapters(memorySource),
+      copy.director_memory.segments,
+    );
+  }
+  return copy;
 }
 
 function normalizeProject(payload) {
@@ -262,8 +268,7 @@ function normalizeProject(payload) {
     updated[17] = updated[17] === 'advanced' ? 'advanced' : 'standard';
     return updated;
   }) : [];
-  copy.chapters = splitChapters(copy.source_text);
-  return copy;
+  return normalizeChapterSections(copy);
 }
 
 function validateProject(payload, id) {
@@ -1170,7 +1175,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const currentPath = path.join(projectRoot, id, 'project.json');
       await access(currentPath);
       const current = normalizeProject(JSON.parse(await readFile(currentPath, 'utf8')));
-      const payload = validateProject(request.body, id);
+      const payload = validateProject(normalizeChapterSections(request.body), id);
       await reconcileRoleVoiceFiles(payload);
       const directorChanges = directorChangeKinds(directorSnapshot(current), directorSnapshot(payload));
       preserveDirectorOperations(current, payload);

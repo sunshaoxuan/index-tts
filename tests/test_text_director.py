@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from novel_project import assign_numbered_chapter_sections
+
 from text_director import (
     DIRECTOR_SCHEMA,
     DirectorConfig,
@@ -1026,6 +1028,41 @@ def test_minimum_failed_chunk_uses_lossless_fallback_and_continues():
     assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
     assert any("无损安全分段" in message for message in messages)
     assert any(character["name"] == "林舟" for character in result["characters"])
+
+
+def test_chapter_sections_use_formal_source_boundaries_and_compact_numbers():
+    source = "第一章 雨夜\n甲。\n第二章 天明\n乙。"
+    assigned = assign_numbered_chapter_sections(source, [
+        {**_segment(1, "甲。", "甲。"), "section": "甲的完整台词"},
+        {**_segment(2, "乙。", "乙。"), "section": "乙的完整台词"},
+    ])
+
+    assert [item["section"] for item in assigned] == ["第 1 章", "第 2 章"]
+    assert [item["source_text"] for item in assigned] == ["甲。", "乙。"]
+
+
+def test_analyze_document_overrides_model_generated_sentence_sections():
+    class SentenceSectionDirector(OllamaTextDirector):
+        def _analyze_chunk(self, **kwargs):
+            chunk = kwargs["chunk"]
+            midpoint = chunk.index("第二章")
+            return ({
+                "content_type": "novel",
+                "title": "编号测试",
+                "characters": [_character()],
+                "scenes": [],
+                "segments": [
+                    {**_segment(1, chunk[:midpoint], chunk[:midpoint]), "section": chunk[:midpoint].strip()},
+                    {**_segment(2, chunk[midpoint:], chunk[midpoint:]), "section": chunk[midpoint:].strip()},
+                ],
+            }, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.01})
+
+    source = "第一章\n甲。\n第二章\n乙。"
+    result = SentenceSectionDirector(DirectorConfig(model="fake", max_chunk_chars=1400)).analyze_document(source, content_type="novel")
+    _, rows = document_to_tables(result, ["voice_05.wav"])
+
+    assert [item["section"] for item in result["segments"]] == ["第 1 章", "第 2 章"]
+    assert [row[1] for row in rows] == ["第 1 章", "第 2 章"]
 
 
 def test_adaptive_chunks_keep_closing_quotes_with_their_sentence_boundary():

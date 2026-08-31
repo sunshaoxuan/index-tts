@@ -76,7 +76,30 @@ test('serves presets and project data', async () => {
   assert.match(presetResponse.json().emotionDirections.find(item => item.value === 'urgent_question').prompt, /urgent and impatient/);
   assert.equal(presetResponse.json().voiceStylePrompts['低沉厚实'], '低沉厚实，声音有支撑，气息稳定');
   assert.equal(presetResponse.json().rhythmPrompts['沉稳舒缓'], '沉稳舒缓，重音清晰，短语间自然停连');
-  assert.equal((await app.inject('/api/projects/demo')).json().title, '测试');
+  const project = (await app.inject('/api/projects/demo')).json();
+  assert.equal(project.title, '测试');
+  assert.equal(project.segments[0][1], '第 1 章');
+  await app.close();
+});
+
+test('normalizes legacy sentence-sized sections on read and persists chapter numbers on save', async () => {
+  const { root, project } = await fixture();
+  project.source_text = '第一句。第二句。';
+  project.segments = [
+    [1, '第一句完整台词', 'narrator', '旁白', 'ZH', '第一句。', '第一句。', '中性叙述', '平静', 0.5, '自然', 300],
+    [2, '第二句完整台词', 'narrator', '旁白', 'ZH', '第二句。', '第二句。', '中性叙述', '平静', 0.5, '自然', 300],
+  ];
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  const app = await buildApp({ repoRoot: root });
+
+  const opened = (await app.inject('/api/projects/demo')).json();
+  assert.deepEqual(opened.segments.map(row => row[1]), ['第 1 章', '第 1 章']);
+
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: opened });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().segments.map(row => row[1]), ['第 1 章', '第 1 章']);
+  const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.deepEqual(persisted.segments.map(row => row[1]), ['第 1 章', '第 1 章']);
   await app.close();
 });
 
@@ -583,12 +606,14 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(saved.statusCode, 200);
   assert.equal(saved.json().chapters[0].title, '第一章');
+  assert.equal(saved.json().segments[0][1], '第 1 章');
   assert.equal(saved.json().pronunciations[0].replacement, '重 庆 银行');
   assert.equal(saved.json().director_history.length, 1);
   assert.deepEqual(saved.json().director_history[0].changes, ['全篇纠音']);
   assert.equal('snapshot' in saved.json().director_history[0], false);
   assert.equal(saved.json().director_memory.pronunciations[0].replacement, '重 庆 银行');
   const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.equal(persisted.segments[0][1], '第 1 章');
   assert.equal(persisted.director_history[0].snapshot.pronunciations[0].replacement, '重 庆 银行');
   await app.close();
 });

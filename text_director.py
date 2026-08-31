@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import requests
 import numpy as np
 
-from novel_project import apply_pronunciations, normalize_pronunciations
+from novel_project import assign_numbered_chapter_sections, apply_pronunciations, normalize_pronunciations
 from voice_controls import DEFAULT_AUDITION_TEXT, normalize_voice_generation, normalize_voice_traits, voice_traits_instruction
 
 
@@ -703,6 +703,7 @@ class OllamaTextDirector:
             previous_context = chunk[-400:]
             index += 1
 
+        global_segments = assign_numbered_chapter_sections(source, global_segments)
         for order, segment in enumerate(global_segments, start=1):
             segment["order"] = order
 
