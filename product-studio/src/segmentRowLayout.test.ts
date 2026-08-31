@@ -5,11 +5,12 @@ import { readFileSync } from 'node:fs';
 const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
-test('segment table renders one composite director column with dedicated directing bands', () => {
+test('segment table renders one composite director column with basic and voice bands', () => {
   assert.match(app, /key: 'director-row'/);
   assert.match(app, /className="segment-row-primary"/);
-  assert.match(app, /className="segment-row-secondary"/);
-  assert.match(app, /className="segment-row-emotion"/);
+  assert.match(app, /className="segment-row-voice"/);
+  assert.doesNotMatch(app, /className="segment-row-secondary"/);
+  assert.doesNotMatch(app, /className="segment-row-emotion"/);
   assert.match(app, /scroll=\{\{ y: 560 \}\}/);
   assert.doesNotMatch(app, /scroll=\{\{ x: 2260, y: 560 \}\}/);
   assert.match(app, /segmentTableBodyHeight\(window\.innerHeight, host\.getBoundingClientRect\(\)\.top\)/);
@@ -22,28 +23,35 @@ test('segment table renders one composite director column with dedicated directi
   assert.match(styles, /max-height: var\(--segment-table-body-height, 560px\) !important;/);
 });
 
-test('segment rows use responsive grids and suppress horizontal table scrolling', () => {
+test('segment rows keep basic copy above a compact voice control grid', () => {
   assert.match(styles, /\.segment-table \.ant-table-body \{[^}]*overflow-x: hidden !important; \}/s);
-  assert.match(styles, /\.segment-row-primary \{[^}]*grid-template-columns:/s);
-  assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:[^}]*grid-template-areas: "source synthesis tempo pause" "fragment fragment fragment fragment";/s);
-  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns:/s);
-  assert.match(styles, /\.segment-fragment-field \{ grid-area: fragment;[^}]*border-top:/s);
-  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns: minmax\(190px, \.45fr\) minmax\(320px, 1fr\) minmax\(116px, \.28fr\);/s);
-  assert.match(styles, /\.segment-emotion-preview, \.segment-generation-mode-field \{ grid-column: 1 \/ -1; \}/);
+  assert.match(styles, /\.segment-row-primary \{[^}]*grid-template-columns: 56px 88px minmax\(260px, \.85fr\) minmax\(320px, 1\.15fr\);/s);
+  assert.match(styles, /\.segment-row-voice \{[\s\S]*grid-template-areas:[\s\S]*"action role language attitude emotion pace pause direction weight"[\s\S]*"action detail detail detail stress occurrence level generation generation"/);
+  assert.match(app, /className="segment-field segment-source-field"[\s\S]*className="segment-field segment-synthesis-field"[\s\S]*className="segment-row-voice"/);
+  assert.match(app, /className=\{`segment-action-cell[\s\S]*segment-role-field/);
 });
 
 test('candidate audio uses the full row with three, two, and one column breakpoints', () => {
   assert.match(styles, /\.segment-candidate-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(240px, 1fr\)\);/s);
-  assert.match(styles, /@media \(max-width: 1200px\) \{[^}]*\.segment-row-secondary \{[^}]*grid-template-areas: "source synthesis" "tempo pause" "fragment fragment";[^}]*\}[^}]*\.segment-candidate-grid \{ grid-template-columns: repeat\(2, minmax\(220px, 1fr\)\); \}/s);
-  assert.match(styles, /@media \(max-width: 800px\) \{[\s\S]*\.segment-row-secondary \{ grid-template-areas: "source source" "synthesis synthesis" "tempo pause" "fragment fragment"; \}[\s\S]*\.segment-candidate-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(styles, /@media \(max-width: 1200px\) \{[\s\S]*\.segment-candidate-grid \{ grid-template-columns: repeat\(2, minmax\(220px, 1fr\)\); \}/);
+  assert.match(styles, /@media \(max-width: 800px\) \{[\s\S]*\.segment-candidate-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
 });
 
 test('segment rows expose explicit IndexTTS emotion direction detail and weight controls', () => {
   assert.match(app, />情绪演绎</);
   assert.match(app, />情绪细化描述</);
   assert.match(app, />情绪权重</);
-  assert.match(app, /传入 IndexTTS 的显式情绪描述/);
-  assert.match(app, /fragment \? '重新生成本分句' : '生成本分句'/);
+  assert.match(app, />实际情绪提示</);
+  assert.match(app, /fragment \? '重新生成' : '生成'/);
+});
+
+test('fragment action cell uses compact playback and leaves no empty player placeholder', () => {
+  assert.match(app, /fragment && <FragmentAudioPlayer compact src=\{fragment\.audio\} \/>/);
+  assert.match(app, /fragment \? ' has-fragment' : ' no-fragment'/);
+  assert.doesNotMatch(app, /尚无与当前序号对应的片断/);
+  assert.match(styles, /\.fragment-audio-compact audio \{ display: none; \}/);
+  assert.match(styles, /\.fragment-audio-compact-controls \{[^}]*grid-template-columns: 30px minmax\(0, 1fr\) 30px;/s);
+  assert.match(app, /title="重新加载片断" aria-label="重新加载片断"/);
 });
 
 test('segment rows expose stress targeting, advanced three-candidate generation, and auditable selection', () => {
@@ -51,7 +59,7 @@ test('segment rows expose stress targeting, advanced three-candidate generation,
   assert.match(app, />第几次出现</);
   assert.match(app, />重音强度</);
   assert.match(app, /高级三版加自主验收/);
-  assert.match(app, /重音采用提示词概率增强/);
+  assert.match(app, /重音为概率增强/);
   assert.match(app, /selectSegmentCandidate/);
   assert.match(styles, /\.segment-candidate-grid/);
 });
@@ -65,20 +73,19 @@ test('mobile layout suppresses nested segment scrolling and stabilizes transient
   assert.doesNotMatch(styles, /html\.select-popup-open/);
   assert.match(app, /window\.matchMedia\('\(max-width: 800px\)'\)\.matches/);
   assert.match(app, /className="segment-field segment-generation-mode-field"><span>生成方式<\/span>/);
+  assert.match(styles, /"generation generation"/);
 });
 
-test('adjacent segment records use strong alternating surfaces and an inset secondary band', () => {
+test('adjacent segment records use strong alternating surfaces and an inset voice band', () => {
   assert.match(styles, /\.studio-table \.ant-table-cell \{[^}]*background: rgba\(16, 9, 4, \.46\)/s);
   assert.match(styles, /tr:nth-child\(even\) > \.ant-table-cell \{ background: rgba\(80, 45, 24, \.5\)/);
-  assert.match(styles, /\.segment-row-secondary \{[^}]*background: rgba\(16, 9, 4, \.3\)/s);
+  assert.match(styles, /\.segment-row-voice \{[\s\S]*background: rgba\(16, 9, 4, \.3\)/s);
 });
 
 test('segment labels and values remain readable at production viewport sizes', () => {
-  assert.match(styles, /\.segment-field > span:first-child \{[^}]*font-size: 14px;[^}]*font-weight: 650/s);
-  assert.match(styles, /\.segment-field > strong \{[^}]*font-size: 16px/s);
-  assert.match(styles, /\.segment-source-field \.ant-typography \{[^}]*font-size: 16px/s);
-  assert.match(styles, /\.segment-fragment-cell > \.ant-typography \{[^}]*font-size: 14px;[^}]*white-space: normal/s);
-  assert.match(styles, /\.segment-fragment-cell \.ant-btn \{[^}]*font-size: 14px;/s);
+  assert.match(styles, /\.segment-field > span:first-child \{[^}]*font-size: 12px;[^}]*font-weight: 650/s);
+  assert.match(styles, /\.segment-field > strong \{[^}]*font-size: 14px/s);
+  assert.match(styles, /\.segment-source-field \.ant-typography \{[^}]*font-size: 14px/s);
   assert.match(styles, /\.segment-candidate \.ant-typography, \.segment-candidate small \{[^}]*font-size: 13px;/s);
-  assert.match(styles, /\.segment-field :is\(\.ant-select-selector, \.ant-input-number-input, \.ant-input, textarea\) \{ font-size: 15px !important; \}/);
+  assert.match(styles, /\.segment-field :is\(\.ant-select-selector, \.ant-input-number-input, \.ant-input, textarea\) \{ font-size: 13px !important; \}/);
 });

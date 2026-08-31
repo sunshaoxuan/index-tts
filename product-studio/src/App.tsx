@@ -74,18 +74,26 @@ function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
 }
 
-function FragmentAudioPlayer({ src }: { src: string }) {
+function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: boolean }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [retry, setRetry] = useState(0);
   const [status, setStatus] = useState<FragmentAudioStatus>('loading');
   const [message, setMessage] = useState('正在加载片断元数据');
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
   const retrySrc = fragmentAudioRetryUrl(src, retry);
   useEffect(() => {
     setRetry(0);
     setStatus('loading');
     setMessage('正在加载片断元数据');
+    setPlaying(false);
+    setCurrent(0);
+    setDuration(0);
   }, [src]);
   const markReady = (duration: number) => {
     if (validFragmentAudioDuration(duration)) {
+      setDuration(duration);
       setStatus('ready');
       setMessage('片断已加载，可以播放');
     } else {
@@ -93,22 +101,45 @@ function FragmentAudioPlayer({ src }: { src: string }) {
       setMessage('音频时长无效，请重新加载或重新生成片断');
     }
   };
-  return <div className={`fragment-audio-player fragment-audio-${status}`}>
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    try {
+      await audio.play();
+    } catch {
+      setStatus('error');
+      setMessage('浏览器未能开始播放，请重新加载片断');
+    }
+  };
+  return <div className={`fragment-audio-player${compact ? ' fragment-audio-compact' : ''} fragment-audio-${status}`}>
     <audio
+      ref={audioRef}
       key={retrySrc}
-      controls
+      controls={!compact}
       preload="metadata"
       src={retrySrc}
       onLoadStart={() => { setStatus('loading'); setMessage('正在加载片断元数据'); }}
       onLoadedMetadata={(event) => markReady(event.currentTarget.duration)}
       onCanPlay={(event) => markReady(event.currentTarget.duration)}
       onWaiting={() => { setStatus('buffering'); setMessage('正在缓冲片断音频'); }}
-      onError={(event) => { setStatus('error'); setMessage(fragmentAudioErrorMessage(event.currentTarget.error?.code)); }}
+      onPlay={() => setPlaying(true)}
+      onPause={() => setPlaying(false)}
+      onEnded={() => { setPlaying(false); setCurrent(0); }}
+      onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+      onError={(event) => { setPlaying(false); setStatus('error'); setMessage(fragmentAudioErrorMessage(event.currentTarget.error?.code)); }}
     />
-    <div className="fragment-audio-actions" aria-live="polite">
+    {compact ? <div className="fragment-audio-compact-controls" aria-live="polite" title={message}>
+      <Button type="text" size="small" disabled={status !== 'ready' && status !== 'buffering'} icon={playing ? <PauseOutlined /> : <CaretRightOutlined />} aria-label={playing ? '暂停片断' : '播放片断'} onClick={() => void togglePlayback()} />
+      <span className="fragment-audio-time">{formatAudioTime(current)} / {formatAudioTime(duration)}</span>
+      <Button type="text" size="small" icon={<ReloadOutlined />} title="重新加载片断" aria-label="重新加载片断" onClick={() => setRetry(value => value + 1)} />
+    </div> : <div className="fragment-audio-actions" aria-live="polite">
       <span className="fragment-audio-status">{message}</span>
       <Button size="small" icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>重新加载片断</Button>
-    </div>
+    </div>}
   </div>;
 }
 
@@ -965,33 +996,36 @@ function Studio() {
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
         const stressWord = String(row[14] || '').trim();
         const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim(), stressWord ? `重点突出第 ${row[15] || 1} 个“${stressWord}”` : ''].filter(Boolean).join('. ');
+        const fragmentNote = fragment?.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则';
         return <div className="segment-row-layout">
           <div className="segment-row-primary">
             <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
             <div className="segment-field"><span>章节</span><strong>{row[1]}</strong></div>
-            <label className="segment-field"><span>角色</span><Select disabled={jobRunning} showSearch value={row[2]} options={roleOptions} onChange={(value) => setSegment(row[0], 2, value)} /></label>
-            <label className="segment-field"><span>语言</span><Select disabled={jobRunning} value={row[4]} options={presets.languages.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 4, value)} /></label>
-            <label className="segment-field"><span>态度</span><Select disabled={jobRunning} value={row[7]} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 7, value)} /></label>
-            <label className="segment-field"><span>情绪</span><Select disabled={jobRunning} value={row[8]} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 8, value)} /></label>
-          </div>
-          <div className="segment-row-secondary">
             <div className="segment-field segment-source-field"><span>原文</span><Text>{row[5]}</Text></div>
-            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
-            <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
-            <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text>{Boolean(fragment.candidates && fragment.candidates.length > 1) && <div className="segment-candidate-grid">{fragment.candidates?.map(candidate => <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} disabled={jobRunning || candidate.selected} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : '采用此版'}</Button></div>)}</div>}</> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成本分句' : '生成本分句'}</Button>{regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}</div></div>
+            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 2 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
           </div>
-          <div className="segment-row-emotion">
-            <label className="segment-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
-            <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={jobRunning} maxLength={1000} autoSize={{ minRows: 2, maxRows: 4 }} value={row[13] || ''} placeholder="可补充中英文描述，例如：笑意压在句尾，像已经掌握对方秘密" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
-            <label className="segment-field"><span>情绪权重</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
-            <label className="segment-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
-            <label className="segment-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
-            <label className="segment-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
+          <div className="segment-row-voice">
+            <div className={`segment-action-cell${fragment ? ' has-fragment' : ' no-fragment'}`} title={fragment ? `${fragment.effectiveText}。${fragmentNote}` : undefined}>
+              {fragment && <FragmentAudioPlayer compact src={fragment.audio} />}
+              <Button size="small" className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成' : '生成'}</Button>
+              {regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}
+            </div>
+            <label className="segment-field segment-role-field"><span>角色</span><Select disabled={jobRunning} showSearch value={row[2]} options={roleOptions} onChange={(value) => setSegment(row[0], 2, value)} /></label>
+            <label className="segment-field segment-language-field"><span>语言</span><Select disabled={jobRunning} value={row[4]} options={presets.languages.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 4, value)} /></label>
+            <label className="segment-field segment-attitude-field"><span>态度</span><Select disabled={jobRunning} value={row[7]} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 7, value)} /></label>
+            <label className="segment-field segment-emotion-field"><span>情绪</span><Select disabled={jobRunning} value={row[8]} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 8, value)} /></label>
+            <label className="segment-field segment-pace-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
+            <label className="segment-field segment-pause-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
+            <label className="segment-field segment-direction-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
+            <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={jobRunning} maxLength={1000} autoSize={{ minRows: 1, maxRows: 2 }} value={row[13] || ''} placeholder="例如：笑意压在句尾" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
+            <label className="segment-field segment-weight-field"><span>情绪权重</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
+            <label className="segment-field segment-stress-word-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
+            <label className="segment-field segment-stress-index-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
+            <label className="segment-field segment-stress-level-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
             <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
-            {stressWord && <div className="segment-stress-notice"><Text>重音采用提示词概率增强。高级模式会抽取候选并按声学代理评分排序，当前引擎仍不提供词级硬控制。</Text></div>}
-            <div className="segment-emotion-preview"><span>传入 IndexTTS 的显式情绪描述</span><Text>{explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}</Text></div>
+            <div className="segment-emotion-preview" title={explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}><span>实际情绪提示</span><Text ellipsis>{explicitEmotionText || '自动组合'}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
           </div>
+          {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} disabled={jobRunning || candidate.selected} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : '采用此版'}</Button></div>)}</div></div>}
         </div>;
       } },
     ];
