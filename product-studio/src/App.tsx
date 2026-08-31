@@ -951,7 +951,7 @@ function Studio() {
             <label className="segment-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
             <label className="segment-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
             <label className="segment-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
-            <label className="segment-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
+            <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
             {stressWord && <div className="segment-stress-notice"><Text>重音采用提示词概率增强。高级模式会抽取候选并按声学代理评分排序，当前引擎仍不提供词级硬控制。</Text></div>}
             <div className="segment-emotion-preview"><span>传入 IndexTTS 的显式情绪描述</span><Text>{explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}</Text></div>
           </div>

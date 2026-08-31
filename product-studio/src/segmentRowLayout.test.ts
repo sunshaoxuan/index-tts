@@ -47,6 +47,8 @@ test('mobile layout suppresses nested segment scrolling and stabilizes transient
   assert.match(styles, /touch-action: pan-y pinch-zoom/);
   assert.doesNotMatch(styles, /html\.select-popup-open/);
   assert.match(app, /window\.matchMedia\('\(max-width: 800px\)'\)\.matches/);
+  assert.match(styles, /\.segment-generation-mode-field \{ grid-column: 1 \/ -1; \}/);
+  assert.match(app, /className="segment-field segment-generation-mode-field"><span>生成方式<\/span>/);
 });
 
 test('adjacent segment records use strong alternating surfaces and an inset secondary band', () => {

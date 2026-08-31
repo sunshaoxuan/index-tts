@@ -847,6 +847,7 @@ body * { box-shadow: none !important; }
   .segment-editor-toolbar > .ant-space { width: 100%; }
   .segment-row-primary, .segment-row-secondary, .segment-row-emotion { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .segment-emotion-detail-field, .segment-emotion-preview { grid-column: 1 / -1; }
+  .segment-generation-mode-field { grid-column: 1 / -1; }
   .segment-source-field, .segment-synthesis-field, .segment-fragment-field { grid-column: 1 / -1; }
   .segment-table .ant-table-cell { padding: 12px !important; }
   .segment-table .ant-table-body { max-height: none !important; overflow-y: visible !important; overscroll-behavior: auto; touch-action: pan-y pinch-zoom; }
