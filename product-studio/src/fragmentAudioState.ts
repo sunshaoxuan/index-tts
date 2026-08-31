@@ -1,5 +1,11 @@
 export type FragmentAudioStatus = 'loading' | 'ready' | 'buffering' | 'error';
 
+export function fragmentAudioSelectionUrl(src: string, selectedCandidateId?: string) {
+  if (!selectedCandidateId) return src;
+  const separator = src.includes('?') ? '&' : '?';
+  return `${src}${separator}selected_candidate=${encodeURIComponent(selectedCandidateId)}`;
+}
+
 export function fragmentAudioRetryUrl(src: string, retry: number) {
   if (!retry) return src;
   const separator = src.includes('?') ? '&' : '?';

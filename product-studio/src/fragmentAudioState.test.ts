@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, validFragmentAudioDuration } from './fragmentAudioState.ts';
+import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, fragmentAudioSelectionUrl, validFragmentAudioDuration } from './fragmentAudioState.ts';
+
+test('changes the primary media identity when another candidate is adopted', () => {
+  assert.equal(fragmentAudioSelectionUrl('/audio.wav', undefined), '/audio.wav');
+  assert.equal(fragmentAudioSelectionUrl('/audio.wav', 'candidate 2'), '/audio.wav?selected_candidate=candidate%202');
+  assert.equal(fragmentAudioSelectionUrl('/audio.wav?source=cache', 'abc'), '/audio.wav?source=cache&selected_candidate=abc');
+});
 
 test('adds a cache-busting retry parameter to fragment audio URLs', () => {
   assert.equal(fragmentAudioRetryUrl('/audio.wav', 0), '/audio.wav');

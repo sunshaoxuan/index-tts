@@ -46,12 +46,25 @@ test('segment rows expose explicit IndexTTS emotion direction detail and weight 
 });
 
 test('fragment action cell uses compact playback and leaves no empty player placeholder', () => {
-  assert.match(app, /fragment && <FragmentAudioPlayer compact src=\{fragment\.audio\} \/>/);
+  assert.match(app, /fragment && <FragmentAudioPlayer compact variant="primary" src=\{fragmentAudioSelectionUrl/);
   assert.match(app, /fragment \? ' has-fragment' : ' no-fragment'/);
   assert.doesNotMatch(app, /尚无与当前序号对应的片断/);
-  assert.match(styles, /\.fragment-audio-compact audio \{ display: none; \}/);
+  assert.match(styles, /\.fragment-audio-player audio \{ display: none; \}/);
   assert.match(styles, /\.fragment-audio-compact-controls \{[^}]*grid-template-columns: 30px minmax\(0, 1fr\) 30px;/s);
   assert.match(app, /title="重新加载片断" aria-label="重新加载片断"/);
+});
+
+test('adopting a candidate changes the primary media identity and exposes colored playback states', () => {
+  assert.match(app, /fragment\.candidates\?\.find\(candidate => candidate\.selected\)\?\.candidateId/);
+  assert.match(app, /segmentCandidateSelectionRef/);
+  assert.match(app, /loading=\{selecting\}/);
+  assert.match(styles, /\.fragment-audio-primary \{ --fragment-audio-accent: #48c7ff;/);
+  assert.match(styles, /\.fragment-audio-candidate \{ --fragment-audio-accent: #aa8cff;/);
+  assert.match(styles, /\.fragment-audio-loading, \.fragment-audio-buffering \{ --fragment-audio-accent: #f2be5c;/);
+  assert.match(styles, /\.fragment-audio-playback-playing \{ --fragment-audio-accent: #45bfff;/);
+  assert.match(styles, /\.fragment-audio-playback-paused \{ --fragment-audio-accent: #bd91ff;/);
+  assert.match(styles, /\.fragment-audio-playback-ended \{ --fragment-audio-accent: #82d66f;/);
+  assert.match(styles, /\.fragment-audio-error \{ --fragment-audio-accent: #ff7188;/);
 });
 
 test('segment rows expose stress targeting, advanced three-candidate generation, and auditable selection', () => {

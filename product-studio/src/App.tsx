@@ -9,7 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
 import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState';
-import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
+import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, fragmentAudioSelectionUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
 import { deliveryAudioBufferedPercent, deliveryAudioErrorMessage, deliveryAudioRetryUrl, type DeliveryAudioStatus } from './deliveryAudioState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
 import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
@@ -74,7 +74,7 @@ function trimSentence(value: string) {
   return value.trim().replace(/[。！？!?；;]+$/u, '');
 }
 
-function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: boolean }) {
+function FragmentAudioPlayer({ src, compact = false, variant = 'candidate' }: { src: string; compact?: boolean; variant?: 'primary' | 'candidate' }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [retry, setRetry] = useState(0);
   const [status, setStatus] = useState<FragmentAudioStatus>('loading');
@@ -82,6 +82,7 @@ function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: 
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [playback, setPlayback] = useState<'idle' | 'playing' | 'paused' | 'ended'>('idle');
   const retrySrc = fragmentAudioRetryUrl(src, retry);
   useEffect(() => {
     setRetry(0);
@@ -90,6 +91,7 @@ function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: 
     setPlaying(false);
     setCurrent(0);
     setDuration(0);
+    setPlayback('idle');
   }, [src]);
   const markReady = (duration: number) => {
     if (validFragmentAudioDuration(duration)) {
@@ -115,20 +117,23 @@ function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: 
       setMessage('浏览器未能开始播放，请重新加载片断');
     }
   };
-  return <div className={`fragment-audio-player${compact ? ' fragment-audio-compact' : ''} fragment-audio-${status}`}>
+  const seek = (value: number) => {
+    setCurrent(value);
+    if (audioRef.current) audioRef.current.currentTime = value;
+  };
+  return <div className={`fragment-audio-player fragment-audio-${variant}${compact ? ' fragment-audio-compact' : ''} fragment-audio-${status} fragment-audio-playback-${playback}`}>
     <audio
       ref={audioRef}
       key={retrySrc}
-      controls={!compact}
       preload="metadata"
       src={retrySrc}
       onLoadStart={() => { setStatus('loading'); setMessage('正在加载片断元数据'); }}
       onLoadedMetadata={(event) => markReady(event.currentTarget.duration)}
       onCanPlay={(event) => markReady(event.currentTarget.duration)}
       onWaiting={() => { setStatus('buffering'); setMessage('正在缓冲片断音频'); }}
-      onPlay={() => setPlaying(true)}
-      onPause={() => setPlaying(false)}
-      onEnded={() => { setPlaying(false); setCurrent(0); }}
+      onPlay={() => { setPlaying(true); setPlayback('playing'); }}
+      onPause={(event) => { setPlaying(false); if (!event.currentTarget.ended && event.currentTarget.currentTime > 0) setPlayback('paused'); }}
+      onEnded={() => { setPlaying(false); setPlayback('ended'); setCurrent(0); }}
       onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
       onError={(event) => { setPlaying(false); setStatus('error'); setMessage(fragmentAudioErrorMessage(event.currentTarget.error?.code)); }}
     />
@@ -136,10 +141,17 @@ function FragmentAudioPlayer({ src, compact = false }: { src: string; compact?: 
       <Button type="text" size="small" disabled={status !== 'ready' && status !== 'buffering'} icon={playing ? <PauseOutlined /> : <CaretRightOutlined />} aria-label={playing ? '暂停片断' : '播放片断'} onClick={() => void togglePlayback()} />
       <span className="fragment-audio-time">{formatAudioTime(current)} / {formatAudioTime(duration)}</span>
       <Button type="text" size="small" icon={<ReloadOutlined />} title="重新加载片断" aria-label="重新加载片断" onClick={() => setRetry(value => value + 1)} />
-    </div> : <div className="fragment-audio-actions" aria-live="polite">
-      <span className="fragment-audio-status">{message}</span>
-      <Button size="small" icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>重新加载片断</Button>
-    </div>}
+    </div> : <>
+      <div className="fragment-audio-full-controls" aria-label="片断播放器">
+        <Button type="text" size="small" disabled={status !== 'ready' && status !== 'buffering'} icon={playing ? <PauseOutlined /> : <CaretRightOutlined />} aria-label={playing ? '暂停片断' : '播放片断'} onClick={() => void togglePlayback()} />
+        <input aria-label="片断播放进度" type="range" min={0} max={duration || 0} step={0.05} disabled={!duration || status === 'error'} value={Math.min(current, duration || 0)} onInput={(event) => seek(Number(event.currentTarget.value))} />
+        <span className="fragment-audio-time">{formatAudioTime(current)} / {formatAudioTime(duration)}</span>
+      </div>
+      <div className="fragment-audio-actions" aria-live="polite">
+        <span className="fragment-audio-status">{playback === 'playing' ? '正在播放片断' : playback === 'paused' ? '片断已暂停' : playback === 'ended' ? '片断播放完成' : message}</span>
+        <Button size="small" icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>重新加载片断</Button>
+      </div>
+    </>}
   </div>;
 }
 
@@ -327,6 +339,8 @@ function Studio() {
   const [showMissingSegmentsOnly, setShowMissingSegmentsOnly] = useState(false);
   const [segmentRegeneration, setSegmentRegeneration] = useState<SegmentRegenerationState>({ phase: 'idle' });
   const segmentRegenerationOrderRef = useRef<number | undefined>(undefined);
+  const segmentCandidateSelectionRef = useRef<string | undefined>(undefined);
+  const [segmentCandidateSelection, setSegmentCandidateSelection] = useState<{ order: number; candidateId: string }>();
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
@@ -923,12 +937,18 @@ function Studio() {
   };
 
   const selectSegmentCandidate = async (order: number, candidateId: string) => {
-    if (!project || jobRunning) return;
+    if (!project || jobRunning || segmentCandidateSelectionRef.current) return;
+    segmentCandidateSelectionRef.current = candidateId;
+    setSegmentCandidateSelection({ order, candidateId });
     try {
       await api.selectSegmentCandidate(project.project_id, order, candidateId);
       setRender(await api.latestRender(project.project_id));
       message.success(`分句 ${order} 已采用所选候选`);
     } catch (error) { message.error((error as Error).message); }
+    finally {
+      segmentCandidateSelectionRef.current = undefined;
+      setSegmentCandidateSelection(undefined);
+    }
   };
 
   const assembleExistingFragments = () => {
@@ -1006,7 +1026,7 @@ function Studio() {
           </div>
           <div className="segment-row-voice">
             <div className={`segment-action-cell${fragment ? ' has-fragment' : ' no-fragment'}`} title={fragment ? `${fragment.effectiveText}。${fragmentNote}` : undefined}>
-              {fragment && <FragmentAudioPlayer compact src={fragment.audio} />}
+              {fragment && <FragmentAudioPlayer compact variant="primary" src={fragmentAudioSelectionUrl(fragment.audio, fragment.candidates?.find(candidate => candidate.selected)?.candidateId)} />}
               <Button size="small" className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成' : '生成'}</Button>
               {regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}
             </div>
@@ -1025,11 +1045,11 @@ function Studio() {
             <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
             <div className="segment-emotion-preview" title={explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}><span>实际情绪提示</span><Text ellipsis>{explicitEmotionText || '自动组合'}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
           </div>
-          {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} disabled={jobRunning || candidate.selected} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : '采用此版'}</Button></div>)}</div></div>}
+          {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => { const selecting = segmentCandidateSelection?.order === row[0] && segmentCandidateSelection.candidateId === candidate.candidateId; return <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer variant="candidate" src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} loading={selecting} disabled={jobRunning || candidate.selected || Boolean(segmentCandidateSelection)} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : selecting ? '采用中' : '采用此版'}</Button></div>; })}</div></div>}
         </div>;
       } },
     ];
-  }, [presets, roleOptions, project, jobRunning, render.fragments, segmentRegeneration, segmentRegenerationActive]);
+  }, [presets, roleOptions, project, jobRunning, render.fragments, segmentRegeneration, segmentRegenerationActive, segmentCandidateSelection]);
 
   const splitRow = splitEditor ? project?.segments.find(row => row[0] === splitEditor.order) : undefined;
   const splitSource = String(splitRow?.[5] ?? '');

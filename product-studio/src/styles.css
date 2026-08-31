@@ -579,17 +579,25 @@ body * { box-shadow: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .segment-regeneration-button.is-pending { animation: none; }
 }
-.fragment-audio-player { min-width: 0; display: grid; gap: 6px; }
-.fragment-audio-compact audio { display: none; }
-.fragment-audio-compact-controls { min-width: 0; min-height: 32px; display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px; align-items: center; border: 1px solid rgba(255, 237, 215, .28); border-radius: 999px; background: rgba(16, 9, 4, .48); }
-.fragment-audio-compact-controls .ant-btn { width: 30px; min-width: 30px; height: 30px; padding: 0; color: var(--cream); }
-.fragment-audio-time { min-width: 0; overflow: hidden; color: rgba(255, 237, 215, .82); font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.fragment-audio-loading .fragment-audio-compact-controls, .fragment-audio-buffering .fragment-audio-compact-controls { border-color: rgba(255, 178, 77, .68); }
-.fragment-audio-error .fragment-audio-compact-controls { border-color: rgba(255, 123, 102, .78); }
+.fragment-audio-player { --fragment-audio-accent: #8b9cff; --fragment-audio-surface: rgba(23, 27, 52, .92); min-width: 0; display: grid; gap: 6px; }
+.fragment-audio-primary { --fragment-audio-accent: #48c7ff; --fragment-audio-surface: rgba(9, 38, 57, .94); }
+.fragment-audio-candidate { --fragment-audio-accent: #aa8cff; --fragment-audio-surface: rgba(35, 25, 62, .9); }
+.fragment-audio-player audio { display: none; }
+.fragment-audio-compact-controls, .fragment-audio-full-controls { min-width: 0; min-height: 32px; align-items: center; border: 1px solid var(--fragment-audio-accent); border-radius: 999px; background: var(--fragment-audio-surface); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04); transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease; }
+.fragment-audio-compact-controls { display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px; }
+.fragment-audio-full-controls { display: grid; grid-template-columns: 34px minmax(70px, 1fr) auto; gap: 8px; padding: 3px 10px 3px 3px; }
+.fragment-audio-compact-controls .ant-btn, .fragment-audio-full-controls .ant-btn { width: 30px; min-width: 30px; height: 30px; padding: 0; color: var(--fragment-audio-accent); }
+.fragment-audio-time { min-width: 0; overflow: hidden; color: #eaf7ff; font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.fragment-audio-full-controls input[type="range"] { width: 100%; height: 18px; margin: 0; accent-color: var(--fragment-audio-accent); cursor: pointer; }
+.fragment-audio-loading, .fragment-audio-buffering { --fragment-audio-accent: #f2be5c; --fragment-audio-surface: rgba(57, 41, 13, .94); }
+.fragment-audio-ready { --fragment-audio-accent: #53d6b4; }
+.fragment-audio-playback-playing { --fragment-audio-accent: #45bfff; --fragment-audio-surface: rgba(8, 45, 67, .96); }
+.fragment-audio-playback-playing :is(.fragment-audio-compact-controls, .fragment-audio-full-controls) { box-shadow: 0 0 0 2px rgba(69, 191, 255, .18), 0 0 14px rgba(69, 191, 255, .2); }
+.fragment-audio-playback-paused { --fragment-audio-accent: #bd91ff; --fragment-audio-surface: rgba(45, 28, 70, .95); }
+.fragment-audio-playback-ended { --fragment-audio-accent: #82d66f; --fragment-audio-surface: rgba(24, 57, 29, .94); }
+.fragment-audio-error { --fragment-audio-accent: #ff7188; --fragment-audio-surface: rgba(69, 20, 32, .95); }
 .fragment-audio-actions { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.fragment-audio-status { min-width: 0; color: rgba(255, 237, 215, .82); font-size: 13px; line-height: 1.45; }
-.fragment-audio-ready .fragment-audio-status { color: #9fd6a3; }
-.fragment-audio-error .fragment-audio-status { color: #ffb3a7; }
+.fragment-audio-status { min-width: 0; color: var(--fragment-audio-accent); font-size: 13px; line-height: 1.45; }
 .segment-fragment-cell .fragment-audio-actions .ant-btn { width: auto; flex: 0 0 auto; }
 @media (max-width: 520px) {
   .fragment-audio-actions { align-items: stretch; flex-direction: column; }
