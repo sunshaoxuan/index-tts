@@ -8,7 +8,7 @@
 | 重复文本一对一回归 | 通过，两条重复文本消费两个不同片断 |
 | TypeScript 与 Vite 生产构建 | 通过，3106 个模块完成转换；保留既有大包体积警告 |
 | 静态差异检查 | 通过 |
-| 现行镜像与容器 | `indextts25-product-studio:1.1.49-215098a`，revision `215098aa55d711e956372b278fe27c294cbe2dd6`，running、healthy、RestartCount 0 |
+| 现行镜像与容器 | revision 等于最终 `master`，running、healthy、RestartCount 0 |
 | 真实工程接口 | 当前 250 条分句返回 250 个片断，第 78 至 82 条均按当前文本对齐 |
 | 真实浏览器 | 第 80 条与第 81 条播放器同时加载且可播放，第 81 条时长 2 秒 |
 | 浏览器 Console | warning 0，error 0 |
