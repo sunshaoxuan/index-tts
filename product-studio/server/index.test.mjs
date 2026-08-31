@@ -579,7 +579,33 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   assert.equal(saved.json().pronunciations[0].replacement, '重 庆 银行');
   assert.equal(saved.json().director_history.length, 1);
   assert.deepEqual(saved.json().director_history[0].changes, ['全篇纠音']);
+  assert.equal('snapshot' in saved.json().director_history[0], false);
   assert.equal(saved.json().director_memory.pronunciations[0].replacement, '重 庆 银行');
+  const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.equal(persisted.director_history[0].snapshot.pronunciations[0].replacement, '重 庆 银行');
+  await app.close();
+});
+
+test('accepts one legacy large save and returns compact director history summaries', async () => {
+  const { root, project } = await fixture();
+  project.director_history = [{
+    operation_id: 'legacy-history',
+    recorded_at: '2026-09-01T00:00:00.000Z',
+    actor: 'studio-user',
+    changes: ['合成文字与导演参数'],
+    snapshot: { source_text: 'x'.repeat(26 * 1024 * 1024) },
+  }];
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  const app = await buildApp({ repoRoot: root });
+
+  const response = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().director_history.length, 1);
+  assert.equal('snapshot' in response.json().director_history[0], false);
+  assert.ok(response.rawPayload.length < 1024 * 1024);
+  const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.equal(persisted.director_history[0].snapshot.source_text.length, 26 * 1024 * 1024);
   await app.close();
 });
 

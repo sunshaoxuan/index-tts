@@ -57,6 +57,11 @@ export async function parseApiResponse<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+export function projectSavePayload(project: ProjectPayload): ProjectPayload {
+  const { director_history: _history, director_memory: _memory, ...editableProject } = project;
+  return editableProject;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
   return parseApiResponse<T>(response);
@@ -76,7 +81,7 @@ export const api = {
   createProject: (title: string, contentType: string, sourceProjectIds: string[]) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType, source_project_ids: sourceProjectIds }) }),
   project: (id: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}`),
   save: (project: ProjectPayload) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(project.project_id)}`, {
-    method: 'PUT', body: JSON.stringify(project),
+    method: 'PUT', body: JSON.stringify(projectSavePayload(project)),
   }),
   deleteProject: (id: string) => request<{ deleted: boolean; projectId: string }>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({}) }),
   latestRender: (id: string) => request<RenderInfo>(`/api/projects/${encodeURIComponent(id)}/latest-render`),

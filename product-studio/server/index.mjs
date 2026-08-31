@@ -379,6 +379,17 @@ function preserveDirectorOperations(current, next) {
   return next;
 }
 
+function projectForClient(project) {
+  const history = Array.isArray(project.director_history) ? project.director_history : [];
+  return {
+    ...project,
+    director_history: history.map(entry => {
+      const { snapshot: _snapshot, ...summary } = entry || {};
+      return summary;
+    }),
+  };
+}
+
 function segmentIdentity(row) {
   return JSON.stringify((row || []).slice(1));
 }
@@ -1108,11 +1119,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         await writeFile(temporary, `${JSON.stringify(project, null, 2)}\n`, 'utf8');
         await rename(temporary, projectPath);
       }
-      return normalizeProject(project);
+      return projectForClient(normalizeProject(project));
     }
     catch (error) { return reply.code(404).send({ error: error.message || '工程不存在' }); }
   });
-  app.put('/api/projects/:id', async (request, reply) => {
+  app.put('/api/projects/:id', { bodyLimit: 64 * 1024 * 1024 }, async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
       const projectLock = projectJobLock(id);
@@ -1133,7 +1144,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const temporary = `${currentPath}.tmp`;
       await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
       await rename(temporary, currentPath);
-      return payload;
+      return projectForClient(payload);
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.delete('/api/projects/:id', async (request, reply) => {
