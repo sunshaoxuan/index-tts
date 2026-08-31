@@ -26,16 +26,8 @@ services:
         source: C:/workspace/IndexTTS-2.5/models/checkpoints
         target: /app/checkpoints
       - type: bind
-        source: C:/workspace/IndexTTS-2.5/runtime-packages/torch
-        target: /app/.venv/lib/python3.11/site-packages/torch
-        read_only: true
-      - type: bind
-        source: C:/workspace/IndexTTS-2.5/runtime-packages/nvidia
-        target: /app/.venv/lib/python3.11/site-packages/nvidia
-        read_only: true
-      - type: bind
-        source: C:/workspace/IndexTTS-2.5/runtime-packages/triton
-        target: /app/.venv/lib/python3.11/site-packages/triton
+        source: C:/workspace/IndexTTS-2.5/runtime-python/python3.11/site-packages
+        target: /app/.venv/lib/python3.11/site-packages
         read_only: true
       - type: bind
         source: D:/workspace/IndexTTS-2.5/outputs
