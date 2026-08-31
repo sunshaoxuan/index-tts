@@ -82,6 +82,20 @@ ATTITUDE_PRESETS = {
     "恐惧迟疑": "恐惧、迟疑地表达",
     "威严命令": "威严、明确地命令",
 }
+EMOTION_DIRECTION_PRESETS = {
+    "auto": ("跟随基础情绪", "", 0.6),
+    "sly_smile": ("坏笑着说", "speaking with a sly mischievous smile, slightly teasing and amused", 0.8),
+    "urgent_question": ("急切地问", "urgent and impatient, asking quickly and eagerly, fast-paced speech with strong questioning intonation", 0.85),
+    "inner_thought": ("暗自思忖", "quiet internal monologue, thinking to oneself, contemplative and suspicious, subdued voice with slight hesitation", 0.7),
+    "cold_statement": ("冷冷地说", "cold and restrained, emotionally distant, speaking slowly with a firm controlled tone", 0.7),
+    "hushed_warning": ("压低声音警告", "lowered voice, tense and cautionary, delivering a controlled warning with deliberate emphasis", 0.8),
+    "restrained_sadness": ("强忍悲伤", "holding back grief, subdued and fragile, restrained sorrow with slight breathiness", 0.75),
+    "angry_interrogation": ("愤怒质问", "angry and confrontational questioning, forceful emphasis, rising intensity and sharp interrogative intonation", 0.9),
+    "fearful_whisper": ("惊恐低语", "fearful whisper, tense breathing, hesitant and alarmed while keeping the voice low", 0.8),
+    "gentle_comfort": ("温柔安慰", "gentle and reassuring, warm compassionate tone, calm pacing with soft supportive emphasis", 0.65),
+    "excited_announcement": ("兴奋宣布", "excited and energetic announcement, bright tone, lively pacing and clear enthusiastic emphasis", 0.8),
+    "custom": ("自定义描述", "", 0.7),
+}
 PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
@@ -118,6 +132,8 @@ SEGMENT_HEADERS = [
     "情绪强度",
     "句内节奏预设",
     "句后停顿ms",
+    "情绪演绎预设",
+    "情绪细化描述",
 ]
 
 DIRECTOR_SCHEMA: dict[str, Any] = {
@@ -2042,10 +2058,16 @@ def migrate_segment_rows(segment_table: Any) -> list[list[Any]]:
     migrated = []
     for row in rows:
         copied = list(row)
-        if len(copied) >= len(SEGMENT_HEADERS):
+        if len(copied) >= 12:
+            if len(copied) < 13:
+                copied.append("auto")
+            if len(copied) < 14:
+                copied.append("")
             copied[7] = migrate_attitude_preset(copied[7])
             copied[8] = migrate_emotion_label(copied[8])
             copied[10] = migrate_pace_preset(copied[10])
+            copied[12] = str(copied[12] or "auto").strip() if str(copied[12] or "auto").strip() in EMOTION_DIRECTION_PRESETS else "auto"
+            copied[13] = str(copied[13] or "").strip()
         migrated.append(copied)
     return migrated
 
@@ -2095,6 +2117,8 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
             segment["intensity"],
             segment.get("pace_preset") or migrate_pace_preset(segment["pace"]),
             segment["pause_after_ms"],
+            "auto",
+            "",
         ]
         for segment in document.get("segments", [])
     ]
@@ -2407,7 +2431,15 @@ def _table_rows(value: Any) -> list[list[Any]]:
 
 def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     role_rows = _table_rows(role_table)
-    segment_rows = _table_rows(segment_table)
+    segment_rows = []
+    for raw_row in _table_rows(segment_table):
+        copied = list(raw_row)
+        if len(copied) >= 12:
+            if len(copied) < 13:
+                copied.append("auto")
+            if len(copied) < 14:
+                copied.append("")
+        segment_rows.append(copied)
     roles: dict[str, dict[str, Any]] = {}
     for row_number, row in enumerate(role_rows, start=1):
         if len(row) < len(ROLE_HEADERS):
@@ -2452,12 +2484,20 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         pace_preset = str(row[10]).strip()
         attitude_preset = str(row[7]).strip()
         emotion_label = str(row[8]).strip()
+        emotion_direction = str(row[12] or "auto").strip()
+        emotion_detail = str(row[13] or "").strip()
         if pace_preset not in PACE_PRESETS:
             raise DirectorError(f"分句表第 {row_number} 行包含未知句内节奏预设：{pace_preset}")
         if attitude_preset not in ATTITUDE_PRESETS:
             raise DirectorError(f"分句表第 {row_number} 行包含未知态度预设：{attitude_preset}")
         if emotion_label not in EMOTION_VALUES:
             raise DirectorError(f"分句表第 {row_number} 行包含未知情绪预设：{emotion_label}")
+        if emotion_direction not in EMOTION_DIRECTION_PRESETS:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知情绪演绎预设：{emotion_direction}")
+        if emotion_direction == "custom" and not emotion_detail:
+            raise DirectorError(f"分句表第 {row_number} 行选择自定义情绪演绎后必须填写细化描述。")
+        if len(emotion_detail) > 1000:
+            raise DirectorError(f"分句表第 {row_number} 行的情绪细化描述不能超过 1000 个字符。")
         pace, pace_prompt = PACE_PRESETS[pace_preset]
         raw = {
             "order": order,
@@ -2479,11 +2519,30 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         normalized["emotion_label"] = emotion_label
         normalized["pace_preset"] = pace_preset
         normalized["pace_prompt"] = pace_prompt
+        normalized["emotion_direction"] = emotion_direction
+        normalized["emotion_direction_label"] = EMOTION_DIRECTION_PRESETS[emotion_direction][0]
+        normalized["emotion_direction_prompt"] = EMOTION_DIRECTION_PRESETS[emotion_direction][1]
+        normalized["emotion_detail"] = emotion_detail
         segments.append(normalized)
     if not roles or not segments:
         raise DirectorError("角色表和分句表不能为空。")
     segments.sort(key=lambda item: item["order"])
     return roles, segments
+
+
+def segment_emotion_text(role: dict[str, Any], segment: dict[str, Any]) -> str:
+    explicit = [
+        str(segment.get("emotion_direction_prompt") or "").strip(),
+        str(segment.get("emotion_detail") or "").strip(),
+    ]
+    general = [
+        str(role.get("rhythm_prompt") or "").strip(),
+        str(segment.get("pace_prompt") or "").strip(),
+        str(segment.get("attitude") or "").strip(),
+        str(EMOTION_LABELS.get(str(segment.get("emotion") or ""), segment.get("emotion") or "")).strip(),
+    ]
+    parts = [part.rstrip("。.!！ ") for part in [*explicit, *general] if part]
+    return "。".join(parts) + ("。" if parts else "")
 
 
 def voice_catalog_markdown(demo_voices: dict[str, str]) -> str:
@@ -2652,10 +2711,7 @@ def render_directed_audio(
                 _notify(progress, (index - 1) / len(selected_segments), f"IndexTTS 正在生成 {index}/{len(selected_segments)}｜{role['name']}")
                 filename = f"{index:04d}-{_safe_name(role['id'], 'track')}.wav"
                 output_path = segment_dir / filename
-                emotion_prompt = (
-                    f"{role['rhythm_prompt']}。{segment['pace_prompt']}。"
-                    f"{segment['attitude']}。{EMOTION_LABELS[segment['emotion']]}。"
-                )
+                emotion_prompt = segment_emotion_text(role, segment)
                 effective_text, applied_rules = apply_pronunciations(segment["text"], pronunciation_rules)
                 duration_factor = 1.0
                 cache_payload = {
@@ -2704,6 +2760,8 @@ def render_directed_audio(
                         "audio_path": output_path,
                         "effective_text": effective_text,
                         "applied_pronunciations": applied_rules,
+                        "emotion_text": emotion_prompt,
+                        "emotion_weight": float(segment["intensity"]),
                         "duration_factor": duration_factor,
                         "cache_key": cache_key,
                         "cache_reused": cache_hit and segment["order"] not in forced_orders,
@@ -2805,6 +2863,8 @@ def render_directed_audio(
                                 item["intensity"],
                                 item.get("pace_preset", item["pace_prompt"]),
                                 item["pause_after_ms"],
+                                item.get("emotion_direction", "auto"),
+                                item.get("emotion_detail", ""),
                             ],
                         )
                     )

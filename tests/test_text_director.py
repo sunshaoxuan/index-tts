@@ -15,6 +15,7 @@ from text_director import (
     DirectorValidationError,
     OllamaTextDirector,
     ATTITUDE_PRESETS,
+    EMOTION_DIRECTION_PRESETS,
     PACE_PRESETS,
     ROLE_HEADERS,
     RHYTHM_PRESETS,
@@ -27,6 +28,7 @@ from text_director import (
     document_to_tables,
     migrate_attitude_preset,
     migrate_emotion_label,
+    migrate_segment_rows,
     migrate_pace_preset,
     migrate_rhythm_preset,
     render_directed_audio,
@@ -968,6 +970,8 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert segments[1]["speaker_id"] == "role_001"
     assert segments[1]["attitude_preset"] == "中性叙述"
     assert segments[1]["emotion_label"] == "平静"
+    assert segments[1]["emotion_direction"] == "auto"
+    assert segment_rows[1][12:] == ["auto", ""]
 
 
 def test_legacy_natural_language_directing_values_migrate_to_presets():
@@ -976,6 +980,9 @@ def test_legacy_natural_language_directing_values_migrate_to_presets():
     assert migrate_pace_preset("短语间停连清晰，整体舒缓") == "舒缓"
     assert migrate_attitude_preset("平静叙述") == "中性叙述"
     assert migrate_emotion_label("melancholic") == "低落"
+    migrated = migrate_segment_rows([[1, "正文", "narrator", "旁白", "ZH", "原文", "原文", "中性叙述", "平静", 0.5, "自然", 300]])
+    assert migrated[0][12:] == ["auto", ""]
+    assert EMOTION_DIRECTION_PRESETS["sly_smile"][2] == 0.8
 
 
 def test_product_level_ai_attitude_and_pace_presets_survive_document_conversion():
@@ -1515,7 +1522,7 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
             return kwargs["output_path"]
 
     role_rows = [_role_row(rhythm="沉稳舒缓")]
-    segment_rows = [[1, "第一章", "narrator", "旁白", "ZH", "重庆银行。", "重庆银行。", "中性叙述", "平静", 0.5, "舒缓", 100]]
+    segment_rows = [[1, "第一章", "narrator", "旁白", "ZH", "重庆银行。", "重庆银行。", "中性叙述", "平静", 0.8, "舒缓", 100, "sly_smile", "笑意压在句尾，像已经掌握对方秘密"]]
     pronunciations = [["重庆银行", "重 庆 银行", "固定专名读法", "是"]]
     first_model = FakeModel()
     first = render_directed_audio(
@@ -1536,9 +1543,15 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
     assert first_model.calls[0]["duration_factor"] == 1.0
     assert "韵母自然舒展" in first_model.calls[0]["emo_text"]
     assert "短语间停连清晰" in first_model.calls[0]["emo_text"]
+    assert "speaking with a sly mischievous smile" in first_model.calls[0]["emo_text"]
+    assert "笑意压在句尾" in first_model.calls[0]["emo_text"]
+    assert first_model.calls[0]["emo_alpha"] == 0.8
     first_manifest = json.loads(Path(first[2]).read_text(encoding="utf-8"))
     assert first_manifest["segments"][0]["effective_text"] == "重 庆 银行。"
     assert first_manifest["segments"][0]["text"] == "重庆银行。"
+    assert first_manifest["segments"][0]["emotion_direction"] == "sly_smile"
+    assert first_manifest["segments"][0]["emotion_weight"] == 0.8
+    assert "slightly teasing and amused" in first_manifest["segments"][0]["emotion_text"]
 
     second_model = FakeModel()
     second = render_directed_audio(

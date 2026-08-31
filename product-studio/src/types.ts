@@ -1,5 +1,5 @@
 export type RoleRow = [string, string, string, string, string, string, string, string];
-export type SegmentRow = [number, string, string, string, string, string, string, string, string, number, string, number];
+export type SegmentRow = [number, string, string, string, string, string, string, string, string, number, string, number, string?, string?];
 
 export type CharacterGender = 'female' | 'male' | 'unspecified';
 export type VoiceGenerationPreset = 'stable' | 'balanced' | 'explore' | 'custom';
@@ -134,6 +134,7 @@ export interface Presets {
   rhythmPrompts: Record<string, string>;
   attitudes: string[];
   emotions: string[];
+  emotionDirections: Array<{ value: string; label: string; prompt: string; defaultWeight: number }>;
   paces: string[];
   roleKinds: string[];
   roleKindLabels: Record<string, string>;

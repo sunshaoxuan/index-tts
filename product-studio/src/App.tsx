@@ -549,6 +549,24 @@ function Studio() {
     });
   };
 
+  const setEmotionDirection = (order: number, value: string) => {
+    if (jobRunning || !presets) return;
+    const selected = presets.emotionDirections.find(item => item.value === value);
+    if (!selected) return;
+    setDirty(true);
+    setProject((current) => {
+      if (!current) return current;
+      const segments = current.segments.map(row => {
+        if (row[0] !== order) return row;
+        const updated = [...row] as SegmentRow;
+        updated[12] = value;
+        if (!['auto', 'custom'].includes(value)) updated[9] = selected.defaultWeight;
+        return updated;
+      });
+      return { ...current, segments };
+    });
+  };
+
   const mergeSelected = () => {
     if (!project || jobRunning) return;
     try {
@@ -886,6 +904,8 @@ function Studio() {
     return [
       { title: '分句内容与导演参数', key: 'director-row', render: (_v, row) => {
         const fragment = findMatchingFragment(render.fragments, row);
+        const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
+        const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim()].filter(Boolean).join('. ');
         return <div className="segment-row-layout">
           <div className="segment-row-primary">
             <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
@@ -898,10 +918,15 @@ function Studio() {
           <div className="segment-row-secondary">
             <div className="segment-field segment-source-field"><span>原文</span><Text>{row[5]}</Text></div>
             <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
-            <label className="segment-field"><span>强度</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.5)} /></label>
             <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
             <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>重新生成本分句</Button></div></div>
+            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>{fragment ? '重新生成本分句' : '生成本分句'}</Button></div></div>
+          </div>
+          <div className="segment-row-emotion">
+            <label className="segment-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
+            <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={jobRunning} maxLength={1000} autoSize={{ minRows: 2, maxRows: 4 }} value={row[13] || ''} placeholder="可补充中英文描述，例如：笑意压在句尾，像已经掌握对方秘密" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
+            <label className="segment-field"><span>情绪权重</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
+            <div className="segment-emotion-preview"><span>传入 IndexTTS 的显式情绪描述</span><Text>{explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}</Text></div>
           </div>
         </div>;
       } },

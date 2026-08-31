@@ -5,10 +5,11 @@ import { readFileSync } from 'node:fs';
 const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
-test('segment table renders one composite director column with two content bands', () => {
+test('segment table renders one composite director column with dedicated directing bands', () => {
   assert.match(app, /key: 'director-row'/);
   assert.match(app, /className="segment-row-primary"/);
   assert.match(app, /className="segment-row-secondary"/);
+  assert.match(app, /className="segment-row-emotion"/);
   assert.match(app, /scroll=\{\{ y: 560 \}\}/);
   assert.doesNotMatch(app, /scroll=\{\{ x: 2260, y: 560 \}\}/);
 });
@@ -17,7 +18,16 @@ test('segment rows use responsive grids and suppress horizontal table scrolling'
   assert.match(styles, /\.segment-table \.ant-table-body \{ overflow-x: hidden !important; \}/);
   assert.match(styles, /\.segment-row-primary \{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:/s);
+  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.segment-source-field, \.segment-synthesis-field, \.segment-fragment-field \{ grid-column: 1 \/ -1; \}/);
+});
+
+test('segment rows expose explicit IndexTTS emotion direction detail and weight controls', () => {
+  assert.match(app, />情绪演绎</);
+  assert.match(app, />情绪细化描述</);
+  assert.match(app, />情绪权重</);
+  assert.match(app, /传入 IndexTTS 的显式情绪描述/);
+  assert.match(app, /fragment \? '重新生成本分句' : '生成本分句'/);
 });
 
 test('adjacent segment records use strong alternating surfaces and an inset secondary band', () => {

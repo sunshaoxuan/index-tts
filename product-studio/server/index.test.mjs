@@ -44,6 +44,25 @@ async function fixture() {
   return { root, project };
 }
 
+async function waitForActiveJob(app, jobId, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  let active = { available: false };
+  while (Date.now() < deadline) {
+    active = (await app.inject('/api/active-job')).json();
+    if (active.jobId === jobId) return active;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return active;
+}
+
+async function waitForLaunches(launches, count, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (launches.length < count && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(launches.length >= count, `等待 ${count} 个 worker 启动，实际为 ${launches.length}`);
+}
+
 test('serves presets and project data', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });
@@ -53,6 +72,8 @@ test('serves presets and project data', async () => {
   assert.deepEqual(health.json().voiceModel, { processAlive: false, modelLoaded: false, phase: 'cold' });
   const presetResponse = await app.inject('/api/presets');
   assert.ok(presetResponse.json().emotions.includes('平静'));
+  assert.equal(presetResponse.json().emotionDirections.find(item => item.value === 'sly_smile').defaultWeight, 0.8);
+  assert.match(presetResponse.json().emotionDirections.find(item => item.value === 'urgent_question').prompt, /urgent and impatient/);
   assert.equal(presetResponse.json().voiceStylePrompts['低沉厚实'], '低沉厚实，声音有支撑，气息稳定');
   assert.equal(presetResponse.json().rhythmPrompts['沉稳舒缓'], '沉稳舒缓，重音清晰，短语间自然停连');
   assert.equal((await app.inject('/api/projects/demo')).json().title, '测试');
@@ -685,6 +706,44 @@ test('invalidates changed segment audio and marks complete renders stale without
   await app.close();
 });
 
+test('invalidates only the edited segment when its emotion direction changes', async () => {
+  const { root, project } = await fixture();
+  const firstKey = '3'.repeat(64);
+  const secondKey = '4'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-emotion');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  project.segments.push([2, '正文', 'narrator', '旁白', 'ZH', '第二句', '第二句', '中性叙述', '平静', 0.5, '自然', 300]);
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  const fragments = {
+    [firstKey]: { order: 1, speaker_id: 'narrator', language: 'ZH', source_text: '原文', text: '原文' },
+    [secondKey]: { order: 2, speaker_id: 'narrator', language: 'ZH', source_text: '第二句', text: '第二句' },
+  };
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('full'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { ...fragments[firstKey], cache_key: firstKey, audio: 'segments/0001.wav' },
+    { ...fragments[secondKey], cache_key: secondKey, audio: 'segments/0002.wav' },
+  ] }));
+  await writeFile(path.join(cacheDir, `${firstKey}.wav`), Buffer.from('first'));
+  await writeFile(path.join(cacheDir, `${secondKey}.wav`), Buffer.from('second'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.segments[0].push('sly_smile', '句尾带一点得意的气声');
+  project.segments[0][9] = 0.8;
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [firstKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(cacheDir, `${firstKey}.wav`)));
+  await access(path.join(cacheDir, `${secondKey}.wav`));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.stale, true);
+  assert.deepEqual(latest.fragments.map(item => item.order), [2]);
+  await app.close();
+});
+
 test('keeps every generated fragment when a new pronunciation rule matches no segment', async () => {
   const { root, project } = await fixture();
   const firstKey = '1'.repeat(64);
@@ -863,13 +922,16 @@ test('starts strict assembly and one forced segment regeneration with worker opt
   assert.equal(assembled.statusCode, 202);
   let input = JSON.parse(await readFile(launches[0].args[2], 'utf8'));
   assert.equal(input.cache_only, true);
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', assembled.json().jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
   child.emit('close', 0);
   await new Promise(resolve => setTimeout(resolve, 20));
 
   const regenerated = await app.inject({ method: 'POST', url: '/api/projects/demo/segments/1/regenerate', payload: {} });
   assert.equal(regenerated.statusCode, 202);
+  await waitForLaunches(launches, 2);
   input = JSON.parse(await readFile(launches[1].args[2], 'utf8'));
   assert.deepEqual(input.fragment_only_orders, [1]);
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', regenerated.json().jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
   child.emit('close', 0);
   await app.close();
 });
@@ -887,6 +949,27 @@ test('migrates legacy natural language controls to supported presets', async () 
   assert.equal(migrated.segments[0][7], '温和交流');
   assert.equal(migrated.segments[0][8], '平静');
   assert.equal(migrated.segments[0][10], '舒缓');
+  assert.deepEqual(migrated.segments[0].slice(12), ['auto', '']);
+  await app.close();
+});
+
+test('persists detailed segment emotion direction and validates custom descriptions', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const project = (await app.inject('/api/projects/demo')).json();
+  project.segments[0][9] = 0.85;
+  project.segments[0][12] = 'urgent_question';
+  project.segments[0][13] = '句尾继续上扬，保持追问压力';
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().segments[0].slice(9, 14), [0.85, '自然', 300, 'urgent_question', '句尾继续上扬，保持追问压力']);
+
+  const invalid = structuredClone(saved.json());
+  invalid.segments[0][12] = 'custom';
+  invalid.segments[0][13] = '';
+  const rejected = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: invalid });
+  assert.equal(rejected.statusCode, 400);
+  assert.match(rejected.json().error, /必须填写细化描述/);
   await app.close();
 });
 
@@ -1000,16 +1083,14 @@ test('runs independent work for the resident model before switching models', asy
 
   await writeFile(path.join(root, 'runtime-output', 'product-jobs', firstRender.jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
   children[0].emit('close', 0);
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const secondActive = (await app.inject('/api/active-job')).json();
+  const secondActive = await waitForActiveJob(app, waitingRender.jobId);
   assert.equal(secondActive.jobId, waitingRender.jobId);
   assert.equal(secondActive.modelKey, 'indextts:index-tts-2.5');
   assert.equal(children.length, 2);
 
   await writeFile(path.join(root, 'runtime-output', 'product-jobs', waitingRender.jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
   children[1].emit('close', 0);
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const thirdActive = (await app.inject('/api/active-job')).json();
+  const thirdActive = await waitForActiveJob(app, waitingVoice.jobId);
   assert.equal(thirdActive.jobId, waitingVoice.jobId);
   assert.equal(thirdActive.modelKey, 'voice-design:qwen3-tts-1.7b');
 

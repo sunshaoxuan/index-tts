@@ -27,6 +27,20 @@ export const presets = {
   },
   attitudes: ['中性叙述', '沉稳叙述', '温和交流', '紧张警觉', '克制低沉', '悲伤压抑', '喜悦明快', '愤怒强烈', '恐惧迟疑', '威严命令'],
   emotions: ['喜悦', '愤怒', '悲伤', '恐惧', '厌恶', '低落', '惊喜', '平静'],
+  emotionDirections: [
+    { value: 'auto', label: '跟随基础情绪', prompt: '', defaultWeight: 0.6 },
+    { value: 'sly_smile', label: '坏笑着说', prompt: 'speaking with a sly mischievous smile, slightly teasing and amused', defaultWeight: 0.8 },
+    { value: 'urgent_question', label: '急切地问', prompt: 'urgent and impatient, asking quickly and eagerly, fast-paced speech with strong questioning intonation', defaultWeight: 0.85 },
+    { value: 'inner_thought', label: '暗自思忖', prompt: 'quiet internal monologue, thinking to oneself, contemplative and suspicious, subdued voice with slight hesitation', defaultWeight: 0.7 },
+    { value: 'cold_statement', label: '冷冷地说', prompt: 'cold and restrained, emotionally distant, speaking slowly with a firm controlled tone', defaultWeight: 0.7 },
+    { value: 'hushed_warning', label: '压低声音警告', prompt: 'lowered voice, tense and cautionary, delivering a controlled warning with deliberate emphasis', defaultWeight: 0.8 },
+    { value: 'restrained_sadness', label: '强忍悲伤', prompt: 'holding back grief, subdued and fragile, restrained sorrow with slight breathiness', defaultWeight: 0.75 },
+    { value: 'angry_interrogation', label: '愤怒质问', prompt: 'angry and confrontational questioning, forceful emphasis, rising intensity and sharp interrogative intonation', defaultWeight: 0.9 },
+    { value: 'fearful_whisper', label: '惊恐低语', prompt: 'fearful whisper, tense breathing, hesitant and alarmed while keeping the voice low', defaultWeight: 0.8 },
+    { value: 'gentle_comfort', label: '温柔安慰', prompt: 'gentle and reassuring, warm compassionate tone, calm pacing with soft supportive emphasis', defaultWeight: 0.65 },
+    { value: 'excited_announcement', label: '兴奋宣布', prompt: 'excited and energetic announcement, bright tone, lively pacing and clear enthusiastic emphasis', defaultWeight: 0.8 },
+    { value: 'custom', label: '自定义描述', prompt: '', defaultWeight: 0.7 },
+  ],
   paces: ['自然', '舒缓', '紧凑', '轻快', '克制', '低声', '强调'],
   roleKinds: ['narrator', 'character', 'anchor', 'reporter', 'interviewee'],
   roleKindLabels: { narrator: '旁白', character: '人物', anchor: '新闻主播', reporter: '记者', interviewee: '采访对象' },
@@ -231,9 +245,13 @@ function normalizeProject(payload) {
   copy.character_assets = Object.fromEntries(copy.roles.map(role => [String(role[0]), normalizeCharacterAsset(role, existingAssets[role[0]])]));
   copy.segments = Array.isArray(copy.segments) ? copy.segments.map(row => {
     const updated = [...row];
+    if (updated.length < 13) updated.push('auto');
+    if (updated.length < 14) updated.push('');
     updated[7] = closestPreset(updated[7], presets.attitudes, [[/沉稳/, '沉稳叙述'], [/温和|亲切/, '温和交流'], [/紧张|警觉/, '紧张警觉'], [/克制|低沉/, '克制低沉'], [/悲伤|压抑/, '悲伤压抑'], [/喜悦|明快/, '喜悦明快'], [/愤怒|强烈/, '愤怒强烈'], [/恐惧|迟疑/, '恐惧迟疑'], [/威严|命令/, '威严命令']], '中性叙述');
     updated[8] = closestPreset(updated[8], presets.emotions, [[/happy|joy|喜/, '喜悦'], [/angry|anger|愤/, '愤怒'], [/sad|悲/, '悲伤'], [/fear|恐/, '恐惧'], [/disgust|厌/, '厌恶'], [/depress|low|低落/, '低落'], [/surprise|惊/, '惊喜'], [/calm|neutral|自然|平静/, '平静']], '平静');
     updated[10] = closestPreset(updated[10], presets.paces, [[/舒缓|慢/, '舒缓'], [/紧凑|快/, '紧凑'], [/轻快/, '轻快'], [/克制/, '克制'], [/低声/, '低声'], [/强调|重音/, '强调']], '自然');
+    updated[12] = presets.emotionDirections.some(item => item.value === updated[12]) ? updated[12] : 'auto';
+    updated[13] = String(updated[13] || '').trim().slice(0, 1000);
     return updated;
   }) : [];
   copy.chapters = splitChapters(copy.source_text);
@@ -269,11 +287,18 @@ function validateProject(payload, id) {
   }
   payload.segments.forEach((row, index) => {
     if (!Array.isArray(row) || row.length < 12) throw new Error(`分句表第 ${index + 1} 行字段不足`);
+    if (row.length < 13) row.push('auto');
+    if (row.length < 14) row.push('');
     if (!roleIds.has(row[2])) throw new Error(`分句 ${row[0]} 引用了未知角色`);
     if (!presets.languages.includes(row[4])) throw new Error(`分句 ${row[0]} 的语言无效`);
     if (!presets.attitudes.includes(row[7])) throw new Error(`分句 ${row[0]} 的态度预设无效`);
     if (!presets.emotions.includes(row[8])) throw new Error(`分句 ${row[0]} 的情绪预设无效`);
+    if (!Number.isFinite(Number(row[9])) || Number(row[9]) < 0 || Number(row[9]) > 1) throw new Error(`分句 ${row[0]} 的情绪权重必须在 0 至 1 之间`);
     if (!presets.paces.includes(row[10])) throw new Error(`分句 ${row[0]} 的节奏预设无效`);
+    if (!presets.emotionDirections.some(item => item.value === row[12])) throw new Error(`分句 ${row[0]} 的情绪演绎预设无效`);
+    row[13] = String(row[13] || '').trim();
+    if (row[12] === 'custom' && !row[13]) throw new Error(`分句 ${row[0]} 选择自定义情绪演绎后必须填写细化描述`);
+    if (row[13].length > 1000) throw new Error(`分句 ${row[0]} 的情绪细化描述不能超过 1000 个字符`);
   });
   if (!['novel', 'news', 'story'].includes(payload.content_type)) throw new Error('作品体裁无效');
   if (!Array.isArray(payload.pronunciations)) throw new Error('全篇纠音表格式无效');
@@ -830,10 +855,16 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       createdAt: String(item.createdAt),
     }));
   } catch {}
-  const persistQueue = async () => {
-    const temporary = `${queueFile}.tmp`;
-    await writeFile(temporary, `${JSON.stringify({ version: 1, last_model_key: lastModelKey, pending: pendingJobs }, null, 2)}\n`, 'utf8');
-    await rename(temporary, queueFile);
+  let queuePersistChain = Promise.resolve();
+  const persistQueue = () => {
+    const snapshot = `${JSON.stringify({ version: 1, last_model_key: lastModelKey, pending: pendingJobs }, null, 2)}\n`;
+    const operation = queuePersistChain.then(async () => {
+      const temporary = `${queueFile}.${randomUUID()}.tmp`;
+      await writeFile(temporary, snapshot, 'utf8');
+      await rename(temporary, queueFile);
+    });
+    queuePersistChain = operation.catch(() => {});
+    return operation;
   };
   const projectJobLock = projectId => activeJob?.projectId === projectId
     ? activeJob
