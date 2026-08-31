@@ -530,7 +530,14 @@ body * { box-shadow: none !important; }
 .segment-candidate .ant-tag { margin-inline-end: 0; font-size: 12px; line-height: 22px; white-space: normal; }
 .segment-candidate .ant-typography, .segment-candidate small { min-width: 0; overflow-wrap: anywhere; color: rgba(255, 237, 215, .72); font-size: 13px; line-height: 1.55; }
 .segment-stress-notice { grid-column: 1 / -1; padding: 9px 11px; border-left: 3px solid #ffb24d; background: rgba(145, 61, 8, .18); }
-.ant-message { inset-inline: 12px !important; top: max(12px, env(safe-area-inset-top)) !important; width: auto !important; pointer-events: none; }
+.ant-message {
+  inset-inline: 12px !important;
+  top: max(64px, calc(env(safe-area-inset-top, 0px) + 12px)) !important;
+  width: auto !important;
+  transform: none !important;
+  pointer-events: none;
+}
+.ant-message .ant-message-notice-wrapper { display: flex; justify-content: center; }
 .ant-message .ant-message-notice { padding-inline: 0; }
 .ant-message .ant-message-notice-content { max-width: min(520px, 100%); overflow-wrap: anywhere; line-height: 1.45; }
 .segment-regeneration-button.is-pending,

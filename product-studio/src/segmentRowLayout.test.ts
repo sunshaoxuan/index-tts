@@ -58,7 +58,8 @@ test('segment rows expose stress targeting, advanced three-candidate generation,
 
 test('mobile layout suppresses nested segment scrolling and stabilizes transient messages', () => {
   assert.match(styles, /scrollbar-gutter: stable/);
-  assert.match(styles, /\.ant-message \{[^}]*position|\.ant-message \{/s);
+  assert.match(styles, /\.ant-message \{[^}]*inset-inline: 12px !important;[^}]*top: max\(64px, calc\(env\(safe-area-inset-top, 0px\) \+ 12px\)\) !important;[^}]*width: auto !important;[^}]*transform: none !important;/s);
+  assert.match(styles, /\.ant-message \.ant-message-notice-wrapper \{ display: flex; justify-content: center; \}/);
   assert.match(styles, /\.segment-table \.ant-table-body \{ max-height: none !important; overflow-y: visible !important;/);
   assert.match(styles, /touch-action: pan-y pinch-zoom/);
   assert.doesNotMatch(styles, /html\.select-popup-open/);
