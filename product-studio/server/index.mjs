@@ -536,6 +536,41 @@ export async function wavDurationSeconds(filePath) {
   }
 }
 
+export function reconcileFragmentsToProject(manifestFragments, draftFragments, projectSegments) {
+  const candidates = [
+    ...manifestFragments.map((fragment, index) => ({ fragment, source: 'manifest', index })),
+    ...draftFragments.map((fragment, index) => ({ fragment, source: 'draft', index })),
+  ];
+  const consumed = new Set();
+  const aligned = [];
+  for (const segment of projectSegments || []) {
+    const order = Number(segment?.[0]);
+    const sourceText = String(segment?.[5] || '');
+    const synthesisText = String(segment?.[6] || '');
+    const matches = candidates.filter(candidate => (
+      !consumed.has(candidate)
+      && candidate.fragment.sourceText === sourceText
+      && candidate.fragment.synthesisText === synthesisText
+    ));
+    matches.sort((left, right) => {
+      const leftExact = Number(left.fragment.order) === order ? 1 : 0;
+      const rightExact = Number(right.fragment.order) === order ? 1 : 0;
+      if (leftExact !== rightExact) return rightExact - leftExact;
+      const leftDraft = left.source === 'draft' ? 1 : 0;
+      const rightDraft = right.source === 'draft' ? 1 : 0;
+      if (leftDraft !== rightDraft) return rightDraft - leftDraft;
+      const distance = Math.abs(Number(left.fragment.order) - order) - Math.abs(Number(right.fragment.order) - order);
+      if (distance) return distance;
+      return left.index - right.index;
+    });
+    const selected = matches[0];
+    if (!selected) continue;
+    consumed.add(selected);
+    aligned.push({ ...selected.fragment, order });
+  }
+  return aligned;
+}
+
 async function voiceRuntimeHealth(repoRoot) {
   try {
     const state = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', 'voice-design-runtime', 'state.json'), 'utf8'));
@@ -1242,9 +1277,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   });
   app.get('/api/projects/:id/latest-render', async (request) => {
     const id = safeProjectId(request.params.id);
+    const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
     const name = await latestRender(path.join(projectRoot, id));
     const base = name ? `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}` : '';
     let fragments = [];
+    let draftFragments = [];
     let captions = [];
     let stale;
     try { stale = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, '.stale.json'), 'utf8')); } catch {}
@@ -1270,7 +1307,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
       const latestDraftByOrder = new Map();
       for (const [cacheKey, item] of Object.entries(draft.fragments || {})) latestDraftByOrder.set(Number(item.order), { cacheKey, item });
-      const draftFragments = [...latestDraftByOrder.values()].map(({ cacheKey, item }) => ({
+      draftFragments = [...latestDraftByOrder.values()].map(({ cacheKey, item }) => ({
         order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
         synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: false, forcedRegeneration: true,
@@ -1283,9 +1320,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           audio: `/api/projects/${encodeURIComponent(id)}/cached-fragment-candidates/${cacheKey}/${encodeURIComponent(String(candidate.candidate_id))}`,
         })),
       }));
-      const draftOrders = new Set(draftFragments.map(item => item.order));
-      fragments = [...fragments.filter(item => !draftOrders.has(item.order)), ...draftFragments];
     } catch {}
+    fragments = reconcileFragmentsToProject(fragments, draftFragments, project.segments);
     return { available: Boolean(name), ...(name ? { renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest` } : {}), fragments, captions, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
   });
   app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {

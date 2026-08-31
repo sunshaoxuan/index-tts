@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildApp, wavDurationSeconds, workerPython } from './index.mjs';
+import { buildApp, reconcileFragmentsToProject, wavDurationSeconds, workerPython } from './index.mjs';
 
 test('selects a platform appropriate worker interpreter', () => {
   assert.equal(workerPython('/srv/index-tts', 'linux'), 'python3');
@@ -81,7 +81,12 @@ test('serves presets and project data', async () => {
 });
 
 test('returns delivery captions with real WAV duration and manifest pauses', async () => {
-  const { root } = await fixture();
+  const { root, project } = await fixture();
+  project.segments = [
+    [1, '正文', 'narrator', '旁白', 'ZH', '第一句。', '第一句。', '中性叙述', '平静', 0.5, '自然', 500],
+    [2, '正文', 'narrator', '笹垣润三', 'ZH', '第二句。', '第二句。', '中性叙述', '平静', 0.5, '自然', 0],
+  ];
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
   const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-captioned');
   const segmentsDir = path.join(renderDir, 'segments');
   await mkdir(segmentsDir, { recursive: true });
@@ -421,7 +426,9 @@ test('normalizes per character voice controls and invalidates only the affected 
 });
 
 test('serves the latest audio with stable media headers', async () => {
-  const { root } = await fixture();
+  const { root, project } = await fixture();
+  project.segments.push([2, '正文', 'narrator', '旁白', 'ZH', '新增', '新增', '中性叙述', '平静', 0.5, '自然', 300]);
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
   const renderDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'renders', 'render-001');
   await mkdir(renderDir, { recursive: true });
   await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('RIFFfake'));
@@ -1279,4 +1286,45 @@ test('marks a restored job as failed when its worker no longer exists', async ()
   assert.equal(status.phase, 'error');
   assert.match(status.message, /未发现原 Worker 进程/);
   await app.close();
+});
+
+test('aligns inserted draft audio without clearing the following delivered fragment', () => {
+  const manifest = [
+    { order: 1, sourceText: '原有下一句', synthesisText: '原有下一句', audio: '/delivered-next.wav' },
+  ];
+  const draft = [
+    { order: 1, sourceText: '插入句', synthesisText: '插入句', audio: '/draft-inserted.wav' },
+  ];
+  const projectSegments = [
+    [1, '第 1 章', 'narrator', '旁白', 'ZH', '插入句', '插入句'],
+    [2, '第 1 章', 'narrator', '旁白', 'ZH', '原有下一句', '原有下一句'],
+  ];
+
+  const aligned = reconcileFragmentsToProject(manifest, draft, projectSegments);
+
+  assert.deepEqual(aligned.map(item => ({ order: item.order, audio: item.audio })), [
+    { order: 1, audio: '/draft-inserted.wav' },
+    { order: 2, audio: '/delivered-next.wav' },
+  ]);
+});
+
+test('consumes repeated-text audio fragments once and keeps their current orders', () => {
+  const manifest = [
+    { order: 1, sourceText: '重复句', synthesisText: '重复句', audio: '/delivered-first.wav' },
+    { order: 2, sourceText: '重复句', synthesisText: '重复句', audio: '/delivered-second.wav' },
+  ];
+  const draft = [
+    { order: 2, sourceText: '重复句', synthesisText: '重复句', audio: '/draft-second.wav' },
+  ];
+  const projectSegments = [
+    [1, '第 1 章', 'narrator', '旁白', 'ZH', '重复句', '重复句'],
+    [2, '第 1 章', 'narrator', '旁白', 'ZH', '重复句', '重复句'],
+  ];
+
+  const aligned = reconcileFragmentsToProject(manifest, draft, projectSegments);
+
+  assert.deepEqual(aligned.map(item => ({ order: item.order, audio: item.audio })), [
+    { order: 1, audio: '/delivered-first.wav' },
+    { order: 2, audio: '/draft-second.wav' },
+  ]);
 });
