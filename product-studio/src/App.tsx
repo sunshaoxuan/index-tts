@@ -412,11 +412,13 @@ function Studio() {
       frame = window.requestAnimationFrame(measure);
     };
     window.addEventListener('resize', scheduleMeasure);
+    window.addEventListener('scroll', scheduleMeasure, { passive: true });
     scheduleMeasure();
     return () => {
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('scroll', scheduleMeasure);
     };
   }, [activeTab]);
 
