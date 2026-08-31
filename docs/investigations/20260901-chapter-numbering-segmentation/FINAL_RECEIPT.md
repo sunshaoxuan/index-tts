@@ -16,4 +16,10 @@
 | 浏览器页面、Console 与截图 | 白夜行01和白夜行03第一页均为 20 个“第 1 章”，Console 0 error | `artifacts/chapter-numbering-segmentation/` | passed |
 | 实际工程数据持久化 | 三个工程的 `segments` 与 `director_memory.segments` 均已写回“第 1 章” | 三个 `project.json` 物理复核 | passed |
 | Git `master` 提交 | 实现提交 `4c802809b50f090601af1a83d1532503181627d9` 已进入 `master` | `git log` | passed |
-| Git 推送与远端相等 | 本回执提交后执行并记录最终远端核对 | `git ls-remote` | pending |
+| Git 推送与远端相等 | 实现与生产验收提交已推送到 `fork/master`，最终回执提交后再次核对三方哈希 | `git push` 与 `git ls-remote` | passed |
+
+## Git 交付记录
+
+1. 实现提交：`4c802809b50f090601af1a83d1532503181627d9`。
+2. 生产验收文档提交：`3ddae8b87a95779e5c300c907bda7f778c768a23`。
+3. 最终回执提交完成后，以本地 `HEAD`、本地远端跟踪引用 `fork/master` 和 GitHub `refs/heads/master` 三者相等作为最终门禁。
