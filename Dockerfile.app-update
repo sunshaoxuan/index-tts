@@ -36,9 +36,15 @@ COPY . /app
 COPY --from=web /build/product-studio/dist /app/product-studio/dist
 
 WORKDIR /app
-RUN cmp /tmp/base-product-studio-package.json /app/product-studio/package.json \
-    && cmp /tmp/base-product-studio-pnpm-lock.yaml /app/product-studio/pnpm-lock.yaml \
+RUN tr -d '\r' < /tmp/base-product-studio-package.json > /tmp/base-product-studio-package.lf.json \
+    && tr -d '\r' < /app/product-studio/package.json > /tmp/app-product-studio-package.lf.json \
+    && tr -d '\r' < /tmp/base-product-studio-pnpm-lock.yaml > /tmp/base-product-studio-pnpm-lock.lf.yaml \
+    && tr -d '\r' < /app/product-studio/pnpm-lock.yaml > /tmp/app-product-studio-pnpm-lock.lf.yaml \
+    && cmp /tmp/base-product-studio-package.lf.json /tmp/app-product-studio-package.lf.json \
+    && cmp /tmp/base-product-studio-pnpm-lock.lf.yaml /tmp/app-product-studio-pnpm-lock.lf.yaml \
     && rm /tmp/base-product-studio-package.json /tmp/base-product-studio-pnpm-lock.yaml \
+        /tmp/base-product-studio-package.lf.json /tmp/app-product-studio-package.lf.json \
+        /tmp/base-product-studio-pnpm-lock.lf.yaml /tmp/app-product-studio-pnpm-lock.lf.yaml \
     && test -d /app/product-studio/node_modules \
     && ln -sfn /usr/local/bin/python3.11 /app/.venv/bin/python \
     && chmod +x /app/scripts/docker-entrypoint.sh \

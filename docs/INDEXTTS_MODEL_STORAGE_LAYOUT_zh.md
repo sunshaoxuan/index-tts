@@ -21,6 +21,8 @@
 
 容器实际挂载中的 `/app/checkpoints` 来源必须为 C 盘正式路径。输出、运行记录和交付物的来源必须保持为 D 盘正式路径。
 
+Windows 工作树可能使用 CRLF 行尾。增量镜像构建会在统一去除 CR 字节后比较 `package.json` 和 `pnpm-lock.yaml`，依赖内容发生变化时构建仍会停止，单纯行尾变化不会阻断构建。
+
 ## 回滚保留
 
 旧目录 `D:\workspace\IndexTTS-2.5\checkpoints` 和旧命名卷 `indextts25-qwen-voice-design-model` 作为回滚副本保留。迁移最终验收通过后仍继续保留。后续删除需要单独确认，并在删除前再次执行文件和运行状态检查。
