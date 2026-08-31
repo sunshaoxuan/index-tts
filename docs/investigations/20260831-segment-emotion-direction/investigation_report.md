@@ -17,7 +17,9 @@
 
 ## 运行验收范围
 
-当前正式 7864 容器存在持续执行的 VoiceDesign 任务，因此没有重启或替换正式容器。真实页面验收在由当前工作树构建的独立 7865 容器完成，使用独立工程数据。验收结束后已删除隔离容器和临时镜像，正式任务从 4.84% 持续推进到 49.92%。
+初次验收时正式 7864 容器存在持续执行的 VoiceDesign 任务，因此先在由当前工作树构建的独立 7865 容器完成交互检查。验收结束后删除隔离容器和临时镜像，正式任务从 4.84% 持续推进到 49.92%。任务结束且等待队列为空后，最终提交构建为 `indextts25-product-studio:1.1.38` 并部署到 7864。
+
+部署后的首次挂载复核发现正式目录当前 Compose 与部署前运行容器的 `/app/checkpoints` 来源不一致。最终配置按部署前证据恢复为 `D:/workspace/IndexTTS-2.5/checkpoints` 绑定挂载，并保留 Qwen VoiceDesign 命名卷、outputs、runtime-output 和 artifacts 共五项挂载。修正后从运行验收起点重新检查，容器 healthy，revision 为 `db3cf88785336abd29c5457838477c3eabf06282`，GPU、双 Python 环境、源码哈希、API、页面、Console 和截图全部通过。
 
 ## 额外修复
 

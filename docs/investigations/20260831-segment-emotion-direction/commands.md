@@ -9,3 +9,7 @@
 7. 应用内浏览器选择“坏笑着说”，填写细化描述，保存、刷新并回读
 8. 应用内浏览器读取 warning 与 error 日志并保存截图
 9. 删除隔离容器和验收镜像，复核 `127.0.0.1:7864/api/active-job`
+10. 将提交 `db3cf88` 构建为 `indextts25-product-studio:1.1.38`
+11. 活动任务和等待队列为空后，通过临时 Compose 覆盖重新创建 7864 容器
+12. 发现 checkpoints 挂载来源不一致后恢复部署前五项挂载，并从运行验收起点复查
+13. 检查 revision、源码 SHA256、GPU、双 Python、健康接口、项目列表、日志、RestartCount、正式页面、Console 和截图
