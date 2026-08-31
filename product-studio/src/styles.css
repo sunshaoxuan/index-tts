@@ -485,8 +485,9 @@ body * { box-shadow: none !important; }
 .segment-row-primary, .segment-row-secondary, .segment-row-emotion { min-width: 0; display: grid; gap: 12px; }
 .segment-row-primary { padding: 4px 12px 0; grid-template-columns: 64px 96px minmax(140px, 1.1fr) 80px minmax(120px, .8fr) minmax(110px, .7fr); }
 .segment-row-secondary { padding: 14px 12px 8px; border: 1px solid rgba(255, 237, 215, .18); border-radius: 8px 8px 0 0; background: rgba(16, 9, 4, .3); grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 110px 96px minmax(180px, .9fr); }
-.segment-row-emotion { padding: 10px 12px 12px; border: 1px solid rgba(255, 237, 215, .18); border-top: 0; border-radius: 0 0 8px 8px; background: rgba(35, 17, 5, .42); grid-template-columns: 170px minmax(260px, 1.2fr) 100px minmax(260px, 1fr); }
+.segment-row-emotion { padding: 10px 12px 12px; border: 1px solid rgba(255, 237, 215, .18); border-top: 0; border-radius: 0 0 8px 8px; background: rgba(35, 17, 5, .42); grid-template-columns: 170px minmax(260px, 1fr) 100px; }
 .segment-emotion-preview { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: 6px; background: rgba(255, 156, 49, .08); }
+.segment-emotion-preview, .segment-generation-mode-field { grid-column: 1 / -1; }
 .segment-emotion-preview > span { color: var(--studio-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
 .segment-emotion-preview .ant-typography { margin: 0; overflow-wrap: anywhere; }
 .segment-field { min-width: 0; display: grid; align-content: start; gap: 7px; }
@@ -847,7 +848,6 @@ body * { box-shadow: none !important; }
   .segment-editor-toolbar > .ant-space { width: 100%; }
   .segment-row-primary, .segment-row-secondary, .segment-row-emotion { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .segment-emotion-detail-field, .segment-emotion-preview { grid-column: 1 / -1; }
-  .segment-generation-mode-field { grid-column: 1 / -1; }
   .segment-source-field, .segment-synthesis-field, .segment-fragment-field { grid-column: 1 / -1; }
   .segment-table .ant-table-cell { padding: 12px !important; }
   .segment-table .ant-table-body { max-height: none !important; overflow-y: visible !important; overscroll-behavior: auto; touch-action: pan-y pinch-zoom; }

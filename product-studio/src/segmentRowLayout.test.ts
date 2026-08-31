@@ -20,6 +20,8 @@ test('segment rows use responsive grids and suppress horizontal table scrolling'
   assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.segment-source-field, \.segment-synthesis-field, \.segment-fragment-field \{ grid-column: 1 \/ -1; \}/);
+  assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns: 170px minmax\(260px, 1fr\) 100px;/s);
+  assert.match(styles, /\.segment-emotion-preview, \.segment-generation-mode-field \{ grid-column: 1 \/ -1; \}/);
 });
 
 test('segment rows expose explicit IndexTTS emotion direction detail and weight controls', () => {
@@ -47,7 +49,6 @@ test('mobile layout suppresses nested segment scrolling and stabilizes transient
   assert.match(styles, /touch-action: pan-y pinch-zoom/);
   assert.doesNotMatch(styles, /html\.select-popup-open/);
   assert.match(app, /window\.matchMedia\('\(max-width: 800px\)'\)\.matches/);
-  assert.match(styles, /\.segment-generation-mode-field \{ grid-column: 1 \/ -1; \}/);
   assert.match(app, /className="segment-field segment-generation-mode-field"><span>生成方式<\/span>/);
 });
 
