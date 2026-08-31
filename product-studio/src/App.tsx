@@ -388,11 +388,18 @@ function Studio() {
 
   useEffect(() => {
     if (activeTab !== 'segments') return;
-    const host = document.querySelector<HTMLElement>('.segment-table');
-    if (!host) return;
     let frame: number | undefined;
+    let observedHost: HTMLElement | undefined;
+    const observer = new ResizeObserver(() => scheduleMeasure());
     const measure = () => {
       frame = undefined;
+      const host = document.querySelector<HTMLElement>('.segment-table');
+      if (!host) return;
+      if (observedHost !== host) {
+        if (observedHost) observer.unobserve(observedHost);
+        observedHost = host;
+        observer.observe(host);
+      }
       if (window.matchMedia('(max-width: 800px)').matches) {
         host.style.setProperty('--segment-table-body-height', `${SEGMENT_TABLE_MIN_BODY_HEIGHT}px`);
         return;
@@ -404,8 +411,6 @@ function Studio() {
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(measure);
     };
-    const observer = new ResizeObserver(scheduleMeasure);
-    observer.observe(host);
     window.addEventListener('resize', scheduleMeasure);
     scheduleMeasure();
     return () => {

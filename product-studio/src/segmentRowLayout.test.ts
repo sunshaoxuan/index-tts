@@ -13,6 +13,9 @@ test('segment table renders one composite director column with dedicated directi
   assert.match(app, /scroll=\{\{ y: 560 \}\}/);
   assert.doesNotMatch(app, /scroll=\{\{ x: 2260, y: 560 \}\}/);
   assert.match(app, /segmentTableBodyHeight\(window\.innerHeight, host\.getBoundingClientRect\(\)\.top\)/);
+  assert.match(app, /window\.requestAnimationFrame\(measure\)/);
+  assert.match(app, /if \(!host\) return;/);
+  assert.match(app, /observer\.observe\(host\)/);
   assert.match(app, /--segment-table-body-height/);
   assert.match(styles, /max-height: var\(--segment-table-body-height, 560px\) !important;/);
 });
