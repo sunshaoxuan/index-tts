@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import re
 import shutil
 import time
@@ -15,6 +16,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 import requests
+import numpy as np
 
 from novel_project import apply_pronunciations, normalize_pronunciations
 from voice_controls import DEFAULT_AUDITION_TEXT, normalize_voice_generation, normalize_voice_traits, voice_traits_instruction
@@ -134,6 +136,10 @@ SEGMENT_HEADERS = [
     "句后停顿ms",
     "情绪演绎预设",
     "情绪细化描述",
+    "重音文字",
+    "重音出现序号",
+    "重音强度",
+    "生成方式",
 ]
 
 DIRECTOR_SCHEMA: dict[str, Any] = {
@@ -2063,11 +2069,23 @@ def migrate_segment_rows(segment_table: Any) -> list[list[Any]]:
                 copied.append("auto")
             if len(copied) < 14:
                 copied.append("")
+            if len(copied) < 15:
+                copied.append("")
+            if len(copied) < 16:
+                copied.append(1)
+            if len(copied) < 17:
+                copied.append("none")
+            if len(copied) < 18:
+                copied.append("standard")
             copied[7] = migrate_attitude_preset(copied[7])
             copied[8] = migrate_emotion_label(copied[8])
             copied[10] = migrate_pace_preset(copied[10])
             copied[12] = str(copied[12] or "auto").strip() if str(copied[12] or "auto").strip() in EMOTION_DIRECTION_PRESETS else "auto"
             copied[13] = str(copied[13] or "").strip()
+            copied[14] = str(copied[14] or "").strip()
+            copied[15] = max(1, int(float(copied[15] or 1)))
+            copied[16] = str(copied[16] or "none") if str(copied[16] or "none") in {"none", "medium", "strong"} else "none"
+            copied[17] = "advanced" if copied[17] == "advanced" else "standard"
         migrated.append(copied)
     return migrated
 
@@ -2119,6 +2137,10 @@ def document_to_tables(document: dict[str, Any], demo_voice_ids: Iterable[str]) 
             segment["pause_after_ms"],
             "auto",
             "",
+            "",
+            1,
+            "none",
+            "standard",
         ]
         for segment in document.get("segments", [])
     ]
@@ -2439,6 +2461,14 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
                 copied.append("auto")
             if len(copied) < 14:
                 copied.append("")
+            if len(copied) < 15:
+                copied.append("")
+            if len(copied) < 16:
+                copied.append(1)
+            if len(copied) < 17:
+                copied.append("none")
+            if len(copied) < 18:
+                copied.append("standard")
         segment_rows.append(copied)
     roles: dict[str, dict[str, Any]] = {}
     for row_number, row in enumerate(role_rows, start=1):
@@ -2486,6 +2516,10 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         emotion_label = str(row[8]).strip()
         emotion_direction = str(row[12] or "auto").strip()
         emotion_detail = str(row[13] or "").strip()
+        stress_word = str(row[14] or "").strip()
+        stress_occurrence = max(1, int(float(row[15] or 1)))
+        stress_level = str(row[16] or "none").strip()
+        generation_mode = str(row[17] or "standard").strip()
         if pace_preset not in PACE_PRESETS:
             raise DirectorError(f"分句表第 {row_number} 行包含未知句内节奏预设：{pace_preset}")
         if attitude_preset not in ATTITUDE_PRESETS:
@@ -2498,6 +2532,21 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
             raise DirectorError(f"分句表第 {row_number} 行选择自定义情绪演绎后必须填写细化描述。")
         if len(emotion_detail) > 1000:
             raise DirectorError(f"分句表第 {row_number} 行的情绪细化描述不能超过 1000 个字符。")
+        if len(stress_word) > 80:
+            raise DirectorError(f"分句表第 {row_number} 行的重音文字不能超过 80 个字符。")
+        if stress_level not in {"none", "medium", "strong"}:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知重音强度：{stress_level}")
+        if generation_mode not in {"standard", "advanced"}:
+            raise DirectorError(f"分句表第 {row_number} 行包含未知生成方式：{generation_mode}")
+        if stress_word:
+            matches = str(row[6]).count(stress_word)
+            if matches < stress_occurrence:
+                raise DirectorError(f"分句表第 {row_number} 行的合成文本中找不到第 {stress_occurrence} 个重音文字“{stress_word}”。")
+            if stress_level == "none":
+                raise DirectorError(f"分句表第 {row_number} 行已填写重音文字，请选择重音强度。")
+        else:
+            stress_occurrence = 1
+            stress_level = "none"
         pace, pace_prompt = PACE_PRESETS[pace_preset]
         raw = {
             "order": order,
@@ -2523,6 +2572,10 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
         normalized["emotion_direction_label"] = EMOTION_DIRECTION_PRESETS[emotion_direction][0]
         normalized["emotion_direction_prompt"] = EMOTION_DIRECTION_PRESETS[emotion_direction][1]
         normalized["emotion_detail"] = emotion_detail
+        normalized["stress_word"] = stress_word
+        normalized["stress_occurrence"] = stress_occurrence
+        normalized["stress_level"] = stress_level
+        normalized["generation_mode"] = generation_mode
         segments.append(normalized)
     if not roles or not segments:
         raise DirectorError("角色表和分句表不能为空。")
@@ -2541,7 +2594,17 @@ def segment_emotion_text(role: dict[str, Any], segment: dict[str, Any]) -> str:
         str(segment.get("attitude") or "").strip(),
         str(EMOTION_LABELS.get(str(segment.get("emotion") or ""), segment.get("emotion") or "")).strip(),
     ]
-    parts = [part.rstrip("。.!！ ") for part in [*explicit, *general] if part]
+    stress_word = str(segment.get("stress_word") or "").strip()
+    stress_level = str(segment.get("stress_level") or "none")
+    occurrence = int(segment.get("stress_occurrence") or 1)
+    stress_prompt = ""
+    if stress_word and stress_level != "none":
+        degree = "clearly" if stress_level == "medium" else "strongly and unmistakably"
+        stress_prompt = (
+            f'Place {degree} semantic emphasis on occurrence {occurrence} of the exact text "{stress_word}". '
+            "Make that occurrence slightly louder, longer, and more prominent in pitch than its surrounding words, while preserving natural fluent speech"
+        )
+    parts = [part.rstrip("。.!！ ") for part in [*explicit, stress_prompt, *general] if part]
     return "。".join(parts) + ("。" if parts else "")
 
 
@@ -2609,6 +2672,75 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def analyze_segment_candidate(
+    path: Path,
+    text: str,
+    stress_word: str = "",
+    occurrence: int = 1,
+) -> dict[str, Any]:
+    """Measure basic WAV quality and a transparent text-proportional stress proxy."""
+    with wave.open(str(path), "rb") as source:
+        sample_rate = source.getframerate()
+        channels = source.getnchannels()
+        sample_width = source.getsampwidth()
+        frames = source.readframes(source.getnframes())
+    if sample_width != 2 or sample_rate <= 0 or not frames:
+        return {"quality_passed": False, "score": -100.0, "stress_db": -100.0, "stress_verified": False, "alignment_method": "text_proportional_proxy_v1"}
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32)
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    samples /= 32768.0
+    duration = len(samples) / sample_rate
+    rms = float(np.sqrt(np.mean(np.square(samples)))) if len(samples) else 0.0
+    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
+    clipping_ratio = float(np.mean(np.abs(samples) >= 0.995)) if len(samples) else 1.0
+    silence_ratio = float(np.mean(np.abs(samples) < 0.003)) if len(samples) else 1.0
+    quality_passed = 0.2 <= duration <= 90.0 and rms >= 0.002 and peak >= 0.01 and clipping_ratio <= 0.03 and silence_ratio <= 0.92
+    stress_db = 0.0
+    target_rms = rms
+    context_rms = rms
+    target_start = -1
+    if stress_word and text:
+        cursor = 0
+        for _ in range(max(1, occurrence)):
+            target_start = text.find(stress_word, cursor)
+            if target_start < 0:
+                break
+            cursor = target_start + len(stress_word)
+        if target_start >= 0:
+            active = np.flatnonzero(np.abs(samples) >= max(0.004, rms * 0.22))
+            audio_start = int(active[0]) if len(active) else 0
+            audio_end = int(active[-1] + 1) if len(active) else len(samples)
+            text_length = max(1, len(text))
+            span = max(int(0.08 * sample_rate), int((audio_end - audio_start) * len(stress_word) / text_length))
+            center = audio_start + int((audio_end - audio_start) * (target_start + len(stress_word) / 2) / text_length)
+            left = max(audio_start, center - span // 2)
+            right = min(audio_end, left + span)
+            target = samples[left:right]
+            before = samples[max(audio_start, left - span):left]
+            after = samples[right:min(audio_end, right + span)]
+            context = np.concatenate([part for part in (before, after) if len(part)]) if len(before) or len(after) else samples
+            target_rms = float(np.sqrt(np.mean(np.square(target)))) if len(target) else rms
+            context_rms = float(np.sqrt(np.mean(np.square(context)))) if len(context) else rms
+            stress_db = float(20 * math.log10(max(target_rms, 1e-7) / max(context_rms, 1e-7)))
+    stress_verified = bool(stress_word and quality_passed and stress_db >= 1.5)
+    score = (20.0 if quality_passed else -50.0) + max(-12.0, min(12.0, stress_db)) - clipping_ratio * 100.0 - max(0.0, silence_ratio - 0.6) * 10.0
+    return {
+        "quality_passed": quality_passed,
+        "score": round(score, 4),
+        "stress_db": round(stress_db, 4),
+        "stress_verified": stress_verified,
+        "alignment_method": "text_proportional_proxy_v1",
+        "duration_seconds": round(duration, 4),
+        "rms": round(rms, 6),
+        "peak": round(peak, 6),
+        "clipping_ratio": round(clipping_ratio, 6),
+        "silence_ratio": round(silence_ratio, 6),
+        "target_rms": round(target_rms, 6),
+        "context_rms": round(context_rms, 6),
+    }
+
+
 def concatenate_wav_segments(segments: list[dict[str, Any]], output_path: Path) -> None:
     if not segments:
         raise DirectorError("没有可拼接的音频分句。")
@@ -2647,6 +2779,7 @@ def render_directed_audio(
     project_process_dir: Path | None = None,
     force_segment_orders: Iterable[int] | None = None,
     fragment_only_orders: Iterable[int] | None = None,
+    advanced_segment_orders: Iterable[int] | None = None,
     cache_only: bool = False,
     progress: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
@@ -2655,6 +2788,7 @@ def render_directed_audio(
     pronunciation_rules = normalize_pronunciations(pronunciation_table)
     forced_orders = {int(order) for order in (force_segment_orders or [])}
     fragment_orders = {int(order) for order in (fragment_only_orders or [])}
+    advanced_orders = {int(order) for order in (advanced_segment_orders or [])}
     if fragment_orders:
         forced_orders.update(fragment_orders)
     catalog = _build_voice_catalog(
@@ -2714,6 +2848,7 @@ def render_directed_audio(
                 emotion_prompt = segment_emotion_text(role, segment)
                 effective_text, applied_rules = apply_pronunciations(segment["text"], pronunciation_rules)
                 duration_factor = 1.0
+                advanced_generation = segment.get("generation_mode") == "advanced" or segment["order"] in advanced_orders
                 cache_payload = {
                     "text": effective_text,
                     "language": segment["language"],
@@ -2721,12 +2856,18 @@ def render_directed_audio(
                     "emotion": emotion_prompt,
                     "intensity": float(segment["intensity"]),
                     "duration_factor": duration_factor,
+                    "stress_word": segment.get("stress_word") or "",
+                    "stress_occurrence": int(segment.get("stress_occurrence") or 1),
+                    "stress_level": segment.get("stress_level") or "none",
+                    "generation_mode": "advanced" if advanced_generation else "standard",
+                    "stress_validator": "text_proportional_proxy_v1",
                 }
                 cache_key = hashlib.sha256(
                     json.dumps(cache_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest()
                 cache_path = cache_dir / f"{cache_key}.wav" if cache_dir else None
                 cache_hit = bool(cache_path and cache_path.is_file())
+                candidate_results: list[dict[str, Any]] = []
                 if cache_hit and segment["order"] not in forced_orders:
                     shutil.copy2(cache_path, output_path)
                     result = str(output_path)
@@ -2734,21 +2875,62 @@ def render_directed_audio(
                 else:
                     if cache_only:
                         raise DirectorError(f"第 {segment['order']} 条分句缺少可串接的已生成片断，请先单独生成该分句。")
-                    result = model.infer(
-                        spk_audio_prompt=str(catalog[role["voice_id"]]),
-                        text=effective_text,
-                        lang=segment["language"],
-                        output_path=str(output_path),
-                        emo_audio_prompt=None,
-                        emo_alpha=float(segment["intensity"]),
-                        emo_vector=None,
-                        use_emo_text=True,
-                        emo_text=emotion_prompt,
-                        use_random=False,
-                        duration_factor=duration_factor,
-                        max_text_tokens_per_segment=120,
-                        verbose=False,
-                    )
+                    requested_candidates = 3 if advanced_generation else 1
+                    max_attempts = 9 if advanced_generation else 1
+                    generated_paths: list[tuple[Path, dict[str, Any]]] = []
+                    for candidate_attempt in range(max_attempts):
+                        candidate_path = output_path if max_attempts == 1 else output_path.with_name(f"{output_path.stem}-candidate-{candidate_attempt + 1}.wav")
+                        result = model.infer(
+                            spk_audio_prompt=str(catalog[role["voice_id"]]),
+                            text=effective_text,
+                            lang=segment["language"],
+                            output_path=str(candidate_path),
+                            emo_audio_prompt=None,
+                            emo_alpha=float(segment["intensity"]),
+                            emo_vector=None,
+                            use_emo_text=True,
+                            emo_text=emotion_prompt,
+                            use_random=advanced_generation,
+                            duration_factor=duration_factor,
+                            max_text_tokens_per_segment=120,
+                            verbose=False,
+                        )
+                        if not result or not candidate_path.is_file():
+                            continue
+                        metrics = analyze_segment_candidate(
+                            candidate_path,
+                            effective_text,
+                            str(segment.get("stress_word") or ""),
+                            int(segment.get("stress_occurrence") or 1),
+                        )
+                        generated_paths.append((candidate_path, metrics))
+                        accepted_paths = [
+                            item for item in generated_paths
+                            if item[1]["quality_passed"]
+                            and (not segment.get("stress_word") or item[1]["stress_verified"])
+                        ]
+                        if len(accepted_paths) >= requested_candidates:
+                            break
+                    valid_candidates = [item for item in generated_paths if item[1]["quality_passed"]] if advanced_generation else generated_paths
+                    if len(valid_candidates) < requested_candidates:
+                        raise DirectorError(f"第 {segment['order']} 条分句仅生成 {len(valid_candidates)} 个通过基础音频质量验收的候选，需要 {requested_candidates} 个。")
+                    selected_candidates = sorted(valid_candidates, key=lambda item: float(item[1]["score"]), reverse=True)[:requested_candidates]
+                    candidate_store = Path(project_process_dir) / "segment-candidates" / cache_key if project_process_dir else None
+                    if candidate_store:
+                        candidate_store.mkdir(parents=True, exist_ok=True)
+                    for rank, (candidate_path, metrics) in enumerate(selected_candidates, start=1):
+                        candidate_id = hashlib.sha256(f"{cache_key}:{candidate_path.name}:{time.time_ns()}".encode("utf-8")).hexdigest()[:16]
+                        if candidate_store:
+                            shutil.copy2(candidate_path, candidate_store / f"{candidate_id}.wav")
+                        candidate_results.append({
+                            "candidate_id": candidate_id,
+                            "rank": rank,
+                            "selected": rank == 1,
+                            **metrics,
+                        })
+                    if selected_candidates[0][0].resolve() != output_path.resolve():
+                        shutil.copy2(selected_candidates[0][0], output_path)
+                    result = str(output_path)
                 if not result or not output_path.is_file():
                     raise DirectorError(f"第 {index} 条语音没有生成有效 WAV。")
                 if cache_path and (not cache_path.is_file() or segment["order"] in forced_orders):
@@ -2763,6 +2945,12 @@ def render_directed_audio(
                         "emotion_text": emotion_prompt,
                         "emotion_weight": float(segment["intensity"]),
                         "duration_factor": duration_factor,
+                        "stress_word": segment.get("stress_word") or "",
+                        "stress_occurrence": int(segment.get("stress_occurrence") or 1),
+                        "stress_level": segment.get("stress_level") or "none",
+                        "generation_mode": "advanced" if advanced_generation else "standard",
+                        "candidate_results": candidate_results,
+                        "selected_candidate_id": candidate_results[0]["candidate_id"] if candidate_results else "",
                         "cache_key": cache_key,
                         "cache_reused": cache_hit and segment["order"] not in forced_orders,
                         "forced_regeneration": segment["order"] in forced_orders,

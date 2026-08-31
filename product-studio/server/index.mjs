@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -247,11 +247,19 @@ function normalizeProject(payload) {
     const updated = [...row];
     if (updated.length < 13) updated.push('auto');
     if (updated.length < 14) updated.push('');
+    if (updated.length < 15) updated.push('');
+    if (updated.length < 16) updated.push(1);
+    if (updated.length < 17) updated.push('none');
+    if (updated.length < 18) updated.push('standard');
     updated[7] = closestPreset(updated[7], presets.attitudes, [[/沉稳/, '沉稳叙述'], [/温和|亲切/, '温和交流'], [/紧张|警觉/, '紧张警觉'], [/克制|低沉/, '克制低沉'], [/悲伤|压抑/, '悲伤压抑'], [/喜悦|明快/, '喜悦明快'], [/愤怒|强烈/, '愤怒强烈'], [/恐惧|迟疑/, '恐惧迟疑'], [/威严|命令/, '威严命令']], '中性叙述');
     updated[8] = closestPreset(updated[8], presets.emotions, [[/happy|joy|喜/, '喜悦'], [/angry|anger|愤/, '愤怒'], [/sad|悲/, '悲伤'], [/fear|恐/, '恐惧'], [/disgust|厌/, '厌恶'], [/depress|low|低落/, '低落'], [/surprise|惊/, '惊喜'], [/calm|neutral|自然|平静/, '平静']], '平静');
     updated[10] = closestPreset(updated[10], presets.paces, [[/舒缓|慢/, '舒缓'], [/紧凑|快/, '紧凑'], [/轻快/, '轻快'], [/克制/, '克制'], [/低声/, '低声'], [/强调|重音/, '强调']], '自然');
     updated[12] = presets.emotionDirections.some(item => item.value === updated[12]) ? updated[12] : 'auto';
     updated[13] = String(updated[13] || '').trim().slice(0, 1000);
+    updated[14] = String(updated[14] || '').trim().slice(0, 80);
+    updated[15] = Math.max(1, Math.round(Number(updated[15]) || 1));
+    updated[16] = ['none', 'medium', 'strong'].includes(updated[16]) ? updated[16] : (updated[14] ? 'strong' : 'none');
+    updated[17] = updated[17] === 'advanced' ? 'advanced' : 'standard';
     return updated;
   }) : [];
   copy.chapters = splitChapters(copy.source_text);
@@ -289,6 +297,10 @@ function validateProject(payload, id) {
     if (!Array.isArray(row) || row.length < 12) throw new Error(`分句表第 ${index + 1} 行字段不足`);
     if (row.length < 13) row.push('auto');
     if (row.length < 14) row.push('');
+    if (row.length < 15) row.push('');
+    if (row.length < 16) row.push(1);
+    if (row.length < 17) row.push('none');
+    if (row.length < 18) row.push('standard');
     if (!roleIds.has(row[2])) throw new Error(`分句 ${row[0]} 引用了未知角色`);
     if (!presets.languages.includes(row[4])) throw new Error(`分句 ${row[0]} 的语言无效`);
     if (!presets.attitudes.includes(row[7])) throw new Error(`分句 ${row[0]} 的态度预设无效`);
@@ -299,6 +311,20 @@ function validateProject(payload, id) {
     row[13] = String(row[13] || '').trim();
     if (row[12] === 'custom' && !row[13]) throw new Error(`分句 ${row[0]} 选择自定义情绪演绎后必须填写细化描述`);
     if (row[13].length > 1000) throw new Error(`分句 ${row[0]} 的情绪细化描述不能超过 1000 个字符`);
+    row[14] = String(row[14] || '').trim();
+    row[15] = Math.max(1, Math.round(Number(row[15]) || 1));
+    if (row[14].length > 80) throw new Error(`分句 ${row[0]} 的重音文字不能超过 80 个字符`);
+    if (!['none', 'medium', 'strong'].includes(row[16])) throw new Error(`分句 ${row[0]} 的重音强度无效`);
+    if (!['standard', 'advanced'].includes(row[17])) throw new Error(`分句 ${row[0]} 的生成方式无效`);
+    if (row[14]) {
+      const synthesisText = String(row[6] || '');
+      const matches = synthesisText.split(row[14]).length - 1;
+      if (matches < row[15]) throw new Error(`分句 ${row[0]} 的合成文本中找不到第 ${row[15]} 个重音文字“${row[14]}”`);
+      if (row[16] === 'none') throw new Error(`分句 ${row[0]} 已填写重音文字，请选择重音强度`);
+    } else {
+      row[15] = 1;
+      row[16] = 'none';
+    }
   });
   if (!['novel', 'news', 'story'].includes(payload.content_type)) throw new Error('作品体裁无效');
   if (!Array.isArray(payload.pronunciations)) throw new Error('全篇纠音表格式无效');
@@ -442,6 +468,7 @@ async function invalidateDirectorArtifacts(projectDir, current, next, changes) {
   for (const cacheKey of invalidatedCacheKeys) {
     if (/^[a-f0-9]{64}$/.test(cacheKey)) {
       try { await unlink(path.join(projectDir, 'process', 'segment-cache', `${cacheKey}.wav`)); } catch {}
+      try { await rm(path.join(projectDir, 'process', 'segment-candidates', cacheKey), { recursive: true, force: true }); } catch {}
     }
   }
   const staleAt = new Date().toISOString();
@@ -1205,13 +1232,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   app.get('/api/projects/:id/latest-render', async (request) => {
     const id = safeProjectId(request.params.id);
     const name = await latestRender(path.join(projectRoot, id));
-    if (!name) return { available: false };
-    const base = `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}`;
+    const base = name ? `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}` : '';
     let fragments = [];
     let captions = [];
     let stale;
     try { stale = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, '.stale.json'), 'utf8')); } catch {}
-    try {
+    if (name) try {
       const manifest = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, 'director-manifest.json'), 'utf8'));
       const invalidated = new Set(stale?.invalidated_cache_keys || []);
       const manifestSegments = manifest.segments || [];
@@ -1231,16 +1257,25 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     } catch {}
     try {
       const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
-      const draftFragments = Object.entries(draft.fragments || {}).map(([cacheKey, item]) => ({
+      const latestDraftByOrder = new Map();
+      for (const [cacheKey, item] of Object.entries(draft.fragments || {})) latestDraftByOrder.set(Number(item.order), { cacheKey, item });
+      const draftFragments = [...latestDraftByOrder.values()].map(({ cacheKey, item }) => ({
         order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
         synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: false, forcedRegeneration: true,
         audio: `/api/projects/${encodeURIComponent(id)}/cached-fragments/${cacheKey}`,
+        stressWord: String(item.stress_word || ''), stressLevel: String(item.stress_level || 'none'), selectedCandidateId: String(item.selected_candidate_id || ''),
+        candidates: (item.candidate_results || []).map(candidate => ({
+          candidateId: String(candidate.candidate_id), rank: Number(candidate.rank), selected: Boolean(candidate.selected),
+          score: Number(candidate.score), stressDb: Number(candidate.stress_db), qualityPassed: Boolean(candidate.quality_passed),
+          stressVerified: Boolean(candidate.stress_verified), alignmentMethod: String(candidate.alignment_method || ''),
+          audio: `/api/projects/${encodeURIComponent(id)}/cached-fragment-candidates/${cacheKey}/${encodeURIComponent(String(candidate.candidate_id))}`,
+        })),
       }));
-      const draftKeys = new Set(draftFragments.map(item => `${item.sourceText}\u0000${item.synthesisText}`));
-      fragments = [...fragments.filter(item => !draftKeys.has(`${item.sourceText}\u0000${item.synthesisText}`)), ...draftFragments];
+      const draftOrders = new Set(draftFragments.map(item => item.order));
+      fragments = [...fragments.filter(item => !draftOrders.has(item.order)), ...draftFragments];
     } catch {}
-    return { available: true, renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest`, fragments, captions, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
+    return { available: Boolean(name), ...(name ? { renderId: name, audio: `${base}/audio`, mp3: `${base}/mp3`, package: `${base}/package`, manifest: `${base}/manifest` } : {}), fragments, captions, stale: Boolean(stale?.stale), staleAt: stale?.stale_at, staleReasons: stale?.reasons || [] };
   });
   app.delete('/api/projects/:id/renders/:renderId', async (request, reply) => {
     try {
@@ -1439,7 +1474,30 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!Number.isSafeInteger(order) || order < 1) throw new Error('分句序号无效');
       const project = JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8'));
       if (!project.segments?.some(row => Number(row[0]) === order)) throw new Error(`分句 ${order} 不存在`);
-      return reply.code(202).send(await startJob(id, 'render', { fragment_only_orders: [order] }));
+      const segment = project.segments.find(row => Number(row[0]) === order);
+      const advanced = request.body?.advanced === true || segment?.[17] === 'advanced';
+      return reply.code(202).send(await startJob(id, 'render', { fragment_only_orders: [order], ...(advanced ? { advanced_segment_orders: [order] } : {}) }));
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/segments/:order/candidates/:candidateId/select', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const order = Number(request.params.order);
+      const candidateId = String(request.params.candidateId || '');
+      if (!Number.isSafeInteger(order) || order < 1 || !/^[a-f0-9]{16}$/.test(candidateId)) throw new Error('分句候选标识无效');
+      const processDir = path.join(projectRoot, id, 'process');
+      const indexPath = path.join(processDir, 'segment-fragments.json');
+      const index = JSON.parse(await readFile(indexPath, 'utf8'));
+      const entry = Object.entries(index.fragments || {}).find(([, item]) => Number(item.order) === order && (item.candidate_results || []).some(candidate => candidate.candidate_id === candidateId));
+      if (!entry) throw new Error(`分句 ${order} 的候选不存在或已经过期`);
+      const [cacheKey, fragment] = entry;
+      await copyFile(path.join(processDir, 'segment-candidates', cacheKey, `${candidateId}.wav`), path.join(processDir, 'segment-cache', `${cacheKey}.wav`));
+      fragment.selected_candidate_id = candidateId;
+      fragment.candidate_results = fragment.candidate_results.map(candidate => ({ ...candidate, selected: candidate.candidate_id === candidateId }));
+      const temporary = `${indexPath}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+      await rename(temporary, indexPath);
+      return { selected: true, order, candidateId };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/voices', async (request, reply) => {
@@ -1568,6 +1626,18 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       reply.type('audio/wav').header('Content-Length', info.size).header('Accept-Ranges', 'bytes');
       return reply.send(createReadStream(file));
     } catch { return reply.code(404).send({ error: '工程片断缓存不存在' }); }
+  });
+  app.get('/api/projects/:id/cached-fragment-candidates/:cacheKey/:candidateId', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const cacheKey = String(request.params.cacheKey || '');
+      const candidateId = String(request.params.candidateId || '');
+      if (!/^[a-f0-9]{64}$/.test(cacheKey) || !/^[a-f0-9]{16}$/.test(candidateId)) throw new Error('分句候选标识无效');
+      const file = path.join(projectRoot, id, 'process', 'segment-candidates', cacheKey, `${candidateId}.wav`);
+      const info = await stat(file);
+      reply.type('audio/wav').header('Content-Length', info.size).header('Accept-Ranges', 'bytes');
+      return reply.send(createReadStream(file));
+    } catch { return reply.code(404).send({ error: '分句候选音频不存在' }); }
   });
   app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: '接口不存在' }) : reply.sendFile('index.html'));
   await scheduleQueue();

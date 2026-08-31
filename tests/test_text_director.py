@@ -21,6 +21,7 @@ from text_director import (
     RHYTHM_PRESETS,
     SEGMENT_HEADERS,
     VOICE_STYLE_PRESETS,
+    analyze_segment_candidate,
     concatenate_wav_segments,
     apply_generated_voices,
     build_voice_design_jobs,
@@ -498,6 +499,91 @@ def _write_wav(path: Path, frame_count=2205):
         output.writeframes(b"\x01\x00" * frame_count)
 
 
+def test_segment_candidate_validator_ranks_an_emphasized_target_with_auditable_proxy(tmp_path):
+    path = tmp_path / "stress.wav"
+    sample_rate = 22050
+    text = "一个东西引起了他的注意"
+    target_center = int(sample_rate * ((text.index("他") + 0.5) / len(text)))
+    samples = []
+    for index in range(sample_rate):
+        amplitude = 12000 if abs(index - target_center) < 1100 else 2500
+        samples.append(amplitude if index % 20 < 10 else -amplitude)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(b"".join(int(value).to_bytes(2, "little", signed=True) for value in samples))
+
+    metrics = analyze_segment_candidate(path, text, "他", 1)
+
+    assert metrics["quality_passed"] is True
+    assert metrics["stress_verified"] is True
+    assert metrics["stress_db"] > 1.5
+    assert metrics["alignment_method"] == "text_proportional_proxy_v1"
+
+
+def test_advanced_stress_generation_keeps_drawing_until_three_proxy_verified_candidates(tmp_path, monkeypatch):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def infer(self, **kwargs):
+            self.calls.append(kwargs)
+            _write_wav(Path(kwargs["output_path"]), 2205)
+            return kwargs["output_path"]
+
+    checks = []
+
+    def fake_candidate_check(path, text, stress_word, stress_occurrence):
+        checks.append((Path(path).name, text, stress_word, stress_occurrence))
+        verified = len(checks) >= 4
+        return {
+            "quality_passed": True,
+            "score": 20.0 if verified else 8.0,
+            "stress_db": 3.0 if verified else -6.0,
+            "stress_verified": verified,
+            "alignment_method": "text_proportional_proxy_v1",
+            "duration_seconds": 0.1,
+            "rms": 0.1,
+            "peak": 0.2,
+            "clipping_ratio": 0.0,
+            "silence_ratio": 0.0,
+            "target_rms": 0.15,
+            "context_rms": 0.1,
+        }
+
+    monkeypatch.setattr("text_director.analyze_segment_candidate", fake_candidate_check)
+    model = FakeModel()
+    _, _, manifest, _ = render_directed_audio(
+        document={"title": "高级重音抽卡", "content_type": "novel"},
+        role_table=[_role_row()],
+        segment_table=[[
+            1, "正文", "narrator", "旁白", "ZH", "一个东西引起了他的注意。", "一个东西引起了他的注意。",
+            "紧张警觉", "平静", 0.85, "强调", 100, "urgent_question", "急切追问", "他", 1, "strong", "advanced",
+        ]],
+        uploaded_files=None,
+        model=model,
+        model_lock=threading.Lock(),
+        output_root=tmp_path / "outputs",
+        project_process_dir=tmp_path / "process",
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        advanced_segment_orders=[1],
+    )
+
+    payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    candidates = payload["segments"][0]["candidate_results"]
+    assert len(model.calls) == 6
+    assert len(checks) == 6
+    assert len(candidates) == 3
+    assert all(item["quality_passed"] and item["stress_verified"] for item in candidates)
+    assert all(call["use_random"] is True for call in model.calls)
+    assert 'exact text "他"' in model.calls[0]["emo_text"]
+
+
 def _role_row(role_id="narrator", name="旁白", kind="narrator", voice_id="voice_05.wav", rhythm="沉稳舒缓"):
     return [role_id, name, kind, "测试角色", "中性清晰", voice_id, rhythm, "否"]
 
@@ -971,7 +1057,7 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert segments[1]["attitude_preset"] == "中性叙述"
     assert segments[1]["emotion_label"] == "平静"
     assert segments[1]["emotion_direction"] == "auto"
-    assert segment_rows[1][12:] == ["auto", ""]
+    assert segment_rows[1][12:] == ["auto", "", "", 1, "none", "standard"]
 
 
 def test_legacy_natural_language_directing_values_migrate_to_presets():
@@ -981,7 +1067,7 @@ def test_legacy_natural_language_directing_values_migrate_to_presets():
     assert migrate_attitude_preset("平静叙述") == "中性叙述"
     assert migrate_emotion_label("melancholic") == "低落"
     migrated = migrate_segment_rows([[1, "正文", "narrator", "旁白", "ZH", "原文", "原文", "中性叙述", "平静", 0.5, "自然", 300]])
-    assert migrated[0][12:] == ["auto", ""]
+    assert migrated[0][12:] == ["auto", "", "", 1, "none", "standard"]
     assert EMOTION_DIRECTION_PRESETS["sly_smile"][2] == 0.8
 
 

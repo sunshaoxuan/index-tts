@@ -1,5 +1,5 @@
 export type RoleRow = [string, string, string, string, string, string, string, string];
-export type SegmentRow = [number, string, string, string, string, string, string, string, string, number, string, number, string?, string?];
+export type SegmentRow = [number, string, string, string, string, string, string, string, string, number, string, number, string?, string?, string?, number?, ('none' | 'medium' | 'strong')?, ('standard' | 'advanced')?];
 
 export type CharacterGender = 'female' | 'male' | 'unspecified';
 export type VoiceGenerationPreset = 'stable' | 'balanced' | 'explore' | 'custom';

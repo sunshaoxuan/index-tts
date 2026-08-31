@@ -164,6 +164,7 @@ def execute_render_request(request: dict[str, Any], result_path: Path, status_pa
         project_process_dir=store.project_dir(project["project_id"]) / "process",
         force_segment_orders=request.get("force_segment_orders") or [],
         fragment_only_orders=request.get("fragment_only_orders") or [],
+        advanced_segment_orders=request.get("advanced_segment_orders") or [],
         cache_only=cache_only,
         demo_dir=root / "examples",
         demo_voices={path.name: path.name for path in (root / "examples").glob("voice_*.wav")},
@@ -174,7 +175,8 @@ def execute_render_request(request: dict[str, Any], result_path: Path, status_pa
     write_json(result_path, result)
     if request.get("fragment_only_orders"):
         reuse_message = "，已复用驻留模型" if model_reused else "，合成模型已保持驻留"
-        complete_message = f"分句 {request['fragment_only_orders'][0]} 已重新生成，其他分句保持不变{reuse_message}"
+        candidate_message = "，已生成并自主验收三版候选" if request.get("advanced_segment_orders") else ""
+        complete_message = f"分句 {request['fragment_only_orders'][0]} 已重新生成{candidate_message}，其他分句保持不变{reuse_message}"
     else:
         complete_message = "已使用全部已有片断串接完整音频" if cache_only else "完整音频与分轨交付已经生成"
     write_json(status_path, {"phase": "complete", "fraction": 1.0, "message": complete_message})

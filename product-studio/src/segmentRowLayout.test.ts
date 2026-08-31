@@ -30,6 +30,25 @@ test('segment rows expose explicit IndexTTS emotion direction detail and weight 
   assert.match(app, /fragment \? '重新生成本分句' : '生成本分句'/);
 });
 
+test('segment rows expose stress targeting, advanced three-candidate generation, and auditable selection', () => {
+  assert.match(app, />重音文字</);
+  assert.match(app, />第几次出现</);
+  assert.match(app, />重音强度</);
+  assert.match(app, /高级三版加自主验收/);
+  assert.match(app, /重音采用提示词概率增强/);
+  assert.match(app, /selectSegmentCandidate/);
+  assert.match(styles, /\.segment-candidate-grid/);
+});
+
+test('mobile layout suppresses nested segment scrolling and stabilizes transient messages', () => {
+  assert.match(styles, /scrollbar-gutter: stable/);
+  assert.match(styles, /\.ant-message \{[^}]*position|\.ant-message \{/s);
+  assert.match(styles, /\.segment-table \.ant-table-body \{ max-height: none !important; overflow-y: visible !important;/);
+  assert.match(styles, /touch-action: pan-y pinch-zoom/);
+  assert.doesNotMatch(styles, /html\.select-popup-open/);
+  assert.match(app, /window\.matchMedia\('\(max-width: 800px\)'\)\.matches/);
+});
+
 test('adjacent segment records use strong alternating surfaces and an inset secondary band', () => {
   assert.match(styles, /\.studio-table \.ant-table-cell \{[^}]*background: rgba\(16, 9, 4, \.46\)/s);
   assert.match(styles, /tr:nth-child\(even\) > \.ant-table-cell \{ background: rgba\(80, 45, 24, \.5\)/);

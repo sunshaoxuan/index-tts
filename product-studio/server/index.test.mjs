@@ -926,11 +926,12 @@ test('starts strict assembly and one forced segment regeneration with worker opt
   child.emit('close', 0);
   await new Promise(resolve => setTimeout(resolve, 20));
 
-  const regenerated = await app.inject({ method: 'POST', url: '/api/projects/demo/segments/1/regenerate', payload: {} });
+  const regenerated = await app.inject({ method: 'POST', url: '/api/projects/demo/segments/1/regenerate', payload: { advanced: true } });
   assert.equal(regenerated.statusCode, 202);
   await waitForLaunches(launches, 2);
   input = JSON.parse(await readFile(launches[1].args[2], 'utf8'));
   assert.deepEqual(input.fragment_only_orders, [1]);
+  assert.deepEqual(input.advanced_segment_orders, [1]);
   await writeFile(path.join(root, 'runtime-output', 'product-jobs', regenerated.json().jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
   child.emit('close', 0);
   await app.close();
@@ -949,7 +950,39 @@ test('migrates legacy natural language controls to supported presets', async () 
   assert.equal(migrated.segments[0][7], '温和交流');
   assert.equal(migrated.segments[0][8], '平静');
   assert.equal(migrated.segments[0][10], '舒缓');
-  assert.deepEqual(migrated.segments[0].slice(12), ['auto', '']);
+  assert.deepEqual(migrated.segments[0].slice(12), ['auto', '', '', 1, 'none', 'standard']);
+  await app.close();
+});
+
+test('returns three auditable segment candidates and adopts the user selection', async () => {
+  const { root } = await fixture();
+  const processDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'process');
+  const cacheKey = 'a'.repeat(64);
+  const candidates = ['1'.repeat(16), '2'.repeat(16), '3'.repeat(16)];
+  const olderKey = 'b'.repeat(64);
+  await mkdir(path.join(processDir, 'segment-cache'), { recursive: true });
+  await mkdir(path.join(processDir, 'segment-candidates', cacheKey), { recursive: true });
+  await writeFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), Buffer.from('first'));
+  for (const [index, candidateId] of candidates.entries()) await writeFile(path.join(processDir, 'segment-candidates', cacheKey, `${candidateId}.wav`), Buffer.from(`candidate-${index + 1}`));
+  await writeFile(path.join(processDir, 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [olderKey]: {
+    order: 1, speaker_name: '旁白', source_text: '旧原文', text: '旧原文', effective_text: '旧原文', applied_pronunciations: [],
+  }, [cacheKey]: {
+    order: 1, speaker_name: '旁白', source_text: '原文', text: '原文', effective_text: '原文', applied_pronunciations: [], stress_word: '原', stress_level: 'strong', selected_candidate_id: candidates[0],
+    candidate_results: candidates.map((candidate_id, index) => ({ candidate_id, rank: index + 1, selected: index === 0, score: 20 - index, stress_db: 3 - index, quality_passed: true, stress_verified: index === 0, alignment_method: 'text_proportional_proxy_v1' })),
+  } } }));
+  const app = await buildApp({ repoRoot: root });
+
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.available, false);
+  assert.equal(latest.fragments.length, 1);
+  assert.equal(latest.fragments[0].sourceText, '原文');
+  assert.equal(latest.fragments[0].candidates.length, 3);
+  const selected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidates[1]}/select`, payload: {} });
+  assert.equal(selected.statusCode, 200);
+  assert.equal((await readFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), 'utf8')), 'candidate-2');
+  const index = JSON.parse(await readFile(path.join(processDir, 'segment-fragments.json'), 'utf8'));
+  assert.equal(index.fragments[cacheKey].selected_candidate_id, candidates[1]);
+  assert.deepEqual(index.fragments[cacheKey].candidate_results.map(item => item.selected), [false, true, false]);
   await app.close();
 });
 

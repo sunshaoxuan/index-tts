@@ -2,7 +2,7 @@
 
 ## Docker 运行边界
 
-Linux GPU 镜像内置 Product Studio、Node.js 24、IndexTTS Python 环境、VoiceDesign 独立 Python 环境和 FFmpeg。`checkpoints`、`outputs`、`runtime-output`、`artifacts` 通过 Compose 从宿主机挂载，分别承担模型、用户工程、运行配置与正式成果物持久化。容器内的 Ollama 请求通过 `host.docker.internal` 到达宿主机服务。容器重启时会把中断任务记为明确错误，并清理只属于旧进程命名空间的 daemon 控制状态。
+Linux GPU 镜像内置 Product Studio、Node.js 24、IndexTTS Python 环境、VoiceDesign 独立 Python 环境和 FFmpeg。`checkpoints`、`outputs`、`runtime-output`、`artifacts` 通过 Compose 从宿主机挂载，分别承担模型、用户工程、运行配置与正式成果物持久化。容器内的 Ollama 请求通过 `host.docker.internal` 到达宿主机服务。应用层镜像构建会把 Docker 启动脚本规范化为 LF 行尾，再赋予执行权限，避免 Windows 检出产生的 CRLF 破坏 Linux shebang。容器重启时会把中断任务记为明确错误，并清理只属于旧进程命名空间的 daemon 控制状态。
 
 产品版本由根 `VERSION` 管理，Node 启动时读取并通过 `/api/health` 返回，React 品牌区显示同一值。`product-studio/package.json`、README、CHANGELOG 和 Git 标签在正式发布时使用同一版本。IndexTTS 推理引擎版本继续独立管理。
 
@@ -99,7 +99,7 @@ Workspace、Voices、Director、Delivery 菜单控制 Ant Design Tabs 的 `activ
 
 角色表通过 `/api/voices/:voiceId/audio` 提供行内音色试听。`voice_*.wav` 解析到 `examples`，`voice-*` 与 `legacy-*` 解析到永久音色库。接口限制文件名模式并支持 `Accept-Ranges`、206 和 `Content-Range`，用于拖动定位。
 
-Ant Design Select 的弹层和虚拟列表使用 `overscroll-behavior-y: contain`。Ant Design 6 的列表容器采用 `overflow: hidden` 和自定义 wheel 处理，页面同时观察弹层生命周期：菜单打开时为 `html` 添加 `select-popup-open` 并暂停底层页面滚动，关闭时立即恢复。边界 wheel 处理继续作为兼容保护。
+Ant Design Select 的弹层和虚拟列表使用 `overscroll-behavior-y: contain`。Ant Design 6 的列表容器采用 `overflow: hidden` 和自定义 wheel 处理。窄屏页面不再通过弹层生命周期锁定根页面，也不启用桌面分句表的 wheel containment，避免打开下拉框时视口发生纵向跳动。桌面边界 wheel 处理继续作为兼容保护。
 
 分句表以分句序号作为稳定行键和所有编辑操作的定位依据。分页回调中的页内相对索引不参与工程数组更新。角色列提交时在同一次状态变更中更新角色 ID 与角色名称，其余可编辑导演字段复用相同稳定定位流程。
 
@@ -128,6 +128,8 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。
 
 文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。逐块分句请求复用全文注册表，每条分句保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
+
+分句数组第 15 至 18 列保存重音文字、出现序号、重音强度和生成方式。渲染器把重音目标追加到 `emo_text`，并将这些字段、生成方式和验收算法版本加入缓存签名。高级生成最多尝试九次；设置重音目标时，只有三个基础质量与重音代理同时达标的候选才能提前结束抽取，预算耗尽后从基础质量合格项中按文本比例声学代理评分保留三版。代理验收比较目标估计区间与相邻区间的 RMS 能量，保存 `stress_db`、质量指标、排序和算法版本。该指标用于受约束抽卡排序，产品界面始终披露其概率性质。分句草稿索引存在同一序号的多个历史缓存时，最新写入项覆盖旧项进入页面，避免重复显示同一分句。
 
 角色删除在前端以纯函数同步处理工程中的四组活动引用。角色表和 `character_assets` 移除目标 ID；分句表及 `document.segments` 的目标引用改为 narrator；`document.characters` 和 `director_memory` 移除目标角色；旁白禁止删除。历史导演操作和永久音色库保持原状。用户保存工程后，现有 PUT 校验、导演历史和成果失效链继续生效。
 

@@ -509,18 +509,9 @@ function Studio() {
       if ((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) event.preventDefault();
       event.stopPropagation();
     };
-    const syncSelectPageLock = () => {
-      const open = Boolean(document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)'));
-      document.documentElement.classList.toggle('select-popup-open', open);
-    };
-    const observer = new MutationObserver(syncSelectPageLock);
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     document.addEventListener('wheel', containSelectWheel, { passive: false });
-    syncSelectPageLock();
     return () => {
       document.removeEventListener('wheel', containSelectWheel);
-      observer.disconnect();
-      document.documentElement.classList.remove('select-popup-open');
     };
   }, []);
 
@@ -528,7 +519,7 @@ function Studio() {
     const containSegmentTableWheel = (event: WheelEvent) => {
       const target = event.target instanceof Element ? event.target : undefined;
       const scroller = target?.closest<HTMLElement>('.segment-table .ant-table-body');
-      if (!scroller) return;
+      if (!scroller || window.matchMedia('(max-width: 800px)').matches) return;
       const axis = dominantWheelAxis(event.deltaX, event.deltaY);
       const delta = axis === 'horizontal' ? event.deltaX : event.deltaY;
       const position = axis === 'horizontal' ? scroller.scrollLeft : scroller.scrollTop;
@@ -852,14 +843,24 @@ function Studio() {
         if (!(await save())) return;
         setSegmentRegeneration(submitSegmentRegeneration(order));
       }
-      const started = await api.regenerateSegment(requestProjectId, order);
-      setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
+      const advanced = project.segments.find(row => row[0] === order)?.[17] === 'advanced';
+      const started = await api.regenerateSegment(requestProjectId, order, advanced);
+      setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: advanced ? `分句 ${order} 已进入高级三版生成与自主验收队列` : `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
     } catch (error) {
       message.error(`分句 ${order} 提交失败：${(error as Error).message}。按钮已经恢复，可以重试`);
     } finally {
       segmentRegenerationOrderRef.current = undefined;
       setSegmentRegeneration({ phase: 'idle' });
     }
+  };
+
+  const selectSegmentCandidate = async (order: number, candidateId: string) => {
+    if (!project || jobRunning) return;
+    try {
+      await api.selectSegmentCandidate(project.project_id, order, candidateId);
+      setRender(await api.latestRender(project.project_id));
+      message.success(`分句 ${order} 已采用所选候选`);
+    } catch (error) { message.error((error as Error).message); }
   };
 
   const assembleExistingFragments = () => {
@@ -925,7 +926,8 @@ function Studio() {
         const fragment = findMatchingFragment(render.fragments, row);
         const regenerationPending = segmentRegeneration.phase !== 'idle' && segmentRegeneration.order === row[0];
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
-        const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim()].filter(Boolean).join('. ');
+        const stressWord = String(row[14] || '').trim();
+        const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim(), stressWord ? `重点突出第 ${row[15] || 1} 个“${stressWord}”` : ''].filter(Boolean).join('. ');
         return <div className="segment-row-layout">
           <div className="segment-row-primary">
             <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
@@ -940,12 +942,17 @@ function Studio() {
             <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
             <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
             <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成本分句' : '生成本分句'}</Button>{regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}</div></div>
+            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text>{Boolean(fragment.candidates && fragment.candidates.length > 1) && <div className="segment-candidate-grid">{fragment.candidates?.map(candidate => <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} disabled={jobRunning || candidate.selected} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : '采用此版'}</Button></div>)}</div>}</> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成本分句' : '生成本分句'}</Button>{regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}</div></div>
           </div>
           <div className="segment-row-emotion">
             <label className="segment-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
             <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={jobRunning} maxLength={1000} autoSize={{ minRows: 2, maxRows: 4 }} value={row[13] || ''} placeholder="可补充中英文描述，例如：笑意压在句尾，像已经掌握对方秘密" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
             <label className="segment-field"><span>情绪权重</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
+            <label className="segment-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
+            <label className="segment-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
+            <label className="segment-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
+            <label className="segment-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
+            {stressWord && <div className="segment-stress-notice"><Text>重音采用提示词概率增强。高级模式会抽取候选并按声学代理评分排序，当前引擎仍不提供词级硬控制。</Text></div>}
             <div className="segment-emotion-preview"><span>传入 IndexTTS 的显式情绪描述</span><Text>{explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}</Text></div>
           </div>
         </div>;
