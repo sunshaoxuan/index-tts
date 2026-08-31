@@ -2,12 +2,12 @@ name: indextts25
 
 services:
   studio:
-    image: indextts25-product-studio:1.1.1
+    image: indextts25-product-studio:1.1.39
     build:
       context: .
       dockerfile: Dockerfile.app-update
       args:
-        BASE_IMAGE: indextts25-product-studio:1.1.0
+        BASE_IMAGE: indextts25-product-studio:1.1.38
         APP_REVISION: ${INDEXTTS_APP_REVISION:-working-tree}
     container_name: indextts25-product-studio
     restart: unless-stopped
@@ -23,19 +23,16 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - type: bind
-        source: ./checkpoints
+        source: C:/workspace/IndexTTS-2.5/models/checkpoints
         target: /app/checkpoints
-      - type: volume
-        source: qwen-voice-design-model
-        target: /app/checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign
       - type: bind
-        source: ./outputs
+        source: D:/workspace/IndexTTS-2.5/outputs
         target: /app/outputs
       - type: bind
-        source: ./runtime-output
+        source: D:/workspace/IndexTTS-2.5/runtime-output
         target: /app/runtime-output
       - type: bind
-        source: ./artifacts
+        source: D:/workspace/IndexTTS-2.5/artifacts
         target: /app/artifacts
     shm_size: "8gb"
     deploy:
@@ -45,8 +42,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-volumes:
-  qwen-voice-design-model:
-    name: indextts25-qwen-voice-design-model
-    external: true
