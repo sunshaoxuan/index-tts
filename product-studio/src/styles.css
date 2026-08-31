@@ -478,7 +478,7 @@ body * { box-shadow: none !important; }
 .studio-table { margin-top: 18px; overflow: hidden; border: 1px dashed var(--line-medium); border-radius: 12px; background: var(--surface-inset); }
 .ant-table, .ant-table-container, .ant-table-content, .ant-table-body { background: transparent !important; }
 .segment-table .ant-table-container, .segment-table .ant-table-body { overscroll-behavior: contain; }
-.segment-table .ant-table-body { overflow-x: hidden !important; }
+.segment-table .ant-table-body { max-height: var(--segment-table-body-height, 560px) !important; overflow-x: hidden !important; }
 .segment-table .ant-table-cell { min-width: 0; padding: 16px !important; }
 .segment-table .ant-table-selection-column { width: 44px !important; vertical-align: top; }
 .segment-row-layout { min-width: 0; display: grid; gap: 14px; }

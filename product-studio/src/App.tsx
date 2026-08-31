@@ -26,6 +26,7 @@ import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
 import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
 import { beginSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
+import { SEGMENT_TABLE_MIN_BODY_HEIGHT, segmentTableBodyHeight } from './segmentTableHeight';
 import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
 
 const { Header, Content } = Layout;
@@ -384,6 +385,35 @@ function Studio() {
   useEffect(() => {
     setSegmentPage(current => clampSegmentPage(current, visibleSegments.length, segmentPageSize));
   }, [visibleSegments.length, segmentPageSize]);
+
+  useEffect(() => {
+    if (activeTab !== 'segments') return;
+    const host = document.querySelector<HTMLElement>('.segment-table');
+    if (!host) return;
+    let frame: number | undefined;
+    const measure = () => {
+      frame = undefined;
+      if (window.matchMedia('(max-width: 800px)').matches) {
+        host.style.setProperty('--segment-table-body-height', `${SEGMENT_TABLE_MIN_BODY_HEIGHT}px`);
+        return;
+      }
+      const nextHeight = segmentTableBodyHeight(window.innerHeight, host.getBoundingClientRect().top);
+      host.style.setProperty('--segment-table-body-height', `${nextHeight}px`);
+    };
+    const scheduleMeasure = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(measure);
+    };
+    const observer = new ResizeObserver(scheduleMeasure);
+    observer.observe(host);
+    window.addEventListener('resize', scheduleMeasure);
+    scheduleMeasure();
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', scheduleMeasure);
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     if (!job || ['complete', 'error'].includes(job.phase)) return;

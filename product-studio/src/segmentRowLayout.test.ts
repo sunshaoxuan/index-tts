@@ -12,10 +12,13 @@ test('segment table renders one composite director column with dedicated directi
   assert.match(app, /className="segment-row-emotion"/);
   assert.match(app, /scroll=\{\{ y: 560 \}\}/);
   assert.doesNotMatch(app, /scroll=\{\{ x: 2260, y: 560 \}\}/);
+  assert.match(app, /segmentTableBodyHeight\(window\.innerHeight, host\.getBoundingClientRect\(\)\.top\)/);
+  assert.match(app, /--segment-table-body-height/);
+  assert.match(styles, /max-height: var\(--segment-table-body-height, 560px\) !important;/);
 });
 
 test('segment rows use responsive grids and suppress horizontal table scrolling', () => {
-  assert.match(styles, /\.segment-table \.ant-table-body \{ overflow-x: hidden !important; \}/);
+  assert.match(styles, /\.segment-table \.ant-table-body \{[^}]*overflow-x: hidden !important; \}/s);
   assert.match(styles, /\.segment-row-primary \{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.segment-row-secondary \{[^}]*grid-template-columns:[^}]*grid-template-areas: "source synthesis tempo pause" "fragment fragment fragment fragment";/s);
   assert.match(styles, /\.segment-row-emotion \{[^}]*grid-template-columns:/s);
