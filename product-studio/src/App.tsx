@@ -25,6 +25,7 @@ import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState';
 import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
+import { beginSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
 import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
 
 const { Header, Content } = Layout;
@@ -292,6 +293,8 @@ function Studio() {
   const [segmentPage, setSegmentPage] = useState(1);
   const [segmentPageSize, setSegmentPageSize] = useState(20);
   const [showMissingSegmentsOnly, setShowMissingSegmentsOnly] = useState(false);
+  const [segmentRegeneration, setSegmentRegeneration] = useState<SegmentRegenerationState>({ phase: 'idle' });
+  const segmentRegenerationOrderRef = useRef<number | undefined>(undefined);
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
@@ -302,6 +305,7 @@ function Studio() {
   const matchingFragmentCount = useMemo(() => countMatchingFragments(render.fragments, project?.segments ?? []), [render.fragments, project?.segments]);
   const missingFragmentCount = (project?.segments.length ?? 0) - matchingFragmentCount;
   const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
+  const segmentRegenerationActive = segmentRegeneration.phase !== 'idle';
   const projectActions = projectActionAvailability(activeTab, {
     jobRunning,
     dirty,
@@ -838,9 +842,24 @@ function Studio() {
     } catch (error) { message.error((error as Error).message); }
   };
 
-  const regenerateSegment = (order: number) => {
-    if (!project) return;
-    void runSpecialRender(() => api.regenerateSegment(project.project_id, order), `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用`);
+  const regenerateSegment = async (order: number) => {
+    if (!project || jobRunning || segmentRegenerationOrderRef.current !== undefined) return;
+    const requestProjectId = project.project_id;
+    segmentRegenerationOrderRef.current = order;
+    setSegmentRegeneration(beginSegmentRegeneration(order, dirty));
+    try {
+      if (dirty) {
+        if (!(await save())) return;
+        setSegmentRegeneration(submitSegmentRegeneration(order));
+      }
+      const started = await api.regenerateSegment(requestProjectId, order);
+      setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
+    } catch (error) {
+      message.error(`分句 ${order} 提交失败：${(error as Error).message}。按钮已经恢复，可以重试`);
+    } finally {
+      segmentRegenerationOrderRef.current = undefined;
+      setSegmentRegeneration({ phase: 'idle' });
+    }
   };
 
   const assembleExistingFragments = () => {
@@ -904,6 +923,7 @@ function Studio() {
     return [
       { title: '分句内容与导演参数', key: 'director-row', render: (_v, row) => {
         const fragment = findMatchingFragment(render.fragments, row);
+        const regenerationPending = segmentRegeneration.phase !== 'idle' && segmentRegeneration.order === row[0];
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
         const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim()].filter(Boolean).join('. ');
         return <div className="segment-row-layout">
@@ -920,7 +940,7 @@ function Studio() {
             <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 4 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
             <label className="segment-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
             <label className="segment-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button disabled={jobRunning} onClick={() => regenerateSegment(row[0])}>{fragment ? '重新生成本分句' : '生成本分句'}</Button></div></div>
+            <div className="segment-field segment-fragment-field"><span>已生成片断</span><div className="segment-fragment-cell">{fragment ? <><FragmentAudioPlayer src={fragment.audio} /><Text title={fragment.effectiveText}>{fragment.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则'}</Text></> : <Text type="secondary">尚无与当前序号对应的片断</Text>}<Button className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成本分句' : '生成本分句'}</Button>{regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}</div></div>
           </div>
           <div className="segment-row-emotion">
             <label className="segment-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
@@ -931,7 +951,7 @@ function Studio() {
         </div>;
       } },
     ];
-  }, [presets, roleOptions, project, jobRunning, render.fragments]);
+  }, [presets, roleOptions, project, jobRunning, render.fragments, segmentRegeneration, segmentRegenerationActive]);
 
   const splitRow = splitEditor ? project?.segments.find(row => row[0] === splitEditor.order) : undefined;
   const splitSource = String(splitRow?.[5] ?? '');
