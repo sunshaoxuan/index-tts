@@ -45,7 +45,7 @@ export const presets = {
   paces: ['自然', '舒缓', '紧凑', '轻快', '克制', '低声', '强调'],
   roleKinds: ['narrator', 'character', 'anchor', 'reporter', 'interviewee'],
   roleKindLabels: { narrator: '旁白', character: '人物', anchor: '新闻主播', reporter: '记者', interviewee: '采访对象' },
-  contentTypeLabels: { novel: '小说', news: '新闻', story: '故事体' },
+  contentTypeLabels: { auto: '自动识别', novel: '小说', news: '新闻', commentary: '一般评论', story: '故事体' },
   languages: ['ZH', 'EN', 'JA', 'ES', 'AR'],
 };
 
@@ -251,7 +251,7 @@ function normalizeChapterSections(payload) {
 
 function normalizeProject(payload) {
   const copy = structuredClone(payload);
-  copy.content_type = ['novel', 'news', 'story'].includes(copy.content_type) ? copy.content_type : 'novel';
+  copy.content_type = ['auto', 'novel', 'news', 'commentary', 'story'].includes(copy.content_type) ? copy.content_type : 'auto';
   copy.pronunciations = Array.isArray(copy.pronunciations) ? copy.pronunciations.map(row => ({ source: String(row.source ?? row[0] ?? ''), replacement: String(row.replacement ?? row[1] ?? ''), note: String(row.note ?? row[2] ?? ''), enabled: row.enabled ?? !['否', 'false', '0'].includes(String(row[3]).toLowerCase()) })) : [];
   copy.roles = Array.isArray(copy.roles) ? copy.roles.map(row => {
     const updated = [...row];
@@ -349,7 +349,7 @@ function validateProject(payload, id) {
       row[16] = 'none';
     }
   });
-  if (!['novel', 'news', 'story'].includes(payload.content_type)) throw new Error('作品体裁无效');
+  if (!['auto', 'novel', 'news', 'commentary', 'story'].includes(payload.content_type)) throw new Error('作品体裁无效');
   if (!Array.isArray(payload.pronunciations)) throw new Error('全篇纠音表格式无效');
   const pronunciationSources = new Set();
   payload.pronunciations.forEach((row, index) => {
@@ -1203,9 +1203,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   app.post('/api/projects', async (request, reply) => {
     try {
       const title = String(request.body?.title || '').trim();
-      const contentType = String(request.body?.content_type || 'novel');
+      const contentType = String(request.body?.content_type || 'auto');
       if (!title) throw new Error('请填写工程名称');
-      if (!['novel', 'news', 'story'].includes(contentType)) throw new Error('作品体裁无效');
+      if (!['auto', 'novel', 'news', 'commentary', 'story'].includes(contentType)) throw new Error('作品体裁无效');
       const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
       const id = safeProjectId(`${stamp}-${safeSlug(title)}-${randomUUID().slice(0, 6)}`);
       const now = new Date().toISOString();

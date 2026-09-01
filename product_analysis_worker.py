@@ -277,9 +277,13 @@ def apply_analysis_demographics(
     changed = 0
     for row in roles:
         role_id = str(row[0])
+        if str(row[2]) != "character":
+            if isinstance(prepared.get(role_id), dict):
+                prepared[role_id] = deepcopy(prepared[role_id])
+            continue
         character = characters.get(role_id)
         source = deepcopy(prepared.get(role_id)) if isinstance(prepared.get(role_id), dict) else {}
-        if str(row[2]) != "narrator" and character is None:
+        if character is None:
             existing_age = source.get("age")
             if not isinstance(existing_age, int) or isinstance(existing_age, bool):
                 raise ValueError(f"保留角色 {row[1]} 不在本次 AI 人物表且缺少既有年龄")
@@ -289,7 +293,7 @@ def apply_analysis_demographics(
         prior_age = source.get("age")
         prior_gender = source.get("gender")
         inferred_age = character.get("age") if isinstance(character.get("age"), int) and not isinstance(character.get("age"), bool) else None
-        if str(row[2]) != "narrator" and inferred_age is None:
+        if inferred_age is None:
             raise ValueError(f"本次 AI 人物 {row[1]} 缺少文章证据支持的年龄推断")
         inferred_gender = character.get("gender") if character.get("gender") in {"female", "male", "unspecified"} else "unspecified"
         demographic_changed = False
@@ -321,6 +325,63 @@ def apply_analysis_demographics(
             changed += 1
         prepared[role_id] = source
     return normalize_character_assets(roles, prepared), {"analyzed": analyzed, "changed": changed}
+
+
+def prepare_single_anchor_analysis(
+    document: dict[str, Any],
+    existing_roles: list[list[Any]],
+    existing_document: dict[str, Any] | None,
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    retained = next((deepcopy(row) for row in existing_roles if isinstance(row, list) and len(row) >= 8 and str(row[2]) == "anchor"), None)
+    anchor = next((item for item in document.get("characters") or [] if isinstance(item, dict) and item.get("kind") == "anchor"), None)
+    if anchor is None:
+        raise ValueError("新闻或评论分析缺少唯一主播")
+    document["characters"] = [anchor]
+    if retained is not None:
+        previous_id = str(anchor.get("id") or "anchor")
+        anchor["id"] = str(retained[0])
+        anchor["name"] = str(retained[1])
+        anchor["profile"] = str(retained[3]) or str(anchor.get("profile") or "")
+        anchor["voice_hint"] = str(retained[4]) or str(anchor.get("voice_hint") or "")
+        for segment in document.get("segments") or []:
+            segment["speaker_id"] = anchor["id"]
+            segment["speaker_name"] = anchor["name"]
+            segment["speaker_kind"] = "anchor"
+            segment["speaker_candidates"] = [anchor["id"]]
+        for scene in document.get("scenes") or []:
+            scene["participants"] = [anchor["id"]]
+    previous_characters = [
+        deepcopy(item)
+        for item in (existing_document or {}).get("characters", [])
+        if isinstance(item, dict) and str(item.get("id") or "") == str(anchor.get("id") or "")
+    ]
+    return ([retained] if retained is not None else []), previous_characters
+
+
+def enforce_single_anchor_tables(
+    document: dict[str, Any],
+    roles: list[list[Any]],
+    segments: list[list[Any]],
+) -> None:
+    anchors = [row for row in roles if isinstance(row, list) and len(row) >= 8 and str(row[2]) == "anchor"]
+    if len(anchors) != 1:
+        raise ValueError(f"新闻或评论必须只有一个主播，当前为 {len(anchors)} 个")
+    anchor_id, anchor_name = str(anchors[0][0]), str(anchors[0][1])
+    for row in segments:
+        row[2] = anchor_id
+        row[3] = anchor_name
+    document["characters"] = [item for item in document.get("characters") or [] if str(item.get("id") or "") == anchor_id]
+    for item in document["characters"]:
+        item["name"] = anchor_name
+        item["kind"] = "anchor"
+    for item in document.get("segments") or []:
+        item["speaker_id"] = anchor_id
+        item["speaker_name"] = anchor_name
+        item["speaker_kind"] = "anchor"
+        item["speaker_candidates"] = [anchor_id]
+        item["speaker_confidence"] = 1.0
+    for scene in document.get("scenes") or []:
+        scene["participants"] = [anchor_id]
 
 
 def apply_validated_character_profiles(
@@ -369,7 +430,8 @@ def main() -> int:
     director.health_summary()
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
-    demographic_reference = linked_article_demographic_reference(store, project)
+    requested_type = str(project.get("content_type") or "auto")
+    demographic_reference = linked_article_demographic_reference(store, project) if requested_type in {"auto", "novel", "story"} else ""
     document = director.analyze_document(
         project["source_text"],
         content_type=project["content_type"],
@@ -377,22 +439,42 @@ def main() -> int:
         progress=progress,
         demographic_reference_text=demographic_reference,
     )
-    document["character_validation"] = director.validate_character_analysis(
-        document,
-        project["source_text"],
-        demographic_reference_text=demographic_reference,
-        max_rounds=5,
-        progress=progress,
-    )
+    single_anchor = document.get("content_type") in {"news", "commentary"}
+    if single_anchor:
+        document["character_validation"] = {
+            "all_valid": True,
+            "round_count": 0,
+            "rounds": [],
+            "summary": "新闻或评论采用单主播管线，不执行稿件人物年龄、性别与小传校验",
+        }
+    else:
+        document["character_validation"] = director.validate_character_analysis(
+            document,
+            project["source_text"],
+            demographic_reference_text=demographic_reference,
+            max_rounds=5,
+            progress=progress,
+        )
+    existing_roles = project.get("roles") or []
+    previous_characters = (project.get("document") or {}).get("characters") or []
+    if single_anchor:
+        existing_roles, previous_characters = prepare_single_anchor_analysis(
+            document,
+            existing_roles,
+            project.get("document") or {},
+        )
     roles, segments = document_to_tables(document, analysis_voice_ids(root, project))
     roles, segments, linked_role_report = merge_analysis_roles(
-        document, project.get("roles") or [], roles, segments,
-        (project.get("document") or {}).get("characters") or [],
+        document, existing_roles, roles, segments, previous_characters,
     )
     roles, segments, memory_report = reapply_director_memory(
         "", project["source_text"], project.get("roles") or [], project.get("segments") or [], roles, segments,
     )
-    profile_report = apply_validated_character_profiles(document, roles)
+    if single_anchor:
+        enforce_single_anchor_tables(document, roles, segments)
+        profile_report = {"analyzed": 0, "changed": 0}
+    else:
+        profile_report = apply_validated_character_profiles(document, roles)
     character_assets, demographic_report = apply_analysis_demographics(document, roles, project.get("character_assets"))
     document["director_memory_reapply"] = memory_report
     document["linked_role_merge"] = linked_role_report

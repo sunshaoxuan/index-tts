@@ -691,6 +691,72 @@ def test_ai_analysis_preserves_attribution_and_builds_stable_tracks():
     assert "说话归属文字" in director.prompts[0]
 
 
+def test_news_uses_one_anchor_and_does_not_create_roles_for_quoted_people():
+    source = "雨夜。李明说：“你终于来了。”"
+    response = _valid_response()
+    response["content_type"] = "news"
+    director = FakeDirector([response])
+
+    result = director.analyze_document(source, content_type="news")
+
+    assert result["content_type"] == "news"
+    assert result["content_type_analysis"] == {
+        "requested": "news",
+        "resolved": "news",
+        "mode": "user_selected",
+        "reason": "使用者已指定作品体裁",
+        "single_anchor": True,
+    }
+    assert [(item["id"], item["name"], item["kind"], item["age"], item["gender"]) for item in result["characters"]] == [
+        ("anchor", "主播", "anchor", None, "unspecified")
+    ]
+    assert {item["speaker_id"] for item in result["segments"]} == {"anchor"}
+    assert all(item["speaker_confidence"] == 1 for item in result["segments"])
+    assert "不建立独立角色" in director.prompts[0]
+    assert "推断 gender 与 age" not in director.prompts[0]
+    assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
+
+
+def test_auto_classification_routes_commentary_to_single_anchor_before_chunk_analysis():
+    class AutoDirector(FakeDirector):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.classification_prompts = []
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            self.classification_prompts.append((prompt, kwargs["schema_name"]))
+            return {
+                "content_type": "commentary",
+                "title": "体育明星与舆论",
+                "reason": "全文以观点分析和评论为核心",
+            }, {"prompt_tokens": 8, "output_tokens": 6, "duration_seconds": 0.05}
+
+    response = _valid_response()
+    response["content_type"] = "commentary"
+    director = AutoDirector([response])
+
+    result = director.analyze_document("雨夜。李明说：“你终于来了。”", content_type="auto")
+
+    assert result["content_type"] == "commentary"
+    assert result["title"] == "雨夜"
+    assert result["content_type_analysis"]["mode"] == "ai_classification"
+    assert result["content_type_analysis"]["reason"] == "全文以观点分析和评论为核心"
+    assert result["metrics"]["classification_requests"] == 1
+    assert director.classification_prompts[0][1] == "content_classification"
+    assert [item["kind"] for item in result["characters"]] == ["anchor"]
+
+
+def test_single_anchor_guidance_routes_every_clause_without_another_model_request():
+    director = OllamaTextDirector(DirectorConfig(model="fake"))
+    director._request_structured = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("单主播不应调用 AI 路由"))
+    roles = [["anchor", "主播", "anchor", "唯一主播", "中性清晰", "voice.wav", "自然叙述", "否"]]
+
+    routing = director.resolve_guidance("语速稍慢；重点词清晰", roles)
+
+    assert routing["model"] == "deterministic-single-anchor"
+    assert [item["target_role_ids"] for item in routing["assignments"]] == [["anchor"], ["anchor"]]
+
+
 def test_narrator_aliases_merge_into_one_stable_track():
     response = _valid_response()
     response["characters"][0]["name"] = "narrator"
@@ -941,7 +1007,7 @@ def test_ai_analysis_falls_back_after_two_incomplete_results():
     director = FakeDirector([invalid, invalid])
 
     source = "雨夜。李明说：“你终于来了。”"
-    result = director.analyze_document(source)
+    result = director.analyze_document(source, content_type="novel")
 
     assert result["metrics"]["fallback_chunks"] == 1
     assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)

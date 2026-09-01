@@ -26,9 +26,12 @@ CONTENT_TYPES = {
     "自动识别": "auto",
     "小说": "novel",
     "新闻": "news",
+    "一般评论": "commentary",
     "故事": "story",
 }
 CONTENT_TYPE_LABELS = {value: key for key, value in CONTENT_TYPES.items() if value != "auto"}
+ANALYZED_CONTENT_TYPES = {"novel", "news", "commentary", "story"}
+SINGLE_ANCHOR_CONTENT_TYPES = {"news", "commentary"}
 ROLE_KINDS = {"narrator", "character", "anchor", "reporter", "interviewee"}
 EMOTIONS = {"happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"}
 EMOTION_LABELS = {
@@ -148,7 +151,7 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": ["content_type", "title", "characters", "scenes", "segments"],
     "properties": {
-        "content_type": {"type": "string", "enum": ["novel", "news", "story"]},
+        "content_type": {"type": "string", "enum": sorted(ANALYZED_CONTENT_TYPES)},
         "title": {"type": "string"},
         "characters": {
             "type": "array",
@@ -289,6 +292,17 @@ CONTEXT_SCHEMA: dict[str, Any] = {
         "title": deepcopy(DIRECTOR_SCHEMA["properties"]["title"]),
         "characters": deepcopy(DIRECTOR_SCHEMA["properties"]["characters"]),
         "scenes": deepcopy(DIRECTOR_SCHEMA["properties"]["scenes"]),
+    },
+}
+
+CONTENT_CLASSIFICATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["content_type", "title", "reason"],
+    "properties": {
+        "content_type": {"type": "string", "enum": sorted(ANALYZED_CONTENT_TYPES)},
+        "title": {"type": "string"},
+        "reason": {"type": "string"},
     },
 }
 
@@ -614,7 +628,7 @@ class OllamaTextDirector:
         source = normalize_source_text(text)
         if not source:
             raise DirectorError("请输入需要处理的完整文字。")
-        if content_type not in {"auto", "novel", "news", "story"}:
+        if content_type not in {"auto", *ANALYZED_CONTENT_TYPES}:
             raise DirectorError(f"不支持的内容体裁：{content_type}")
 
         chunks = split_document(source, self.config.max_chunk_chars)
@@ -634,13 +648,30 @@ class OllamaTextDirector:
             "fallback_chunks": 0,
             "context_requests": 0,
             "context_fallback": 0,
+            "classification_requests": 0,
         }
-        if self.config.staged_analysis:
+        resolved_type = content_type
+        classification_reason = "使用者已指定作品体裁"
+        if content_type == "auto":
+            _notify(progress, 0.005, "AI 正在判断稿件类型")
+            classification, classification_metrics = self._classify_content_type(source)
+            resolved_type = classification["content_type"]
+            title = classification["title"] or title
+            classification_reason = classification["reason"]
+            metrics["prompt_tokens"] += classification_metrics["prompt_tokens"]
+            metrics["output_tokens"] += classification_metrics["output_tokens"]
+            metrics["duration_seconds"] += classification_metrics["duration_seconds"]
+            metrics["classification_requests"] = 1
+        single_anchor = resolved_type in SINGLE_ANCHOR_CONTENT_TYPES
+        if single_anchor:
+            global_characters = [self._single_anchor_character()]
+            _notify(progress, 0.01, f"稿件类型为 {CONTENT_TYPE_LABELS[resolved_type]}，采用单主播分析")
+        elif self.config.staged_analysis:
             _notify(progress, 0.01, "AI 正在建立全文角色与场景注册表")
             try:
                 global_characters, global_scenes, context_metrics = self._analyze_context(
                     source,
-                    content_type,
+                    resolved_type,
                     guidance,
                     demographic_reference_text,
                 )
@@ -664,15 +695,16 @@ class OllamaTextDirector:
                     chunk=chunk,
                     chunk_index=index + 1,
                     chunk_count=len(chunks),
-                    requested_type=content_type,
+                    requested_type=resolved_type,
                     existing_characters=global_characters,
                     previous_context=previous_context,
                     guidance=guidance,
+                    single_anchor=single_anchor,
                 )
             except (DirectorTimeout, DirectorValidationError) as exc:
                 failure_kind = "超时" if isinstance(exc, DirectorTimeout) else "覆盖校验失败"
                 if len(chunk) <= MIN_ADAPTIVE_CHUNK_CHARS:
-                    result = self._fallback_chunk(chunk, content_type)
+                    result = self._fallback_chunk(chunk, resolved_type)
                     result_metrics = {
                         "prompt_tokens": 0,
                         "output_tokens": 0,
@@ -690,7 +722,7 @@ class OllamaTextDirector:
                         max(MIN_ADAPTIVE_CHUNK_CHARS, len(chunk) // 2),
                     )
                     if len(smaller_chunks) < 2:
-                        result = self._fallback_chunk(chunk, content_type)
+                        result = self._fallback_chunk(chunk, resolved_type)
                         result_metrics = {
                             "prompt_tokens": 0,
                             "output_tokens": 0,
@@ -732,7 +764,14 @@ class OllamaTextDirector:
             "version": 2,
             "provider": self.config.provider,
             "model": self.config.model,
-            "content_type": detected_type or (content_type if content_type != "auto" else "story"),
+            "content_type": detected_type or resolved_type,
+            "content_type_analysis": {
+                "requested": content_type,
+                "resolved": resolved_type,
+                "mode": "ai_classification" if content_type == "auto" else "user_selected",
+                "reason": classification_reason,
+                "single_anchor": single_anchor,
+            },
             "title": title,
             "original_text": source,
             "cleaned_text": "\n".join(segment["text"] for segment in global_segments),
@@ -740,6 +779,83 @@ class OllamaTextDirector:
             "scenes": global_scenes,
             "segments": global_segments,
             "metrics": metrics,
+        }
+
+    def _classify_content_type(self, source: str) -> tuple[dict[str, str], dict[str, Any]]:
+        sample = source[:12000]
+        prompt = f"""
+你是有声稿件的体裁分类器。先判断整篇稿件采用哪一种分析管线。
+
+分类标准：
+1. novel：以虚构人物、对白、行动和连续情节为核心的小说。
+2. story：以讲述事件或经历为核心，具有明显叙事推进，但不一定是小说。
+3. news：以报道事实、事件、消息或资讯为核心，适合由一个主播完整播报。稿件中提到的人名不等于配音角色。
+4. commentary：以观点、分析、评论、随笔、影评、社论或个人论述为核心，适合由一个主播完整播报。稿件中引用他人话语也不建立独立配音角色。
+5. 只判断体裁、标题和简短依据，不分析人物，不推断年龄或性别。
+
+稿件：
+<<<SOURCE
+{sample}
+SOURCE
+""".strip()
+        result, metrics = self._request_structured(
+            prompt,
+            CONTENT_CLASSIFICATION_SCHEMA,
+            system="你只输出严格符合 JSON Schema 的稿件体裁判断。",
+            schema_name="content_classification",
+            context_tokens=4096,
+            keep_alive="30m",
+        )
+        resolved = str(result.get("content_type") or "")
+        if resolved not in ANALYZED_CONTENT_TYPES:
+            raise DirectorValidationError("AI 稿件类型判断缺少有效 content_type")
+        return {
+            "content_type": resolved,
+            "title": str(result.get("title") or "").strip(),
+            "reason": str(result.get("reason") or "").strip(),
+        }, metrics
+
+    @staticmethod
+    def _single_anchor_character() -> dict[str, Any]:
+        return {
+            "id": "anchor",
+            "name": "主播",
+            "kind": "anchor",
+            "aliases": [],
+            "profile": "负责完整播报当前稿件的唯一主播，具体声音、年龄感、性别感和表达特征由使用者人工设置。",
+            "voice_hint": "使用者尚未指定主播声音特征，先保留中性清晰的播报基线。",
+            "gender": "unspecified",
+            "gender_evidence": "单主播稿件不从文中人物推断主播性别",
+            "gender_basis": "unknown",
+            "age": None,
+            "age_evidence": "单主播稿件不从文中人物推断主播年龄",
+            "age_basis": "unknown",
+            "confidence": 1.0,
+            "evidence": "稿件体裁路由采用单主播管线",
+        }
+
+    @classmethod
+    def _enforce_single_anchor_result(cls, result: dict[str, Any], content_type: str) -> dict[str, Any]:
+        anchor = cls._single_anchor_character()
+        scenes = deepcopy(result.get("scenes") or [])
+        for scene in scenes:
+            scene["participants"] = ["anchor"]
+            if not str(scene.get("narrative_perspective") or "").strip():
+                scene["narrative_perspective"] = "单主播播报"
+        segments = deepcopy(result.get("segments") or [])
+        for segment in segments:
+            segment["speaker_id"] = "anchor"
+            segment["speaker_name"] = "主播"
+            segment["speaker_kind"] = "anchor"
+            segment["speaker_candidates"] = ["anchor"]
+            segment["speaker_confidence"] = 1.0
+            segment["speaker_evidence"] = "新闻或评论采用唯一主播轨道"
+        return {
+            **result,
+            "content_type": content_type,
+            "characters": [anchor],
+            "scenes": scenes,
+            "segments": segments,
         }
 
     def validate_character_analysis(
@@ -1172,6 +1288,7 @@ LINKED_ARTICLE_EVIDENCE
         existing_characters: list[dict[str, Any]],
         previous_context: str,
         guidance: str,
+        single_anchor: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         prompt = self._build_prompt(
             chunk=chunk,
@@ -1193,7 +1310,9 @@ LINKED_ARTICLE_EVIDENCE
                 )
             try:
                 result, metrics = self._chat(current_prompt)
-                return self._validate_chunk(result, chunk), metrics
+                if single_anchor:
+                    result = self._enforce_single_anchor_result(result, requested_type)
+                return self._validate_chunk(result, chunk, single_anchor=single_anchor), metrics
             except DirectorTimeout:
                 raise
             except DirectorServiceError as exc:
@@ -1229,8 +1348,7 @@ LINKED_ARTICLE_EVIDENCE
                 "pace": "自然",
                 "pause_after_ms": 300,
             })
-        return self._validate_chunk(
-            {
+        fallback = {
                 "content_type": requested_type if requested_type != "auto" else "story",
                 "title": "安全分段",
                 "characters": [
@@ -1247,9 +1365,11 @@ LINKED_ARTICLE_EVIDENCE
                 ],
                 "scenes": [{"id": "scene_001", "title": "安全分镜", "topic": "原文连续叙述", "location": "未判断", "spatial_direction": "未判断", "time": "未判断", "participants": ["narrator"], "narrative_perspective": "旁白", "mood": "中性", "storyboard_note": "原文已进入确定性安全分段，当前缺少足够的 AI 画面分析结果。关键帧生成前需要重新执行全文分析并复核地点、人物位置、镜头方向与环境细节。", "boundary_reason": "安全分段起点", "evidence": "确定性安全分段"}],
                 "segments": segments,
-            },
-            chunk,
-        )
+            }
+        single_anchor = requested_type in SINGLE_ANCHOR_CONTENT_TYPES
+        if single_anchor:
+            fallback = self._enforce_single_anchor_result(fallback, requested_type)
+        return self._validate_chunk(fallback, chunk, single_anchor=single_anchor)
 
     def _build_prompt(
         self,
@@ -1262,10 +1382,37 @@ LINKED_ARTICLE_EVIDENCE
         previous_context: str,
         guidance: str,
     ) -> str:
+        if requested_type in SINGLE_ANCHOR_CONTENT_TYPES:
+            schema_text = json.dumps(DIRECTOR_SCHEMA, ensure_ascii=False, separators=(",", ":"))
+            label = CONTENT_TYPE_LABELS[requested_type]
+            return f"""
+你是专业有声内容导演和中文文本编辑。当前稿件已经判定为{label}，处理第 {chunk_index}/{chunk_count} 个连续文本块。
+
+本稿件必须使用单主播分析管线：
+1. characters 只能输出一个对象，固定为 id=anchor、name=主播、kind=anchor。稿件中出现的人名、称谓、被采访者和引用来源都是播报内容，不建立独立角色。
+2. 主播不是稿件中出现的人物。gender 固定为 unspecified，age 固定为 null，证据类型固定为 unknown。禁止根据稿件人物推断主播年龄或性别。
+3. 所有 segments 的 speaker_id 固定为 anchor，speaker_name 固定为主播，speaker_kind 固定为 anchor。引号、转述、采访引用和人物原话仍由同一个主播播报。
+4. 识别自然段与适合朗读的句子边界。每条 source_text 必须从本次原文按顺序逐字复制，全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
+5. text 是 source_text 的可朗读清洗稿，只修正排版噪声，不改变事实、观点和原意。
+6. 每条 segment 独立判断态度、八类基础情绪、情绪强度、句内节奏和句后停顿。新闻保持清楚、客观和克制；评论保留原文观点强度与论述节奏。
+7. 每条 segment 标注 ZH、EN、JA、ES、AR 之一。混合语言按主要朗读语言拆句。
+8. scenes 按主题、地点、时间、论述阶段或画面焦点变化划分，并填写完整分镜字段。participants 只填写 anchor，画面中被报道或评论的人物写进 storyboard_note，不建立声音角色。
+9. 用户导演补充：{guidance.strip() or '无'}。全部补充都作用于唯一主播及全篇表达。
+10. profile 与 voice_hint 只说明唯一主播职责和中性播报基线。具体主播声音、年龄感、性别感和表达特征由使用者在角色资产中人工设置。
+
+上一文本块结尾只用于语义连续性，不要重复输出：{previous_context or '无'}
+
+本次原文开始：
+<<<SOURCE
+{chunk}
+SOURCE
+
+JSON Schema：{schema_text}
+只输出符合 Schema 的 JSON，不输出说明文字。
+""".strip()
         type_instruction = {
-            "auto": "智能判断 novel、news、story 中最合适的体裁。",
+            "auto": "智能判断 novel、news、commentary、story 中最合适的体裁。",
             "novel": "体裁固定为 novel。旁白负责环境、动作、心理和说话归属；人物台词独立分轨。",
-            "news": "体裁固定为 news。主播保持客观克制；记者、采访对象分别分轨。",
             "story": "体裁固定为 story。旁白具有讲述感，人物台词保持可辨识的态度变化。",
         }[requested_type]
         roster = json.dumps(existing_characters, ensure_ascii=False, separators=(",", ":"))
@@ -1314,6 +1461,26 @@ JSON Schema：{schema_text}
         role_signature = guidance_role_signature(role_table)
         if not clauses:
             return {"guidance": guidance, "model": self.config.model, "role_signature": role_signature, "assignments": [], "resolved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        if len(roster) == 1 and roster[0]["kind"] == "anchor":
+            anchor = roster[0]
+            return {
+                "guidance": guidance,
+                "model": "deterministic-single-anchor",
+                "role_signature": role_signature,
+                "assignments": [
+                    {
+                        "clause_index": index,
+                        "source_text": clause,
+                        "scope": "roles",
+                        "target_role_ids": [anchor["role_id"]],
+                        "target_role_names": [anchor["name"]],
+                        "instruction": clause,
+                        "reason": "新闻或评论只有一个主播，全部导演补充作用于该主播",
+                    }
+                    for index, clause in enumerate(clauses, start=1)
+                ],
+                "resolved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
         prompt = f"""
 你是有声作品导演补充的语义路由器。结合完整角色表，判断每个原子补充影响全部轨道，或只影响一个或多个具体角色。
 
@@ -1456,11 +1623,11 @@ JSON Schema：{schema_text}
             keep_alive="30m",
         )
 
-    def _validate_chunk(self, result: dict[str, Any], source: str) -> dict[str, Any]:
+    def _validate_chunk(self, result: dict[str, Any], source: str, single_anchor: bool = False) -> dict[str, Any]:
         if not isinstance(result, dict):
             raise DirectorError("AI 结果不是 JSON 对象。")
         content_type = str(result.get("content_type", ""))
-        if content_type not in {"novel", "news", "story"}:
+        if content_type not in ANALYZED_CONTENT_TYPES:
             raise DirectorError("AI 结果缺少有效体裁。")
         raw_characters = result.get("characters")
         raw_scenes = result.get("scenes", [])
@@ -1474,7 +1641,7 @@ JSON Schema：{schema_text}
             if not isinstance(raw, dict):
                 raise DirectorError("角色项格式无效。")
             character = self._normalize_character(raw)
-            if character["kind"] != "narrator" and character.get("age") is None:
+            if character["kind"] == "character" and character.get("age") is None:
                 raise DirectorError(f"角色 {character['name']} 缺少基于当前文章的年龄推断。")
             if character["id"] in character_ids:
                 continue
@@ -1504,13 +1671,14 @@ JSON Schema：{schema_text}
             segments.append(segment)
 
         restore_exact_source_text(segments, source)
-        while True:
-            split_segments = self._split_embedded_dialogue(segments, characters)
-            if len(split_segments) == len(segments):
-                break
-            segments = split_segments
-        segments = self._assign_adjacent_quoted_speakers(segments, characters)
-        segments = self._merge_inline_quoted_narration(segments)
+        if not single_anchor:
+            while True:
+                split_segments = self._split_embedded_dialogue(segments, characters)
+                if len(split_segments) == len(segments):
+                    break
+                segments = split_segments
+            segments = self._assign_adjacent_quoted_speakers(segments, characters)
+            segments = self._merge_inline_quoted_narration(segments)
         segments = self._merge_punctuation_only_segments(segments)
         character_ids = {character["id"] for character in characters}
         for segment in segments:
@@ -1532,13 +1700,14 @@ JSON Schema：{schema_text}
         if coverage_key(reconstructed) != coverage_key(source):
             raise DirectorError("source_text 未完整覆盖本次原文，存在遗漏、改写或顺序变化。")
 
-        return {
+        validated = {
             "content_type": content_type,
             "title": str(result.get("title", "")).strip() or "未命名内容",
             "characters": characters,
             "scenes": scenes,
             "segments": segments,
         }
+        return self._enforce_single_anchor_result(validated, content_type) if single_anchor else validated
 
     @staticmethod
     def _split_embedded_dialogue(
@@ -2361,7 +2530,7 @@ def build_voice_design_jobs(
     context = project_context or {}
     character_assets = context.get("character_assets") if isinstance(context.get("character_assets"), dict) else {}
     content_type = str(context.get("content_type") or document.get("content_type") or "novel")
-    content_label = {"novel": "小说", "news": "新闻", "story": "故事体"}.get(content_type, "小说")
+    content_label = {"novel": "小说", "news": "新闻", "commentary": "一般评论", "story": "故事体"}.get(content_type, "小说")
     guidance = str(context.get("guidance") or "").strip().rstrip("。！？!?；;")
     guidance_routing = context.get("guidance_routing") or document.get("guidance_routing") or {}
     if guidance:

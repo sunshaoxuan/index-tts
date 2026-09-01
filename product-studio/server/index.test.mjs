@@ -641,6 +641,12 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   assert.equal(created.json().content_type, 'news');
   assert.deepEqual(created.json().pronunciations, []);
   assert.deepEqual(created.json().director_memory.pronunciations, []);
+  const commentary = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '观点评论', content_type: 'commentary' } });
+  assert.equal(commentary.statusCode, 201);
+  assert.equal(commentary.json().content_type, 'commentary');
+  const automatic = await app.inject({ method: 'POST', url: '/api/projects', payload: { title: '自动分类稿件' } });
+  assert.equal(automatic.statusCode, 201);
+  assert.equal(automatic.json().content_type, 'auto');
   project.pronunciations = [{ source: '重庆银行', replacement: '重 庆 银行', note: '固定读法', enabled: true }];
   const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
   assert.equal(saved.statusCode, 200);

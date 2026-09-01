@@ -4,8 +4,10 @@ from product_analysis_worker import (
     analysis_voice_ids,
     apply_analysis_demographics,
     apply_validated_character_profiles,
+    enforce_single_anchor_tables,
     linked_article_demographic_reference,
     merge_analysis_roles,
+    prepare_single_anchor_analysis,
 )
 
 
@@ -41,6 +43,64 @@ def test_analysis_voice_ids_fall_back_to_optional_example_voices(tmp_path: Path)
     (examples / "voice_01.wav").write_bytes(b"RIFF")
 
     assert analysis_voice_ids(tmp_path, {}) == ["voice_01.wav"]
+
+
+def test_single_anchor_analysis_preserves_manual_anchor_and_drops_article_people():
+    document = {
+        "characters": [
+            {"id": "anchor", "name": "主播", "kind": "anchor", "profile": "AI 默认主播", "voice_hint": "中性"},
+            {"id": "role_001", "name": "稿件人物", "kind": "character"},
+        ],
+        "segments": [{"speaker_id": "anchor", "speaker_name": "主播", "speaker_kind": "anchor", "speaker_candidates": ["anchor"]}],
+        "scenes": [{"participants": ["role_001"]}],
+    }
+    existing = [
+        ["anchor_manual", "晚间主播", "anchor", "使用者设置的主播说明", "成熟克制", "voice-anchor", "舒缓", "否"],
+        ["role_old", "旧人物", "character", "旧人物资产", "低沉", "voice-old", "自然", "否"],
+    ]
+    previous_document = {"characters": [{"id": "anchor_manual", "name": "晚间主播", "kind": "anchor"}, {"id": "role_old", "name": "旧人物", "kind": "character"}]}
+
+    retained, previous = prepare_single_anchor_analysis(document, existing, previous_document)
+
+    assert retained == [existing[0]]
+    assert previous == [previous_document["characters"][0]]
+    assert len(document["characters"]) == 1
+    assert document["characters"][0]["id"] == "anchor_manual"
+    assert document["characters"][0]["name"] == "晚间主播"
+    assert document["characters"][0]["profile"] == "使用者设置的主播说明"
+    assert document["segments"][0]["speaker_id"] == "anchor_manual"
+    assert document["scenes"][0]["participants"] == ["anchor_manual"]
+
+
+def test_single_anchor_tables_force_all_segments_to_the_only_anchor():
+    document = {
+        "characters": [{"id": "anchor", "name": "主播", "kind": "anchor"}, {"id": "role_001", "name": "人物", "kind": "character"}],
+        "segments": [{"speaker_id": "role_001", "speaker_name": "人物", "speaker_kind": "character"}],
+        "scenes": [{"participants": ["role_001"]}],
+    }
+    roles = [["anchor", "主播", "anchor", "唯一主播", "中性", "voice.wav", "自然", "否"]]
+    segments = [[1, "正文", "role_001", "人物", "ZH", "原文", "原文", "中性叙述", "平静", 0.5, "自然", 0]]
+
+    enforce_single_anchor_tables(document, roles, segments)
+
+    assert [item["id"] for item in document["characters"]] == ["anchor"]
+    assert document["segments"][0]["speaker_id"] == "anchor"
+    assert document["scenes"][0]["participants"] == ["anchor"]
+    assert segments[0][2:4] == ["anchor", "主播"]
+
+
+def test_anchor_demographics_remain_manual_and_are_not_inferred_from_article_people():
+    roles = [["anchor", "主播", "anchor", "唯一主播", "中性清晰", "voice.wav", "自然", "否"]]
+    document = {"characters": [{"id": "anchor", "name": "主播", "kind": "anchor", "age": None, "gender": "unspecified"}]}
+    existing = {"anchor": {"age": 48, "gender": "female", "age_source": "user", "gender_source": "user"}}
+
+    assets, report = apply_analysis_demographics(document, roles, existing)
+
+    assert assets["anchor"]["age"] == 48
+    assert assets["anchor"]["gender"] == "female"
+    assert assets["anchor"]["age_source"] == "user"
+    assert assets["anchor"]["gender_source"] == "user"
+    assert report == {"analyzed": 0, "changed": 0}
 
 
 def test_linked_article_text_is_supplied_as_ai_demographic_reference():
