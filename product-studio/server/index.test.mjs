@@ -1043,10 +1043,13 @@ test('returns three auditable segment candidates and adopts the user selection',
   const index = JSON.parse(await readFile(path.join(processDir, 'segment-fragments.json'), 'utf8'));
   assert.equal(index.fragments[cacheKey].selected_candidate_id, candidates[1]);
   assert.deepEqual(index.fragments[cacheKey].candidate_results.map(item => item.selected), [false, true, false]);
-  const rejected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidates[2]}/select`, payload: {} });
-  assert.equal(rejected.statusCode, 409);
-  assert.match(rejected.json().error, /音色相似度/);
-  assert.equal((await readFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), 'utf8')), 'candidate-2');
+  const overridden = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidates[2]}/select`, payload: {} });
+  assert.equal(overridden.statusCode, 200);
+  assert.equal(overridden.json().manualOverride, true);
+  assert.equal((await readFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), 'utf8')), 'candidate-3');
+  const overriddenIndex = JSON.parse(await readFile(path.join(processDir, 'segment-fragments.json'), 'utf8'));
+  assert.equal(overriddenIndex.fragments[cacheKey].candidate_results[2].manual_override, true);
+  assert.equal(overriddenIndex.fragments[cacheKey].candidate_results[2].manual_selection_method, 'human_listening_accepted');
   await app.close();
 });
 
@@ -1069,8 +1072,9 @@ test('fails legacy segment candidates closed when speaker identity evidence is m
   assert.equal(latest.fragments[0].candidates[0].audioQualityPassed, false);
   assert.equal(latest.fragments[0].candidates[0].speakerVerified, false);
   assert.equal(latest.fragments[0].candidates[0].qualityPassed, false);
-  const rejected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidateId}/select`, payload: {} });
-  assert.equal(rejected.statusCode, 409);
+  const selected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidateId}/select`, payload: {} });
+  assert.equal(selected.statusCode, 200);
+  assert.equal(selected.json().manualOverride, true);
   await app.close();
 });
 

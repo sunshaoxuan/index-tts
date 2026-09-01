@@ -1327,6 +1327,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           speakerSimilarityThreshold: Number(candidate.speaker_similarity_threshold || 0.72),
           speakerVerified: Boolean(candidate.speaker_verified), speakerValidationMethod: String(candidate.speaker_validation_method || ''),
           directorVerified: Boolean(candidate.director_verified), directorValidationMethod: String(candidate.director_validation_method || ''),
+          manualOverride: Boolean(candidate.manual_override), manualSelectedAt: String(candidate.manual_selected_at || ''),
           audio: `/api/projects/${encodeURIComponent(id)}/cached-fragment-candidates/${cacheKey}/${encodeURIComponent(String(candidate.candidate_id))}`,
         })),
       }));
@@ -1549,18 +1550,22 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!entry) throw new Error(`分句 ${order} 的候选不存在或已经过期`);
       const [cacheKey, fragment] = entry;
       const selectedCandidate = (fragment.candidate_results || []).find(candidate => candidate.candidate_id === candidateId);
-      if (!selectedCandidate?.quality_passed || !selectedCandidate?.audio_quality_passed || !selectedCandidate?.speaker_verified) {
-        const error = new Error(`分句 ${order} 的候选未通过基础音频、音色相似度或重音门禁，不能采用`);
-        error.statusCode = 409;
-        throw error;
-      }
+      const manualOverride = !Boolean(selectedCandidate?.quality_passed && selectedCandidate?.audio_quality_passed && selectedCandidate?.speaker_verified);
       await copyFile(path.join(processDir, 'segment-candidates', cacheKey, `${candidateId}.wav`), path.join(processDir, 'segment-cache', `${cacheKey}.wav`));
       fragment.selected_candidate_id = candidateId;
-      fragment.candidate_results = fragment.candidate_results.map(candidate => ({ ...candidate, selected: candidate.candidate_id === candidateId }));
+      fragment.candidate_results = fragment.candidate_results.map(candidate => ({
+        ...candidate,
+        selected: candidate.candidate_id === candidateId,
+        ...(candidate.candidate_id === candidateId ? {
+          manual_override: manualOverride,
+          manual_selected_at: new Date().toISOString(),
+          manual_selection_method: 'human_listening_accepted',
+        } : {}),
+      }));
       const temporary = `${indexPath}.tmp`;
       await writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
       await rename(temporary, indexPath);
-      return { selected: true, order, candidateId };
+      return { selected: true, order, candidateId, manualOverride };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/voices', async (request, reply) => {

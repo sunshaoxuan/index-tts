@@ -17,6 +17,7 @@ export interface RenderFragment {
     audioQualityPassed: boolean; qualityPassed: boolean; stressVerified: boolean; alignmentMethod: string;
     speakerSimilarity: number | null; speakerSimilarityThreshold: number; speakerVerified: boolean; speakerValidationMethod: string;
     directorVerified: boolean; directorValidationMethod: string;
+    manualOverride: boolean; manualSelectedAt: string;
   }>;
 }
 
@@ -95,7 +96,7 @@ export const api = {
   render: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/render`, emptyPost),
   assemble: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/assemble`, emptyPost),
   regenerateSegment: (id: string, order: number, advanced = false) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/segments/${order}/regenerate`, { method: 'POST', body: JSON.stringify({ advanced }) }),
-  selectSegmentCandidate: (id: string, order: number, candidateId: string) => request<{ selected: boolean }>(`/api/projects/${encodeURIComponent(id)}/segments/${order}/candidates/${encodeURIComponent(candidateId)}/select`, emptyPost),
+  selectSegmentCandidate: (id: string, order: number, candidateId: string) => request<{ selected: boolean; manualOverride: boolean }>(`/api/projects/${encodeURIComponent(id)}/segments/${order}/candidates/${encodeURIComponent(candidateId)}/select`, emptyPost),
   voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),
   expandCharacterProfile: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number }) => request<{ profile: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/expand-profile`, { method: 'POST', body: JSON.stringify(draft) }),
   generateCharacterPortrait: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number; portraitStyle: string; portraitPrompt?: string }) => request<{ portraitUrl: string; portraitPrompt: string; portraitStyle: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/portrait`, { method: 'POST', body: JSON.stringify(draft) }),

@@ -74,7 +74,9 @@ test('segment rows expose stress targeting, advanced three-candidate generation,
   assert.match(app, /高级三版加音色门禁/);
   assert.match(app, /本次有效导演参数/);
   assert.match(app, /音色相似度/);
-  assert.match(app, /导演效果需人工试听/);
+  assert.match(app, /最终效果以人工试听为准/);
+  assert.match(app, /人工采用此版/);
+  assert.doesNotMatch(app, /!candidate\.qualityPassed \|\| Boolean\(segmentCandidateSelection\)/);
   assert.match(app, /重音为概率增强/);
   assert.match(app, /selectSegmentCandidate/);
   assert.match(styles, /\.segment-candidate-grid/);

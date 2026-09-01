@@ -12,3 +12,5 @@
 首次容器浏览器检查发现历史候选仍沿用旧 `quality_passed`，造成基础音频和音色证据缺失时显示综合通过。实现已改为缺少新证据时关闭门禁，并新增服务端回归测试。全部最终验收需要从起点重新执行。
 
 返工后第一次 Vite 命令从仓库根目录运行，因入口目录错误报告 `Cannot resolve entry module index.html`。随后从 `product-studio` 目录执行相同生产构建，3106 个模块完成转换并通过。
+
+使用者补充要求待复核候选仍可人工采用。接口与页面调整后，Python 74 项、Product Studio 152 项和 Vite 3106 模块生产构建重新通过。服务端测试验证人工采用写入 `manual_override`、采用时间和 `human_listening_accepted`。
