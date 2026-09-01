@@ -18,4 +18,4 @@
 | 配置和需求文档一致 | Compose、部署说明、存储布局、需求、README、CHANGELOG | 合格 |
 | 版本管理白名单提交 | `git diff --cached`、`git show --stat HEAD` | 合格 |
 
-暂存清单已经按本轮文件与独立文档 hunk 复核。提交完成后以 `git show --stat HEAD` 取得最终提交号。
+暂存清单已经按本轮文件与独立文档 hunk 复核。正式配置、文档与证据包含在已推送的实现提交 `f05ed06d64efbf4c73541f5d2480dcee399b293c` 中。
