@@ -22,9 +22,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - type: bind
-        source: C:/workspace/IndexTTS-2.5/models/checkpoints
+      - type: volume
+        source: indextts-model
         target: /app/checkpoints
+      - type: volume
+        source: qwen-voice-design-model
+        target: /app/checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign
       - type: bind
         source: C:/workspace/IndexTTS-2.5/runtime-python/python3.11/site-packages
         target: /app/.venv/lib/python3.11/site-packages
@@ -46,3 +49,11 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+volumes:
+  indextts-model:
+    name: indextts25-indextts-model
+    external: true
+  qwen-voice-design-model:
+    name: indextts25-qwen-voice-design-model
+    external: true

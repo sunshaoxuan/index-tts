@@ -1733,13 +1733,16 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (activeJob?.jobId === id && Number.isSafeInteger(activeJob.pid) && activeJob.pid > 0) {
         try { process.kill(activeJob.pid, 0); telemetry.workerAlive = true; } catch {}
       }
-      if (activeJob?.jobId === id && activeJob.kind === 'voice') {
+      if (activeJob?.jobId === id && ['voice', 'render'].includes(activeJob.kind)) {
         try {
-          const runtimeState = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', 'voice-design-runtime', 'state.json'), 'utf8'));
+          const engine = activeJob.kind;
+          const runtimeDir = engine === 'voice' ? 'voice-design-runtime' : 'render-runtime';
+          const runtimeState = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', runtimeDir, 'state.json'), 'utf8'));
           const runtimePid = Number(runtimeState.pid);
           let processAlive = false;
           try { process.kill(runtimePid, 0); processAlive = true; } catch {}
-          const voiceRuntime = {
+          const modelRuntime = {
+            engine,
             processAlive,
             pid: runtimePid,
             phase: String(runtimeState.phase || 'unknown'),
@@ -1749,22 +1752,27 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           if (process.platform !== 'win32' && processAlive) {
             try {
               const io = await readFile(`/proc/${runtimePid}/io`, 'utf8');
-              voiceRuntime.readBytes = Number(io.match(/^read_bytes:\s*(\d+)/m)?.[1] || 0);
+              modelRuntime.readBytes = Number(io.match(/^read_bytes:\s*(\d+)/m)?.[1] || 0);
             } catch {}
             try {
               const processStatus = await readFile(`/proc/${runtimePid}/status`, 'utf8');
-              voiceRuntime.rssBytes = Number(processStatus.match(/^VmRSS:\s*(\d+)\s+kB/m)?.[1] || 0) * 1024;
+              modelRuntime.rssBytes = Number(processStatus.match(/^VmRSS:\s*(\d+)\s+kB/m)?.[1] || 0) * 1024;
             } catch {}
           }
-          try {
-            const modelRoot = path.join(repoRoot, 'checkpoints', 'Qwen3-TTS-12Hz-1.7B-VoiceDesign');
-            const modelFiles = await Promise.all([
-              stat(path.join(modelRoot, 'model.safetensors')),
-              stat(path.join(modelRoot, 'speech_tokenizer', 'model.safetensors')),
-            ]);
-            voiceRuntime.modelBytes = modelFiles.reduce((total, item) => total + item.size, 0);
-          } catch {}
-          telemetry.voiceRuntime = voiceRuntime;
+          if (engine === 'voice') {
+            try {
+              const modelRoot = path.join(repoRoot, 'checkpoints', 'Qwen3-TTS-12Hz-1.7B-VoiceDesign');
+              const modelFiles = await Promise.all([
+                stat(path.join(modelRoot, 'model.safetensors')),
+                stat(path.join(modelRoot, 'speech_tokenizer', 'model.safetensors')),
+              ]);
+              modelRuntime.modelBytes = modelFiles.reduce((total, item) => total + item.size, 0);
+            } catch {}
+            telemetry.voiceRuntime = modelRuntime;
+          } else {
+            modelRuntime.modelBytes = Number(runtimeState.model_bytes) || undefined;
+          }
+          telemetry.modelRuntime = modelRuntime;
         } catch {}
       }
       return { jobId: id, ...status, telemetry, result };

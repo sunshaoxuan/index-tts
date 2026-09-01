@@ -62,6 +62,7 @@ def test_render_environment_reports_checkpoint_and_python_fingerprint(tmp_path, 
     assert environment["python_executable"] == str(Path(sys.executable).resolve())
     assert environment["indextts_available"] is True
     assert environment["checkpoint_files_ready"] is True
+    assert environment["model_bytes"] == 20
     assert environment["runtime_healthy"] is True
     assert environment["source_fingerprint"] == render_source_fingerprint(tmp_path)
 

@@ -350,8 +350,8 @@ function Studio() {
   const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
   const jobLabels = { analyze: 'AI 文本导演', voice: '角色音色生成', render: '完整音频渲染' };
-  const voiceTelemetry = job?.telemetry?.voiceRuntime;
-  const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (job.kind !== 'voice' || voiceTelemetry?.processAlive));
+  const modelTelemetry = job?.telemetry?.modelRuntime ?? job?.telemetry?.voiceRuntime;
+  const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (!modelTelemetry || modelTelemetry.processAlive));
   const matchingFragmentCount = useMemo(() => countMatchingFragments(render.fragments, project?.segments ?? []), [render.fragments, project?.segments]);
   const missingFragmentCount = (project?.segments.length ?? 0) - matchingFragmentCount;
   const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
@@ -1260,7 +1260,7 @@ function Studio() {
         <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
         <div className="job-progress-observation">
           <Text>{jobRuntimeResponsive ? '后台进程响应中' : '正在等待后台进程确认'} · 已运行 {formatJobDuration(job.telemetry?.startedAt, job.telemetry?.observedAt)}</Text>
-          {voiceTelemetry && <Text>模型 {voiceTelemetry.modelLoaded ? '已加载' : '加载中'} · 内存 {formatJobBytes(voiceTelemetry.rssBytes)} · 累计读取 {formatJobBytes(voiceTelemetry.readBytes)} / 权重 {formatJobBytes(voiceTelemetry.modelBytes)}</Text>}
+          {modelTelemetry && <Text>{modelTelemetry.engine === 'render' ? 'IndexTTS' : 'VoiceDesign'} 模型 {modelTelemetry.modelLoaded ? '已加载' : '加载中'} · 内存 {formatJobBytes(modelTelemetry.rssBytes)} · 累计读取 {formatJobBytes(modelTelemetry.readBytes)} / 权重 {formatJobBytes(modelTelemetry.modelBytes)}</Text>}
         </div>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>

@@ -13,6 +13,17 @@ from product_render_worker import RenderRuntime, execute_render_request, write_j
 from render_daemon_client import PROTOCOL_VERSION, render_source_fingerprint
 
 
+VOICE_DESIGN_MODEL_DIR = "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+
+
+def _checkpoint_bytes(checkpoint_dir: Path) -> int:
+    total = 0
+    for path in checkpoint_dir.rglob("*"):
+        if path.is_file() and VOICE_DESIGN_MODEL_DIR not in path.relative_to(checkpoint_dir).parts:
+            total += path.stat().st_size
+    return total
+
+
 def _environment(repo_root: Path) -> dict[str, Any]:
     spec = importlib.util.find_spec("indextts")
     checkpoint_dir = (repo_root / "checkpoints").resolve()
@@ -26,6 +37,7 @@ def _environment(repo_root: Path) -> dict[str, Any]:
         "checkpoint_dir": str(checkpoint_dir),
         "checkpoint_files_ready": not missing,
         "missing_checkpoint_paths": missing,
+        "model_bytes": _checkpoint_bytes(checkpoint_dir),
         "runtime_healthy": spec is not None and not missing,
         "source_fingerprint": render_source_fingerprint(repo_root),
     }

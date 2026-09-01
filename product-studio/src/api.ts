@@ -37,7 +37,11 @@ export interface JobTelemetry {
   statusUpdatedAt: string;
   workerAlive: boolean;
   voiceRuntime?: {
-    processAlive: boolean; pid: number; phase: string; modelLoaded: boolean; startedAt?: string;
+    engine?: 'voice'; processAlive: boolean; pid: number; phase: string; modelLoaded: boolean; startedAt?: string;
+    readBytes?: number; rssBytes?: number; modelBytes?: number;
+  };
+  modelRuntime?: {
+    engine: 'voice' | 'render'; processAlive: boolean; pid: number; phase: string; modelLoaded: boolean; startedAt?: string;
     readBytes?: number; rssBytes?: number; modelBytes?: number;
   };
 }
