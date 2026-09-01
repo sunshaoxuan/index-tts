@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Alert, App as AntApp, AutoComplete, Button, Card, Checkbox, Empty, Flex, Input, InputNumber, Layout, Modal,
-  Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Typography,
+  Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LoadingOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
@@ -19,7 +19,7 @@ import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { buildSceneAudioRanges, DEFAULT_STORYBOARD_STYLE, formatStoryboardTime, STORYBOARD_STYLE_PRESETS } from './storyboard';
 import { createManualStoryboardShot, mergeStoryboardShots, splitStoryboardShot, toggleStoryboardShotSelection, type ManualStoryboardSceneDraft } from './storyboardScenes';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
-import { nextProjectActionDisplay, projectActionAvailability } from './projectActionMode';
+import { nextProjectActionDisplay, projectActionAvailability, projectActionDisabledReason, projectActionTargetWorkspace } from './projectActionMode';
 import { beginProjectSwitch, failProjectSwitch, isCurrentProjectSwitch, type ProjectSwitchState } from './projectSwitchState';
 import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion';
 import { replaceProjectRole } from './roleReplacement';
@@ -376,13 +376,14 @@ function Studio() {
   const missingFragmentCount = (project?.segments.length ?? 0) - matchingFragmentCount;
   const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
   const segmentRegenerationActive = segmentRegeneration.phase !== 'idle';
-  const projectActions = projectActionAvailability(activeTab, {
+  const projectActionInput = {
     jobRunning,
     dirty,
     hasSource: Boolean(project?.source_text.trim()),
     hasRoles: Boolean(project?.roles.length),
     hasSegments: Boolean(project?.segments.length),
-  });
+  };
+  const projectActions = projectActionAvailability(projectActionInput);
   const workspaceLabels: Record<string, string> = { source: '全文与体裁', scenes: '场景分析', roles: '角色资产', segments: '分句导演', pronunciations: '全篇纠音', delivery: '完整音频与交付' };
 
   const updateProjectSwitch = (next: ProjectSwitchState) => {
@@ -1050,6 +1051,8 @@ function Studio() {
     try { started = await api[kind](project.project_id); }
     catch (error) { message.error((error as Error).message); return; }
     setJob({ id: started.jobId, kind, projectId: project.project_id, phase: 'queued', fraction: 0, message: '任务已进入队列' });
+    setActiveTab(projectActionTargetWorkspace(kind));
+    window.requestAnimationFrame(() => document.getElementById('project')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
   const runSpecialRender = async (request: () => Promise<{ jobId: string }>, queuedMessage: string) => {
@@ -1325,9 +1328,9 @@ function Studio() {
           <small className="project-actions-context">当前工作区：{workspaceLabels[activeTab] || activeTab}</small>
           <Button icon={<SettingOutlined />} disabled={!projectActions.settings} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
           <Button icon={<SaveOutlined />} loading={saving} disabled={!projectActions.save} onClick={save}>保存当前工程</Button>
-          <Button disabled={!projectActions.analyze} title={activeTab === 'source' ? undefined : '请切换到“全文与体裁”'} onClick={() => runJob('analyze')}>AI 重新分析全文</Button>
-          <Button disabled={!projectActions.voice} title={activeTab === 'roles' ? undefined : '请切换到“角色资产”'} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button>
-          <Button disabled={!projectActions.render} title={activeTab === 'delivery' ? undefined : '请切换到“完整音频与交付”'} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button>
+          <Tooltip title={projectActionDisabledReason('analyze', projectActionInput)}><span className="project-action-button-wrapper"><Button disabled={!projectActions.analyze} onClick={() => runJob('analyze')}>AI 重新分析全文</Button></span></Tooltip>
+          <Tooltip title={projectActionDisabledReason('voice', projectActionInput)}><span className="project-action-button-wrapper"><Button disabled={!projectActions.voice} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button></span></Tooltip>
+          <Tooltip title={projectActionDisabledReason('render', projectActionInput)}><span className="project-action-button-wrapper"><Button disabled={!projectActions.render} icon={<AudioOutlined />} onClick={() => runJob('render')}>生成完整音频</Button></span></Tooltip>
         </aside> : <button type="button" className="project-actions-trigger" aria-label="展开项目操作" title="拖动可停靠，点击手工展开" onPointerDown={beginProjectActionDrag} onClick={() => { if (!projectActionDragMovedRef.current) setProjectActionsExpanded(current => nextProjectActionDisplay(current, 'manual-expand')); }}>{projectActionExpandIcon}<SoundOutlined /></button>}
       </div>}
       <section className="project-section" id="project">

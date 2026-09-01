@@ -336,6 +336,7 @@ body * { box-shadow: none !important; }
 .project-actions-hint { color: rgba(255, 237, 215, .58); font-size: 8px; font-weight: 500; letter-spacing: .02em; }
 .project-actions-context { padding: 7px 9px; border: 1px dashed rgba(255, 237, 215, .28); border-radius: 7px; color: rgba(255, 237, 215, .82); background: rgba(16, 9, 4, .28); font-size: 9px; line-height: 1.4; }
 .project-actions-float .ant-btn { width: 100%; justify-content: flex-start; }
+.project-action-button-wrapper { display: block; width: 100%; }
 .project-actions-float .ant-btn:disabled { color: rgba(255, 237, 215, .28); border-color: rgba(255, 237, 215, .18); background: rgba(16, 9, 4, .2); }
 .project-actions-trigger {
   position: relative;

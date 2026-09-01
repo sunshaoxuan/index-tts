@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextProjectActionDisplay, projectActionAvailability } from './projectActionMode.ts';
+import { nextProjectActionDisplay, projectActionAvailability, projectActionDisabledReason, projectActionTargetWorkspace } from './projectActionMode.ts';
 
 test('changes toolbar visibility only for manual controls and idle timeout', () => {
   assert.equal(nextProjectActionDisplay(false, 'manual-expand'), true);
@@ -8,16 +8,27 @@ test('changes toolbar visibility only for manual controls and idle timeout', () 
   assert.equal(nextProjectActionDisplay(true, 'idle-timeout'), false);
 });
 
-test('enables each generation action only in its matching workspace', () => {
+test('keeps project generation actions available from every workspace', () => {
   const ready = { jobRunning: false, dirty: false, hasSource: true, hasRoles: true, hasSegments: true };
-  assert.deepEqual(projectActionAvailability('source', ready), { settings: true, save: false, analyze: true, voice: false, render: false });
-  assert.deepEqual(projectActionAvailability('roles', ready), { settings: true, save: false, analyze: false, voice: true, render: false });
-  assert.deepEqual(projectActionAvailability('delivery', ready), { settings: true, save: false, analyze: false, voice: false, render: true });
-  assert.deepEqual(projectActionAvailability('segments', ready), { settings: true, save: false, analyze: false, voice: false, render: false });
+  for (const workspace of ['source', 'roles', 'delivery', 'segments']) {
+    assert.deepEqual(projectActionAvailability(ready), { settings: true, save: false, analyze: true, voice: true, render: true }, workspace);
+  }
 });
 
 test('keeps save global while honoring task locks and data prerequisites', () => {
-  assert.deepEqual(projectActionAvailability('scenes', { jobRunning: false, dirty: true, hasSource: true, hasRoles: true, hasSegments: true }), { settings: true, save: true, analyze: false, voice: false, render: false });
-  assert.deepEqual(projectActionAvailability('source', { jobRunning: true, dirty: true, hasSource: true, hasRoles: true, hasSegments: true }), { settings: true, save: false, analyze: false, voice: false, render: false });
-  assert.equal(projectActionAvailability('source', { jobRunning: false, dirty: false, hasSource: false, hasRoles: true, hasSegments: true }).analyze, false);
+  assert.deepEqual(projectActionAvailability({ jobRunning: false, dirty: true, hasSource: true, hasRoles: true, hasSegments: true }), { settings: true, save: true, analyze: true, voice: true, render: true });
+  assert.deepEqual(projectActionAvailability({ jobRunning: true, dirty: true, hasSource: true, hasRoles: true, hasSegments: true }), { settings: true, save: false, analyze: false, voice: false, render: false });
+  assert.equal(projectActionAvailability({ jobRunning: false, dirty: false, hasSource: false, hasRoles: true, hasSegments: true }).analyze, false);
+});
+
+test('explains unavailable actions and maps successful actions to their result workspace', () => {
+  const empty = { jobRunning: false, dirty: false, hasSource: false, hasRoles: false, hasSegments: false };
+  assert.equal(projectActionDisabledReason('analyze', empty), '请先填写作品原文');
+  assert.equal(projectActionDisabledReason('voice', empty), '请先完成角色分析或建立角色');
+  assert.equal(projectActionDisabledReason('render', empty), '请先完成分句分析');
+  assert.equal(projectActionDisabledReason('render', { ...empty, jobRunning: true }), '当前有后台任务正在运行，请等待任务结束');
+  assert.equal(projectActionDisabledReason('render', { ...empty, hasSegments: true }), undefined);
+  assert.equal(projectActionTargetWorkspace('analyze'), 'source');
+  assert.equal(projectActionTargetWorkspace('voice'), 'roles');
+  assert.equal(projectActionTargetWorkspace('render'), 'delivery');
 });
