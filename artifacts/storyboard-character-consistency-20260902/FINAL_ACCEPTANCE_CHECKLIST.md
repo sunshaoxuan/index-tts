@@ -14,6 +14,6 @@
 | README、CHANGELOG、需求和架构同步 | 四份正式文档 | Git 差异 | 合格 |
 | 单元、回归、构建和运行时页面 | 164 Node、19 Python、生产构建、健康容器、浏览器、Console | `test_results.md` | 合格 |
 | 真实兼容服务接受 `/images/edits` | 外部付费调用 | 未执行 | `evidence_missing` |
-| Git master 交付 | 提交、推送与远端一致性 | 提交后补录 | 待完成 |
+| Git master 交付 | 实现提交 `1f883dcd39d38babf34c2b801f969c64ec8fe65b` 已推送 | 本地 HEAD、`refs/remotes/fork/master`、`git ls-remote fork refs/heads/master` 三者一致 | 合格 |
 
-当前最终验收尚未达到全部合格。真实外部 Images Edits 为费用边界内的明确缺口，Git 交付将在提交推送后补录。
+功能、文档、测试、页面与 Git 交付条目均已合格。真实外部 Images Edits 为费用边界内的明确验证缺口，状态保持 `evidence_missing`，不把 mock 合约验证表述为真实供应商运行验证。
