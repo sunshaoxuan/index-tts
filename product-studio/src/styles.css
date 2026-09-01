@@ -662,6 +662,30 @@ body * { box-shadow: none !important; }
 .scene-card-grid > .ant-card { border-color: var(--line-strong) !important; background: var(--surface-section) !important; }
 .scene-fields { width: 100%; }
 .scene-fields label { display: grid; gap: 7px; }
+.storyboard-note-warning { margin-top: 14px; }
+.storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-space { justify-content: flex-end; }
+.storyboard-scene-list { display: grid; gap: 22px; margin-top: 22px; }
+.storyboard-scene-card { overflow: hidden; border-color: var(--line-strong) !important; background: var(--surface-section) !important; }
+.storyboard-scene-card > .ant-card-head { min-height: 72px !important; background: rgba(56, 36, 22, .34) !important; }
+.storyboard-card-title { display: grid; gap: 3px; padding: 8px 0; }
+.storyboard-card-title span { color: var(--orange); font-size: 9px; letter-spacing: .12em; }
+.storyboard-card-title strong { color: var(--cream); font-size: 17px; font-weight: 550; }
+.storyboard-card-title .ant-typography { color: rgba(255, 237, 215, .56) !important; font-size: 9px; }
+.storyboard-scene-layout { min-width: 0; display: grid; grid-template-columns: minmax(320px, 42%) minmax(0, 1fr); gap: 24px; align-items: start; }
+.storyboard-keyframe-panel { min-width: 0; display: grid; gap: 14px; padding: 14px; border: 1px dashed var(--line-medium); border-radius: 12px; background: var(--surface-inset); }
+.storyboard-keyframe-preview { aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid rgba(255, 237, 215, .3); border-radius: 9px; background: rgba(16, 9, 4, .52); }
+.storyboard-keyframe-preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.storyboard-keyframe-placeholder { width: 100%; height: 100%; display: grid; place-content: center; justify-items: center; gap: 7px; color: rgba(255, 237, 215, .52); text-align: center; }
+.storyboard-keyframe-placeholder .anticon { color: var(--orange); font-size: 28px; }
+.storyboard-keyframe-placeholder strong { color: var(--cream); font-size: 11px; letter-spacing: .16em; }
+.storyboard-keyframe-placeholder span { font-size: 9px; }
+.storyboard-keyframe-panel label { min-width: 0; display: grid; gap: 8px; }
+.storyboard-keyframe-panel label > small { color: rgba(255, 237, 215, .64); font-size: 9px; line-height: 1.5; }
+.storyboard-keyframe-panel > .ant-typography { color: rgba(255, 237, 215, .58) !important; font-size: 9px; line-height: 1.5; }
+.storyboard-scene-fields { min-width: 0; }
+.storyboard-audio-range { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid rgba(255, 237, 215, .2); border-radius: 9px; background: rgba(255, 237, 215, .2); }
+.storyboard-audio-range span { display: grid; gap: 4px; padding: 11px 12px; color: rgba(255, 237, 215, .58); background: rgba(16, 9, 4, .74); font-size: 9px; }
+.storyboard-audio-range strong { color: var(--cream); font-size: 13px; font-variant-numeric: tabular-nums; }
 .low-confidence-card { margin-top: 18px; }
 .clear-key-control { grid-template-columns: max-content 1fr; align-items: center; }
 .role-table .role-focus-row { cursor: pointer; outline: 0; }
@@ -869,6 +893,15 @@ body * { box-shadow: none !important; }
   .hero-copy { align-self: auto; padding: 24px 0 0; }
   .hero-copy .ant-typography { max-width: 330px; margin-bottom: 18px !important; font-size: 18px; }
   .hero-stat { max-width: 330px; }
+  .storyboard-scene-layout { grid-template-columns: 1fr; }
+  .storyboard-audio-range { grid-template-columns: 1fr; }
+  .storyboard-workspace-card > .ant-card-head { padding-block: 15px !important; }
+  .storyboard-workspace-card > .ant-card-head > .ant-card-head-wrapper { display: grid; gap: 12px; }
+  .storyboard-workspace-card > .ant-card-head .ant-card-head-title { width: 100%; overflow: visible; white-space: normal; }
+  .storyboard-workspace-card > .ant-card-head .ant-card-extra { width: 100%; }
+  .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-space { width: 100%; display: grid; grid-template-columns: 1fr; }
+  .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-select,
+  .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-btn { width: 100%; }
   .hero-info-card { z-index: 2; left: 16px; bottom: 18px; width: 220px; min-height: 0; padding: 14px; }
   .hero-info-card strong { font-size: 12px; }
   .hero-info-card div { margin: 14px 0 8px; }

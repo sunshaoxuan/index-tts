@@ -46,6 +46,15 @@ export interface JobStatus {
   phase: string; fraction: number; message: string; telemetry?: JobTelemetry;
 }
 
+export interface SceneKeyframeResult {
+  sceneId: string;
+  keyframeUrl: string;
+  keyframePrompt: string;
+  keyframeStyle: string;
+  generatedAt: string;
+  model: string;
+}
+
 export async function parseApiResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') || '';
   const raw = await response.text();
@@ -100,5 +109,7 @@ export const api = {
   voice: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/voices`, emptyPost),
   expandCharacterProfile: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number }) => request<{ profile: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/expand-profile`, { method: 'POST', body: JSON.stringify(draft) }),
   generateCharacterPortrait: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number; portraitStyle: string; portraitPrompt?: string }) => request<{ portraitUrl: string; portraitPrompt: string; portraitStyle: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/portrait`, { method: 'POST', body: JSON.stringify(draft) }),
+  generateSceneKeyframe: (id: string, sceneId: string, scene: Record<string, unknown>, keyframeStyle: string) => request<SceneKeyframeResult>(`/api/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/keyframe`, { method: 'POST', body: JSON.stringify({ scene, keyframeStyle }) }),
+  generateStoryboardKeyframes: (id: string, scenes: Array<Record<string, unknown>>, keyframeStyle: string) => request<{ keyframes: SceneKeyframeResult[]; generatedCount: number; model: string }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ scenes, keyframeStyle }) }),
   job: (id: string) => request<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
 };

@@ -179,14 +179,32 @@ DIRECTOR_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["id", "location", "time", "participants", "narrative_perspective", "mood", "evidence"],
+                "required": [
+                    "id",
+                    "title",
+                    "topic",
+                    "location",
+                    "spatial_direction",
+                    "time",
+                    "participants",
+                    "narrative_perspective",
+                    "mood",
+                    "storyboard_note",
+                    "boundary_reason",
+                    "evidence",
+                ],
                 "properties": {
                     "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "topic": {"type": "string"},
                     "location": {"type": "string"},
+                    "spatial_direction": {"type": "string"},
                     "time": {"type": "string"},
                     "participants": {"type": "array", "items": {"type": "string"}},
                     "narrative_perspective": {"type": "string"},
                     "mood": {"type": "string"},
+                    "storyboard_note": {"type": "string"},
+                    "boundary_reason": {"type": "string"},
                     "evidence": {"type": "string"},
                 },
             },
@@ -707,6 +725,7 @@ class OllamaTextDirector:
         global_segments = assign_numbered_chapter_sections(source, global_segments)
         for order, segment in enumerate(global_segments, start=1):
             segment["order"] = order
+        global_scenes = self._finalize_scene_ranges(global_scenes, global_segments)
 
         _notify(progress, 1.0, "AI 文本导演完成")
         return {
@@ -1056,12 +1075,13 @@ LINKED_ARTICLES
 只完成角色和场景注册，不进行分句，不写详细人物小传，不生成声音参数。
 1. 人物使用稳定 ID，旁白固定为 narrator。姓名、职称、外貌称谓和关系称谓写入同一角色 aliases。
 2. 描述短语含副词或动作词时不得作为人物名称。新增人物必须提供 evidence 和 confidence。
-3. 场景记录地点、时间、参与角色 ID、叙事视角、基调和证据。场景转换需要时间、地点、人物集合或叙事视角变化依据。
-4. gender 结合本块原文和已关联文章证据中的称谓、亲属关系、身份、行为和上下文推断 female 或 male，并在 gender_evidence 记录证据。gender_basis 必须标记为 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
-5. 每个 character 的 age 都要结合本块原文和已关联文章证据中的明示年龄、亲属关系、身份、就学或职业阶段、时间线和行为语境推断整数，并在 age_evidence 记录证据。age_basis 使用与 gender_basis 相同的五类值。证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。范围年龄采用下限并保留完整范围。禁止无依据统一填写 35。narrator 可以填写 null。
-6. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
-7. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
-8. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
+3. 场景必须按视频分镜粒度登记。内容主题发生变化就建立新场景。小说中地点、室内外、人物所处方位、观察方向或叙事焦点变化时也建立新场景。人物集合、故事内时间或叙事视角变化同样可以成为边界。
+4. 每个场景填写简短标题、当前主题、地点、空间方位、故事内时间、参与角色 ID、叙事视角、基调和边界依据。storyboard_note 使用 80 到 220 个中文字符写成可直接生成关键帧的场景小记，具体描述环境、人物位置与动作、前后景、镜头景别或观察方向、光线、色彩和关键物件。只写原文支持的画面，未知信息明确说明。
+5. gender 结合本块原文和已关联文章证据中的称谓、亲属关系、身份、行为和上下文推断 female 或 male，并在 gender_evidence 记录证据。gender_basis 必须标记为 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
+6. 每个 character 的 age 都要结合本块原文和已关联文章证据中的明示年龄、亲属关系、身份、就学或职业阶段、时间线和行为语境推断整数，并在 age_evidence 记录证据。age_basis 使用与 gender_basis 相同的五类值。证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。范围年龄采用下限并保留完整范围。禁止无依据统一填写 35。narrator 可以填写 null。
+7. profile 只写 40 到 120 个中文字符。voice_hint 只写 25 到 80 个中文字符。
+8. 体裁要求：{requested_type}。用户导演补充：{guidance.strip() or '无'}。
+9. 已注册人物：{json.dumps(characters, ensure_ascii=False, separators=(',', ':'))}
 
 本块原文：
 <<<SOURCE
@@ -1225,7 +1245,7 @@ LINKED_ARTICLE_EVIDENCE
                         "evidence": "确定性安全分段",
                     }
                 ],
-                "scenes": [{"id": "scene_001", "location": "未判断", "time": "未判断", "participants": ["narrator"], "narrative_perspective": "旁白", "mood": "中性", "evidence": "确定性安全分段"}],
+                "scenes": [{"id": "scene_001", "title": "安全分镜", "topic": "原文连续叙述", "location": "未判断", "spatial_direction": "未判断", "time": "未判断", "participants": ["narrator"], "narrative_perspective": "旁白", "mood": "中性", "storyboard_note": "原文已进入确定性安全分段，当前缺少足够的 AI 画面分析结果。关键帧生成前需要重新执行全文分析并复核地点、人物位置、镜头方向与环境细节。", "boundary_reason": "安全分段起点", "evidence": "确定性安全分段"}],
                 "segments": segments,
             },
             chunk,
@@ -1269,8 +1289,9 @@ LINKED_ARTICLE_EVIDENCE
 12. 每个角色的 voice_hint 是声音导演建议，使用 25 到 100 个中文字符，说明年龄感、声线质感、音高、共鸣位置、气息、吐字方式和基础情绪。不要重复姓名，不要写“根据角色内容选择”等空泛占位词。
 13. 每个 character 都必须根据当前原文和全文角色注册表推断 gender 与 age，并在对应 evidence 字段记录证据。gender_basis 与 age_basis 必须标记为 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。范围年龄采用下限，禁止无依据统一填写 35。角色资产字段只用于人物识别，全文注册表中的关联文章证据可以参与本次 AI 人口属性分析。
 14. 已有角色的人物小传或声音导演建议信息不足时，结合当前文本块补充；有明确原文依据的新信息优先于旧占位内容。
-15. 先识别本块 scene，记录地点、时间、参与人物、叙事视角、情绪基调和原文证据。每条 segment 必须引用本块 scenes 中的 scene_id。场景转换需要时间、地点、人物集合或叙事视角变化证据。
-16. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
+15. 先按视频分镜粒度识别本块 scenes。每当内容主题变化就建立新场景。小说中地点、室内外、人物方位、观察方向或叙事焦点发生变化时建立新场景。人物集合、故事内时间或叙事视角变化也可以形成边界。禁止用一个宽泛场景覆盖多个已经发生主题、地点或方位变化的连续段落。
+16. 每个 scene 必须填写 title、topic、location、spatial_direction、time、participants、narrative_perspective、mood、boundary_reason 和 evidence。storyboard_note 使用 80 到 220 个中文字符写成关键帧画面小记，具体包含环境、人物位置与动作、前后景、镜头景别或观察方向、光线、色彩和关键物件。每条 segment 必须引用本块 scenes 中准确的 scene_id。
+17. 每条 segment 使用 speaker_evidence 简述说话动作、上下文关系或指代依据。连续句出现异常说话人、情绪或节奏跳变时先复核上下文一致性。
 
 已有角色表：{roster or '[]'}
 全文场景注册表：{scene_registry or '[]'}。优先复用其中的 scene id；当前块出现有证据的新场景时可以新增。
@@ -1466,7 +1487,7 @@ JSON Schema：{schema_text}
             if isinstance(raw, dict)
         ]
         if not scenes:
-            scenes = [{"id": "scene_001", "location": "未判断", "time": "未判断", "participants": [], "narrative_perspective": "未判断", "mood": "中性", "evidence": "旧版结果未提供场景数据"}]
+            scenes = [{"id": "scene_001", "title": "待分析场景", "topic": "待分析", "location": "未判断", "spatial_direction": "未判断", "time": "未判断", "participants": [], "narrative_perspective": "未判断", "mood": "中性", "storyboard_note": "当前结果缺少可用于视频关键帧的场景小记，需要重新执行全文分析并补充环境、人物位置、镜头方向、光线和关键物件。", "boundary_reason": "旧版结果未记录场景边界", "evidence": "旧版结果未提供场景数据"}]
         scene_ids = {scene["id"] for scene in scenes}
 
         segments: list[dict[str, Any]] = []
@@ -1824,15 +1845,45 @@ JSON Schema：{schema_text}
 
     @staticmethod
     def _normalize_scene(raw: dict[str, Any], default_index: int) -> dict[str, Any]:
+        location = str(raw.get("location", "未说明")).strip() or "未说明"
+        evidence = str(raw.get("evidence", "")).strip()
         return {
             "id": str(raw.get("id", "")).strip() or f"scene_{default_index:03d}",
-            "location": str(raw.get("location", "未说明")).strip() or "未说明",
+            "title": str(raw.get("title", "")).strip() or f"场景 {default_index:03d}",
+            "topic": str(raw.get("topic", "")).strip() or evidence or "未说明",
+            "location": location,
+            "spatial_direction": str(raw.get("spatial_direction", "未说明")).strip() or "未说明",
             "time": str(raw.get("time", "未说明")).strip() or "未说明",
             "participants": [str(item).strip() for item in raw.get("participants", []) if str(item).strip()],
             "narrative_perspective": str(raw.get("narrative_perspective", "未说明")).strip() or "未说明",
             "mood": str(raw.get("mood", "中性")).strip() or "中性",
-            "evidence": str(raw.get("evidence", "")).strip(),
+            "storyboard_note": str(raw.get("storyboard_note", "")).strip() or f"场景发生在{location}。{evidence or '原文画面细节待复核。'}",
+            "boundary_reason": str(raw.get("boundary_reason", "")).strip() or "场景内容发生变化",
+            "evidence": evidence,
         }
+
+    @staticmethod
+    def _finalize_scene_ranges(
+        scenes: list[dict[str, Any]],
+        segments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        orders_by_scene: dict[str, list[int]] = {}
+        for segment in segments:
+            scene_id = str(segment.get("scene_id", "")).strip()
+            order = int(segment.get("order", 0) or 0)
+            if scene_id and order > 0:
+                orders_by_scene.setdefault(scene_id, []).append(order)
+        finalized: list[dict[str, Any]] = []
+        for scene in scenes:
+            orders = orders_by_scene.get(str(scene.get("id", "")), [])
+            if not orders:
+                continue
+            finalized.append({
+                **scene,
+                "start_segment_order": min(orders),
+                "end_segment_order": max(orders),
+            })
+        return finalized
 
     @staticmethod
     def _normalize_segment(raw: dict[str, Any], default_order: int) -> dict[str, Any]:
@@ -1929,12 +1980,27 @@ JSON Schema：{schema_text}
         local_scene_to_global: dict[str, str] = {}
         scene_by_id = {scene["id"]: scene for scene in global_scenes}
         for scene in result.get("scenes", []):
-            existing_scene = scene_by_id.get(scene["id"])
+            identity_fields = ("topic", "location", "spatial_direction")
+            scene_identity = tuple(str(scene.get(field, "")).strip().casefold() for field in identity_fields)
+            existing_scene = next(
+                (
+                    candidate
+                    for candidate in global_scenes
+                    if scene_identity == tuple(str(candidate.get(field, "")).strip().casefold() for field in identity_fields)
+                ),
+                None,
+            )
+            same_id_scene = scene_by_id.get(scene["id"])
+            if existing_scene is None and same_id_scene is not None:
+                same_id_identity = tuple(str(same_id_scene.get(field, "")).strip().casefold() for field in identity_fields)
+                if same_id_identity == scene_identity:
+                    existing_scene = same_id_scene
             if existing_scene is None:
                 created_scene = deepcopy(scene)
                 created_scene["id"] = f"scene_{len(global_scenes) + 1:03d}"
                 created_scene["participants"] = [local_to_global.get(item, item) for item in scene.get("participants", [])]
                 global_scenes.append(created_scene)
+                scene_by_id[created_scene["id"]] = created_scene
                 existing_scene = created_scene
             local_scene_to_global[scene["id"]] = existing_scene["id"]
 

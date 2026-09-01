@@ -661,6 +661,13 @@ def test_schema_requires_lossless_source_and_directing_fields():
     assert DIRECTOR_SCHEMA["properties"]["segments"]["items"]["properties"]["attitude"]["enum"] == sorted(ATTITUDE_PRESETS)
     assert DIRECTOR_SCHEMA["properties"]["segments"]["items"]["properties"]["pace"]["enum"] == sorted(PACE_PRESETS)
     assert "scenes" in DIRECTOR_SCHEMA["required"]
+    assert {
+        "title",
+        "topic",
+        "spatial_direction",
+        "storyboard_note",
+        "boundary_reason",
+    } <= set(DIRECTOR_SCHEMA["properties"]["scenes"]["items"]["required"])
 
 
 def test_split_document_preserves_every_non_whitespace_character():
@@ -1377,6 +1384,9 @@ def test_director_prompt_keeps_detailed_biography_out_of_the_segmentation_budget
     assert "详细人物小传由独立功能扩写" in prompt
     assert "speaker_candidates" in prompt
     assert "全文场景注册表" in prompt
+    assert "内容主题变化" in prompt
+    assert "人物方位、观察方向或叙事焦点" in prompt
+    assert "storyboard_note 使用 80 到 220 个中文字符" in prompt
     assert "voice_hint 是声音导演建议" in prompt
     assert "音高、共鸣位置、气息、吐字方式和基础情绪" in prompt
     assert "根据角色内容选择" in prompt
@@ -1474,8 +1484,29 @@ def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segm
     owner = next(item for item in result["characters"] if item["name"] == "中年妇人")
     assert "老板娘" in owner["aliases"]
     assert result["scenes"][0]["location"] == "小吃店"
+    assert result["scenes"][0]["start_segment_order"] == 1
+    assert result["scenes"][0]["end_segment_order"] == len(result["segments"])
     assert result["metrics"]["context_requests"] == 1
     assert result["metrics"]["context_fallback"] == 0
+
+
+def test_scene_ranges_follow_actual_segment_assignments_and_drop_unused_registry_rows():
+    scenes = [
+        OllamaTextDirector._normalize_scene({"id": "scene_001", "title": "门外", "topic": "抵达", "location": "门外"}, 1),
+        OllamaTextDirector._normalize_scene({"id": "scene_002", "title": "室内", "topic": "会面", "location": "客厅"}, 2),
+        OllamaTextDirector._normalize_scene({"id": "scene_003", "title": "未采用", "topic": "旧注册", "location": "阁楼"}, 3),
+    ]
+    segments = [
+        {"order": 1, "scene_id": "scene_001"},
+        {"order": 2, "scene_id": "scene_001"},
+        {"order": 3, "scene_id": "scene_002"},
+    ]
+
+    finalized = OllamaTextDirector._finalize_scene_ranges(scenes, segments)
+
+    assert [scene["id"] for scene in finalized] == ["scene_001", "scene_002"]
+    assert (finalized[0]["start_segment_order"], finalized[0]["end_segment_order"]) == (1, 2)
+    assert (finalized[1]["start_segment_order"], finalized[1]["end_segment_order"]) == (3, 3)
 
 
 def test_quoted_speaker_inference_does_not_treat_low_voice_as_a_name():

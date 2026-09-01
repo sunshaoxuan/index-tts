@@ -170,6 +170,24 @@ function normalizeVoiceCandidate(item) {
   };
 }
 
+const DEFAULT_STORYBOARD_STYLE = 'cinematic_manga';
+const STORYBOARD_STYLE_PROMPTS = Object.freeze({
+  cinematic_manga: '电影感漫画分镜。成熟人物造型，清晰轮廓，细腻分层上色，克制综合色彩，电影式光影、景深和空间调度。',
+  clean_cel: '清爽赛璐璐分镜。利落线稿，纯净色块，轻柔阴影，动作轮廓和空间关系清晰。',
+  soft_watercolor: '柔光水彩分镜。透明水彩晕染，细微纸张颗粒，柔和边缘，空气感光线和细腻情绪。',
+  noir_ink: '黑白悬疑墨线分镜。高反差黑白，硬朗墨线，密集排线，深沉阴影和紧张构图。',
+  retro_print: '复古网点印刷分镜。有限色盘，网点层次，轻微套色偏移和年代纸张质感。',
+  neon_scifi: '霓虹科幻分镜。冷暖霓虹，锐利边缘光，未来材质，夜景气氛和清楚空间层次。',
+  storybook_gouache: '叙事绘本厚涂分镜。不透明颜料笔触，温暖综合色调，简洁造型和故事书式构图。',
+  oriental_ink: '东方水墨分镜。墨色浓淡，充足留白，含蓄设色和流动笔触，强调空间气韵。',
+  cinematic_realistic: '电影写实关键帧。真实人物比例、皮肤、织物和环境材质，电影摄影光线，自然镜头景深和可信空间透视。',
+});
+
+function normalizeStoryboardStyle(value) {
+  const style = String(value || '');
+  return Object.hasOwn(STORYBOARD_STYLE_PROMPTS, style) ? style : DEFAULT_STORYBOARD_STYLE;
+}
+
 function normalizeCharacterAsset(role, source = {}) {
   const gender = ['female', 'male', 'unspecified'].includes(source.gender)
     ? source.gender
@@ -763,6 +781,30 @@ function portraitPrompt({ name, profile, gender, age, portraitStyle, portraitPro
   ].filter(Boolean).join('\n');
 }
 
+function sceneKeyframePrompt(project, scene, requestedStyle) {
+  const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
+  const sceneId = safeProjectId(scene.id);
+  const note = String(scene.storyboard_note || '').trim();
+  if (note.length < 20) throw new Error(`场景 ${sceneId} 的场景小记至少需要 20 个字符`);
+  const participants = new Set(Array.isArray(scene.participants) ? scene.participants.map(String) : []);
+  const roleDetails = (project.roles || []).filter(role => participants.has(String(role[0]))).map(role => {
+    const asset = project.character_assets?.[role[0]] || {};
+    const gender = asset.gender === 'female' ? '女性' : asset.gender === 'male' ? '男性' : '性别未指定';
+    return `${role[1]}（${gender}，约 ${asset.age || 35} 岁）：${String(role[3] || '').slice(0, 900)}`;
+  });
+  return [
+    `为声音作品“${project.title}”制作一张 16:9 视频分镜关键帧。场景 ID：${sceneId}。`,
+    `分镜标题：${String(scene.title || sceneId)}。内容主题：${String(scene.topic || '未说明')}。`,
+    `地点：${String(scene.location || '未说明')}。空间方位或观察方向：${String(scene.spatial_direction || '未说明')}。故事内时间：${String(scene.time || '未说明')}。`,
+    `场景基调：${String(scene.mood || '中性')}。叙事视角：${String(scene.narrative_perspective || '未说明')}。`,
+    `AI 场景小记：${note}`,
+    roleDetails.length ? `需要保持连续一致的角色设定：\n${roleDetails.join('\n')}` : '本镜头没有需要明确展示的已登记角色。',
+    `画面风格：${STORYBOARD_STYLE_PROMPTS[style]}`,
+    '输出单张横向关键帧。完整呈现场景小记中的主体位置、动作、前后景、镜头方向、光线、色彩和关键物件，保持人物身份和时代背景一致。',
+    '画面中不出现字幕、对白文字、标题、水印、界面、边框或标志。不拼接多格分镜。',
+  ].join('\n');
+}
+
 async function decodeCompatibleImage(remoteFetch, item, settings) {
   if (item?.b64_json) return Buffer.from(String(item.b64_json), 'base64');
   if (item?.inline_data?.data) return Buffer.from(String(item.inline_data.data), 'base64');
@@ -775,6 +817,31 @@ async function decodeCompatibleImage(remoteFetch, item, settings) {
     return Buffer.from(await response.arrayBuffer());
   }
   throw new Error('兼容服务没有返回图像数据');
+}
+
+async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle }) {
+  const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
+  const prompt = sceneKeyframePrompt(project, scene, style);
+  const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
+    model: settings.image_model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
+  });
+  const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+  const bytes = await decodeCompatibleImage(remoteFetch, item, settings);
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的关键帧为空或超过 20 MB');
+  const extension = imageExtension(bytes);
+  const assetsDir = path.join(projectRoot, projectId, 'scene-assets');
+  await mkdir(assetsDir, { recursive: true });
+  const sceneId = safeProjectId(scene.id);
+  const filename = `${safeSlug(sceneId)}-${Date.now()}-${randomUUID().slice(0, 8)}${extension}`;
+  await writeFile(path.join(assetsDir, filename), bytes);
+  return {
+    sceneId,
+    keyframeUrl: `/api/projects/${encodeURIComponent(projectId)}/scene-assets/${encodeURIComponent(filename)}`,
+    keyframePrompt: prompt,
+    keyframeStyle: style,
+    generatedAt: new Date().toISOString(),
+    model: settings.image_model,
+  };
 }
 
 function imageExtension(bytes) {
@@ -1279,6 +1346,77 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       reply.type(type).header('Content-Length', info.size).header('Cache-Control', 'private, max-age=3600');
       return reply.send(createReadStream(assetPath));
     } catch { return reply.code(404).send({ error: '角色形象不存在' }); }
+  });
+  app.post('/api/projects/:id/scenes/:sceneId/keyframe', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const sceneId = safeProjectId(request.params.sceneId);
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
+      const settings = await readAiMediaSettings(aiMediaSettingsFile);
+      if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const persistedScenes = Array.isArray(project.document?.scenes) ? project.document.scenes : [];
+      const persistedScene = persistedScenes.find(scene => String(scene?.id || '') === sceneId);
+      if (!persistedScene) throw new Error('场景不存在');
+      const draft = request.body?.scene && typeof request.body.scene === 'object'
+        ? { ...persistedScene, ...request.body.scene, id: sceneId }
+        : persistedScene;
+      return await generateSceneKeyframe({
+        remoteFetch,
+        settings,
+        projectRoot,
+        projectId: id,
+        project,
+        scene: draft,
+        requestedStyle: request.body?.keyframeStyle,
+      });
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/storyboard/keyframes', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
+      const settings = await readAiMediaSettings(aiMediaSettingsFile);
+      if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const persistedScenes = Array.isArray(project.document?.scenes) ? project.document.scenes : [];
+      const requestedScenes = Array.isArray(request.body?.scenes) ? request.body.scenes : persistedScenes;
+      if (!requestedScenes.length) throw new Error('当前工程没有可生成的分镜场景');
+      if (requestedScenes.length > 200) throw new Error('单次全量关键帧生成最多处理 200 个场景');
+      const persistedById = new Map(persistedScenes.map(scene => [String(scene?.id || ''), scene]));
+      const prepared = requestedScenes.map(scene => {
+        const sceneId = safeProjectId(scene?.id);
+        const persisted = persistedById.get(sceneId);
+        if (!persisted) throw new Error(`场景 ${sceneId} 不存在`);
+        return { ...persisted, ...(scene && typeof scene === 'object' ? scene : {}), id: sceneId };
+      });
+      const keyframes = [];
+      for (const scene of prepared) {
+        keyframes.push(await generateSceneKeyframe({
+          remoteFetch,
+          settings,
+          projectRoot,
+          projectId: id,
+          project,
+          scene,
+          requestedStyle: request.body?.keyframeStyle,
+        }));
+      }
+      return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.get('/api/projects/:id/scene-assets/:file', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const file = safeProjectId(request.params.file);
+      const assetPath = path.join(projectRoot, id, 'scene-assets', file);
+      const info = await stat(assetPath);
+      const type = file.endsWith('.png') ? 'image/png' : file.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+      reply.type(type).header('Content-Length', info.size).header('Cache-Control', 'private, max-age=3600');
+      return reply.send(createReadStream(assetPath));
+    } catch { return reply.code(404).send({ error: '场景关键帧不存在' }); }
   });
   app.get('/api/projects/:id/latest-render', async (request) => {
     const id = safeProjectId(request.params.id);

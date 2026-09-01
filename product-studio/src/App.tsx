@@ -16,6 +16,7 @@ import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAs
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerificationLabel } from './voiceCandidateSelection';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
+import { buildSceneAudioRanges, DEFAULT_STORYBOARD_STYLE, formatStoryboardTime, STORYBOARD_STYLE_PRESETS, storyboardStylePreset } from './storyboard';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
 import { nextProjectActionDisplay, projectActionAvailability } from './projectActionMode';
 import { beginProjectSwitch, failProjectSwitch, isCurrentProjectSwitch, type ProjectSwitchState } from './projectSwitchState';
@@ -324,6 +325,9 @@ function Studio() {
   const roleReplacementSavingRef = useRef(false);
   const [profileGenerating, setProfileGenerating] = useState(false);
   const [portraitGenerating, setPortraitGenerating] = useState(false);
+  const [storyboardStyle, setStoryboardStyle] = useState(DEFAULT_STORYBOARD_STYLE);
+  const [keyframeGeneratingSceneId, setKeyframeGeneratingSceneId] = useState<string>();
+  const [allKeyframesGenerating, setAllKeyframesGenerating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
   const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
@@ -382,6 +386,9 @@ function Studio() {
       setSegmentPage(1);
       setShowMissingSegmentsOnly(false);
       setSplitEditor(undefined);
+      setStoryboardStyle(DEFAULT_STORYBOARD_STYLE);
+      setKeyframeGeneratingSceneId(undefined);
+      setAllKeyframesGenerating(false);
       updateProjectSwitch({ phase: 'idle' });
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -878,15 +885,70 @@ function Studio() {
     }
   };
 
-  const updateScene = (sceneId: string, field: string, value: string | string[]) => {
+  const updateSceneFields = (sceneId: string, values: Record<string, unknown>) => {
     if (!project || jobRunning) return;
-    const document = { ...(project.document ?? {}) };
-    const scenes = (Array.isArray(document.scenes) ? document.scenes : []).map(item => {
-      const scene = item as Record<string, unknown>;
-      return String(scene.id || '') === sceneId ? { ...scene, [field]: value } : item;
+    setProject(current => {
+      if (!current) return current;
+      const document = { ...(current.document ?? {}) };
+      const scenes = (Array.isArray(document.scenes) ? document.scenes : []).map(item => {
+        const scene = item as Record<string, unknown>;
+        return String(scene.id || '') === sceneId ? { ...scene, ...values } : item;
+      });
+      return { ...current, document: { ...document, scenes } };
     });
-    setProject({ ...project, document: { ...document, scenes } });
     setDirty(true);
+  };
+
+  const updateScene = (sceneId: string, field: string, value: unknown) => updateSceneFields(sceneId, { [field]: value });
+
+  const generateSceneKeyframe = async (scene: Record<string, unknown>) => {
+    if (!project || jobRunning) return;
+    const sceneId = String(scene.id || '');
+    const keyframeStyle = String(scene.keyframe_style || storyboardStyle || DEFAULT_STORYBOARD_STYLE);
+    setKeyframeGeneratingSceneId(sceneId);
+    try {
+      const result = await api.generateSceneKeyframe(project.project_id, sceneId, scene, keyframeStyle);
+      updateSceneFields(sceneId, {
+        keyframe_url: result.keyframeUrl,
+        keyframe_prompt: result.keyframePrompt,
+        keyframe_style: result.keyframeStyle,
+        keyframe_generated_at: result.generatedAt,
+        keyframe_model: result.model,
+      });
+      message.success(`场景 ${sceneId} 的关键帧已生成，请保存工程`);
+    } catch (error) { message.error((error as Error).message); }
+    finally { setKeyframeGeneratingSceneId(undefined); }
+  };
+
+  const generateAllSceneKeyframes = async () => {
+    if (!project || jobRunning) return;
+    const scenes = (Array.isArray(project.document?.scenes) ? project.document.scenes : []) as Array<Record<string, unknown>>;
+    if (!scenes.length) return;
+    setAllKeyframesGenerating(true);
+    try {
+      const result = await api.generateStoryboardKeyframes(project.project_id, scenes, storyboardStyle);
+      const generatedById = new Map(result.keyframes.map(item => [item.sceneId, item]));
+      setProject(current => {
+        if (!current) return current;
+        const document = { ...(current.document ?? {}) };
+        const currentScenes = (Array.isArray(document.scenes) ? document.scenes : []) as Array<Record<string, unknown>>;
+        const updatedScenes = currentScenes.map(scene => {
+          const generated = generatedById.get(String(scene.id || ''));
+          return generated ? {
+            ...scene,
+            keyframe_url: generated.keyframeUrl,
+            keyframe_prompt: generated.keyframePrompt,
+            keyframe_style: generated.keyframeStyle,
+            keyframe_generated_at: generated.generatedAt,
+            keyframe_model: generated.model,
+          } : scene;
+        });
+        return { ...current, document: { ...document, scenes: updatedScenes } };
+      });
+      setDirty(true);
+      message.success(`${result.generatedCount} 个场景关键帧已全量生成，请保存工程`);
+    } catch (error) { message.error((error as Error).message); }
+    finally { setAllKeyframesGenerating(false); }
   };
 
   const save = async (): Promise<boolean> => {
@@ -984,6 +1046,9 @@ function Studio() {
   const directorModelUnavailable = Boolean(availableDirectorModels.length && settingsDraft.directorModel && !availableDirectorModels.includes(settingsDraft.directorModel));
   const insecurePublicEndpoint = isPublicHttpEndpoint(settingsDraft.endpoint);
   const sceneRows = (Array.isArray(project?.document?.scenes) ? project.document.scenes : []) as Array<Record<string, unknown>>;
+  const documentSegments = (Array.isArray(project?.document?.segments) ? project.document.segments : []) as Array<Record<string, unknown>>;
+  const sceneAudioRanges = useMemo(() => buildSceneAudioRanges(documentSegments, render.captions || []), [documentSegments, render.captions]);
+  const allSceneNotesReady = sceneRows.length > 0 && sceneRows.every(scene => String(scene.storyboard_note || '').trim().length >= 20);
   const lowConfidenceSegments = (Array.isArray(project?.document?.segments) ? project.document.segments : []).filter(item => Number((item as Record<string, unknown>).speaker_confidence ?? 1) < 0.7) as Array<Record<string, unknown>>;
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
@@ -1201,7 +1266,42 @@ function Studio() {
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
         <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻或故事。AI 将按章节、段落和句子进行分轨。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'scenes', label: `场景分析 ${sceneRows.length}`, children: <Card title="场景连续性与低置信度复核"><Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '当前没有低于 0.7 的说话人归属'} description="场景数据来自最近一次 AI 全文分析。可在这里修订地点、时间、参与人物、叙事视角和基调；说话人归属请在分句导演表中修改。" />{sceneRows.length ? <div className="scene-card-grid">{sceneRows.map((scene, index) => { const sceneId = String(scene.id || `scene_${index + 1}`); return <Card key={sceneId} size="small" title={`${sceneId} · ${String(scene.location || '未说明')}`}><Space direction="vertical" size="middle" className="scene-fields"><div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label></div><label><Text strong>参与人物 ID</Text><Input disabled={jobRunning} value={Array.isArray(scene.participants) ? scene.participants.join('、') : ''} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean))} /></label><div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div><Text type="secondary">判断证据：{String(scene.evidence || '未记录')}</Text></Space></Card>; })}</div> : <Empty description="当前工程没有场景结构。使用全局 AI 设置选择模型后重新分析全文即可生成。" />}{lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}</Card> },
+          { key: 'scenes', label: `视频分镜 ${sceneRows.length}`, children: <Card className="storyboard-workspace-card" title="视频分镜与关键帧" extra={<Space wrap><Select aria-label="全量关键帧风格" disabled={jobRunning || allKeyframesGenerating} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} /><Button type="primary" icon={<PictureOutlined />} loading={allKeyframesGenerating} disabled={jobRunning || !allSceneNotesReady || Boolean(keyframeGeneratingSceneId)} onClick={() => void generateAllSceneKeyframes()}>{sceneRows.some(scene => scene.keyframe_url) ? '重新生成全量关键帧' : '生成全量关键帧'}</Button></Space>}>
+            <Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={lowConfidenceSegments.length ? `${lowConfidenceSegments.length} 条说话人归属需要复核` : '分镜说话人归属已通过当前置信度检查'} description="AI 按内容主题组织分镜。小说中的地点、室内外、人物方位、观察方向或叙事焦点变化也会形成新场景。每张卡片保存场景边界、AI 场景小记和关键帧。" />
+            {sceneRows.length > 0 && !allSceneNotesReady && <Alert className="storyboard-note-warning" type="warning" showIcon message="部分场景缺少可生成关键帧的场景小记" description="请重新执行 AI 全文分析，或人工补充至少 20 个字符的环境、人物位置、镜头方向、光线和关键物件描述。" />}
+            {sceneRows.length ? <div className="storyboard-scene-list">{sceneRows.map((scene, index) => {
+              const sceneId = String(scene.id || `scene_${index + 1}`);
+              const audioRange = sceneAudioRanges[sceneId];
+              const selectedStyle = String(scene.keyframe_style || storyboardStyle || DEFAULT_STORYBOARD_STYLE);
+              const stylePreset = storyboardStylePreset(selectedStyle);
+              const participantIds = Array.isArray(scene.participants) ? scene.participants.map(String) : [];
+              const participantNames = participantIds.map(id => project.roles.find(role => role[0] === id)?.[1] || id);
+              const startOrder = Number(scene.start_segment_order || audioRange?.startOrder || 0);
+              const endOrder = Number(scene.end_segment_order || audioRange?.endOrder || startOrder || 0);
+              const noteReady = String(scene.storyboard_note || '').trim().length >= 20;
+              return <Card key={sceneId} size="small" className="storyboard-scene-card" title={<div className="storyboard-card-title"><span>{String(index + 1).padStart(2, '0')} / SHOT</span><strong>{String(scene.title || sceneId)}</strong><Text>{sceneId}</Text></div>} extra={<Space wrap><Tag>{String(scene.topic || '主题待补充')}</Tag>{startOrder > 0 && <Tag>第 {startOrder}{endOrder > startOrder ? ` 至 ${endOrder}` : ''} 句</Tag>}</Space>}>
+                <div className="storyboard-scene-layout">
+                  <section className="storyboard-keyframe-panel" aria-label={`${sceneId} 关键帧`}>
+                    <div className="storyboard-keyframe-preview">{scene.keyframe_url ? <img src={String(scene.keyframe_url)} alt={`${String(scene.title || sceneId)}关键帧`} /> : <div className="storyboard-keyframe-placeholder"><PictureOutlined /><strong>KEYFRAME</strong><span>依据场景小记生成 16:9 画面</span></div>}</div>
+                    <label><Text strong>关键帧风格</Text><Select disabled={jobRunning || allKeyframesGenerating || keyframeGeneratingSceneId === sceneId} value={selectedStyle} options={[{ label: '插画分镜', options: STORYBOARD_STYLE_PRESETS.filter(item => item.kind === 'illustrated').map(item => ({ value: item.id, label: item.label })) }, { label: '写实分镜', options: STORYBOARD_STYLE_PRESETS.filter(item => item.kind === 'realistic').map(item => ({ value: item.id, label: item.label })) }]} onChange={value => updateScene(sceneId, 'keyframe_style', value)} /><small>{stylePreset.description}</small></label>
+                    <Button type="primary" icon={<ReloadOutlined />} loading={keyframeGeneratingSceneId === sceneId} disabled={jobRunning || allKeyframesGenerating || Boolean(keyframeGeneratingSceneId && keyframeGeneratingSceneId !== sceneId) || !noteReady} onClick={() => void generateSceneKeyframe(scene)}>{scene.keyframe_url ? '重新生成这一张' : '生成这一张关键帧'}</Button>
+                    {Boolean(scene.keyframe_generated_at) && <Text type="secondary">最近生成：{new Date(String(scene.keyframe_generated_at)).toLocaleString()} · {String(scene.keyframe_model || aiMediaSettings?.imageModel || '图像模型')}</Text>}
+                  </section>
+                  <Space direction="vertical" size="middle" className="scene-fields storyboard-scene-fields">
+                    {audioRange && <div className="storyboard-audio-range" aria-label={`${sceneId} 音频时间范围`}><span>音频开始 <strong>{formatStoryboardTime(audioRange.startSeconds)}</strong></span><span>音频结束 <strong>{formatStoryboardTime(audioRange.endSeconds)}</strong></span><span>时长 <strong>{formatStoryboardTime(audioRange.endSeconds - audioRange.startSeconds)}</strong></span></div>}
+                    <div className="editor-two-column"><label><Text strong>内容主题</Text><Input disabled={jobRunning} value={String(scene.topic || '')} onChange={event => updateScene(sceneId, 'topic', event.target.value)} /></label><label><Text strong>分镜标题</Text><Input disabled={jobRunning} value={String(scene.title || '')} onChange={event => updateScene(sceneId, 'title', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>空间方位与观察方向</Text><Input disabled={jobRunning} value={String(scene.spatial_direction || '')} onChange={event => updateScene(sceneId, 'spatial_direction', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>故事内时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>参与人物</Text><Input disabled={jobRunning} value={participantNames.join('、')} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean).map(value => project.roles.find(role => role[1] === value)?.[0] || value))} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div>
+                    <label><Flex justify="space-between" align="center"><Text strong>AI 场景小记</Text><Text type={noteReady ? 'secondary' : 'warning'}>{String(scene.storyboard_note || '').length} 字符</Text></Flex><Input.TextArea disabled={jobRunning} rows={6} value={String(scene.storyboard_note || '')} onChange={event => updateScene(sceneId, 'storyboard_note', event.target.value)} placeholder="描述环境、人物位置与动作、前后景、镜头方向、光线、色彩和关键物件。" /></label>
+                    <label><Text strong>场景切换依据</Text><Input disabled={jobRunning} value={String(scene.boundary_reason || '')} onChange={event => updateScene(sceneId, 'boundary_reason', event.target.value)} /></label>
+                    <Text type="secondary">原文判断证据：{String(scene.evidence || '未记录')}</Text>
+                  </Space>
+                </div>
+              </Card>;
+            })}</div> : <Empty description="当前工程没有视频分镜。配置全文分析模型后执行 AI 重新分析全文即可生成。" />}
+            {lowConfidenceSegments.length > 0 && <Card size="small" title="待复核说话人" className="low-confidence-card"><Space wrap>{lowConfidenceSegments.slice(0, 30).map(segment => <Tag key={String(segment.order)} color="orange">第 {String(segment.order)} 句 · {String(segment.speaker_name || '未知')} · {Math.round(Number(segment.speaker_confidence) * 100)}%</Tag>)}</Space></Card>}
+          </Card> },
           { key: 'roles', label: `角色资产 ${project.roles.length}`, children: <Card title="角色资产卡片" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={addRole}>补充角色</Button>}>
             <Alert type="info" showIcon message="每个人物使用一张独立卡片。打开卡片即可编辑身份、性别、年龄、详细小传、声音特征、目标频率和角色形象。音色仍是可试听、可重新生成的声音样本。" />
             {pendingVoiceSelections.length > 0 && <section className="voice-selection-review" aria-label="待选择角色音色">

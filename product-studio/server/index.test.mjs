@@ -374,6 +374,45 @@ test('defaults portraits to comics and uses realistic rendering only when explic
   await app.close();
 });
 
+test('generates one storyboard keyframe and a full set from AI scene notes with selectable styles', async () => {
+  const { root } = await fixture();
+  const projectPath = path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json');
+  const stored = JSON.parse(await readFile(projectPath, 'utf8'));
+  stored.document = { scenes: [
+    { id: 'scene_001', title: '雨夜抵达', topic: '访客抵达', location: '旧宅门廊', spatial_direction: '室外朝向门内', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '悬疑', storyboard_note: '雨幕覆盖旧宅门廊，访客站在画面左侧收起黑伞，门内暖光从右后方切入，前景积水映出人物剪影，中景木门半开，远景保持在暗色庭院。镜头采用中远景并从室外朝向门内。', boundary_reason: '地点从街道切换到旧宅门廊', evidence: '访客在雨夜抵达旧宅' },
+    { id: 'scene_002', title: '进入客厅', topic: '室内会面', location: '旧宅客厅', spatial_direction: '室内面向壁炉', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '克制', storyboard_note: '客厅以壁炉为视觉中心，人物停在画面右侧入口处，前景旧木桌压住信封，中景空椅形成等待感，壁炉微光照亮织物和灰尘，背景楼梯隐入阴影。镜头使用平视广角并面向壁炉。', boundary_reason: '人物由门廊进入室内', evidence: '木门关闭后人物进入客厅' },
+  ] };
+  await writeFile(projectPath, JSON.stringify(stored));
+  const calls = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 21, 22, 23, 24]);
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'image-model' } });
+  const project = (await app.inject('/api/projects/demo')).json();
+
+  const single = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_001/keyframe', payload: { scene: project.document.scenes[0], keyframeStyle: 'noir_ink' } });
+  assert.equal(single.statusCode, 200);
+  assert.equal(single.json().sceneId, 'scene_001');
+  assert.equal(single.json().keyframeStyle, 'noir_ink');
+  assert.equal((await app.inject(single.json().keyframeUrl)).statusCode, 200);
+  assert.equal(calls[0].body.size, '1536x1024');
+  assert.match(calls[0].body.prompt, /AI 场景小记/);
+  assert.match(calls[0].body.prompt, /黑白悬疑墨线分镜/);
+  assert.match(calls[0].body.prompt, /16:9/);
+
+  const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { scenes: project.document.scenes, keyframeStyle: 'cinematic_realistic' } });
+  assert.equal(full.statusCode, 200);
+  assert.equal(full.json().generatedCount, 2);
+  assert.deepEqual(full.json().keyframes.map(item => item.sceneId), ['scene_001', 'scene_002']);
+  assert.ok(calls.slice(1).every(call => /电影写实关键帧/.test(call.body.prompt)));
+  assert.ok(calls.every(call => call.body.model === 'image-model'));
+  assert.equal((await app.inject(full.json().keyframes[1].keyframeUrl)).headers['content-type'], 'image/png');
+  await app.close();
+});
+
 test('strips compatible service credentials from cross-origin portrait downloads', async () => {
   const { root } = await fixture();
   const calls = [];
