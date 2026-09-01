@@ -5,7 +5,7 @@
 | `tests/test_text_director.py` | 74 passed | 通过 |
 | Product Studio 全量 Node 测试 | 152 passed | 通过 |
 | Vite 生产构建 | 3106 modules transformed | 通过，存在既有大 chunk 警告 |
-| Docker 镜像与容器 | `indextts25-product-studio:1.1.55-a7fbdbf`，容器 healthy，RestartCount 0 | 通过 |
+| Docker 镜像与容器 | 功能镜像 `1.1.55-a7fbdbf` 验收通过；最终回执提交后的现行镜像以发布后外部一致性检查为准 | 通过 |
 | 浏览器 DOM、Console、截图 | 第 165 条参数与候选操作区可见，Console error 0 | 通过 |
 | 第 165 条真实重新生成 | 三版相似度 0.800、0.797、0.730，门禁均为 0.720，当前片断未自动替换 | 通过 |
 
