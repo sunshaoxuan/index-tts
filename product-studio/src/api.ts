@@ -12,7 +12,12 @@ export interface RenderFragment {
   order: number; speakerName: string; sourceText: string; synthesisText: string; effectiveText: string;
   appliedPronunciations: string[]; cacheReused: boolean; forcedRegeneration: boolean; audio: string;
   stressWord?: string; stressLevel?: string; selectedCandidateId?: string;
-  candidates?: Array<{ candidateId: string; audio: string; rank: number; selected: boolean; score: number; stressDb: number; qualityPassed: boolean; stressVerified: boolean; alignmentMethod: string }>;
+  candidates?: Array<{
+    candidateId: string; audio: string; rank: number; selected: boolean; score: number; stressDb: number;
+    audioQualityPassed: boolean; qualityPassed: boolean; stressVerified: boolean; alignmentMethod: string;
+    speakerSimilarity: number | null; speakerSimilarityThreshold: number; speakerVerified: boolean; speakerValidationMethod: string;
+    directorVerified: boolean; directorValidationMethod: string;
+  }>;
 }
 
 export interface RenderCaption {

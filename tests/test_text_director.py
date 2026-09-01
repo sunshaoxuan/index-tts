@@ -492,13 +492,13 @@ def _valid_response():
     }
 
 
-def _write_wav(path: Path, frame_count=2205):
+def _write_wav(path: Path, frame_count=2205, sample_value=1):
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(22050)
-        output.writeframes(b"\x01\x00" * frame_count)
+        output.writeframes(int(sample_value).to_bytes(2, "little", signed=True) * frame_count)
 
 
 def test_segment_candidate_validator_ranks_an_emphasized_target_with_auditable_proxy(tmp_path):
@@ -536,6 +536,9 @@ def test_advanced_stress_generation_keeps_drawing_until_three_proxy_verified_can
             self.calls.append(kwargs)
             _write_wav(Path(kwargs["output_path"]), 2205)
             return kwargs["output_path"]
+
+        def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+            return 0.86
 
     checks = []
 
@@ -582,8 +585,60 @@ def test_advanced_stress_generation_keeps_drawing_until_three_proxy_verified_can
     assert len(checks) == 6
     assert len(candidates) == 3
     assert all(item["quality_passed"] and item["stress_verified"] for item in candidates)
+    assert all(item["speaker_verified"] for item in candidates)
+    assert all(item["speaker_validation_method"] == "campplus_cosine_v1" for item in candidates)
+    assert all(item["director_verified"] is False for item in candidates)
     assert all(call["use_random"] is True for call in model.calls)
     assert 'exact text "他"' in model.calls[0]["emo_text"]
+
+
+def test_advanced_regeneration_preserves_current_fragment_until_verified_candidate_is_selected(tmp_path):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+    process_dir = tmp_path / "process"
+    old_key = "a" * 64
+    old_cache = process_dir / "segment-cache" / f"{old_key}.wav"
+    _write_wav(old_cache, 100)
+    (process_dir / "segment-fragments.json").write_text(json.dumps({
+        "version": 1,
+        "fragments": {old_key: {"order": 1, "source_text": "保留原片断。", "text": "保留原片断。"}},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def infer(self, **kwargs):
+            self.calls.append(kwargs)
+            _write_wav(Path(kwargs["output_path"]), 4410, 1000)
+            return kwargs["output_path"]
+
+        def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+            return 0.84
+
+    cache_result, _, _, _ = render_directed_audio(
+        document={"title": "保留现行片断", "content_type": "novel"},
+        role_table=[_role_row()],
+        segment_table=[[1, "正文", "narrator", "旁白", "ZH", "保留原片断。", "保留原片断。", "中性叙述", "平静", 0.7, "低声", 0, "inner_thought", "", "", 1, "none", "advanced"]],
+        uploaded_files=None,
+        model=FakeModel(),
+        model_lock=threading.Lock(),
+        output_root=tmp_path / "outputs",
+        project_process_dir=process_dir,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        fragment_only_orders=[1],
+        advanced_segment_orders=[1],
+    )
+
+    payload = json.loads((process_dir / "segment-fragments.json").read_text(encoding="utf-8"))
+    fragment = payload["fragments"][Path(cache_result).stem]
+    assert fragment["duration_factor"] == 1.05
+    assert "沉稳舒缓" not in fragment["emotion_text"]
+    assert fragment["selected_candidate_id"] == ""
+    assert all(candidate["selected"] is False for candidate in fragment["candidate_results"])
+    with wave.open(str(process_dir / "segment-cache" / f"{fragment['cache_key']}.wav"), "rb") as current:
+        assert current.getnframes() == 100
 
 
 def _role_row(role_id="narrator", name="旁白", kind="narrator", voice_id="voice_05.wav", rhythm="沉稳舒缓"):
@@ -1533,8 +1588,8 @@ def test_render_builds_master_role_tracks_manifest_csv_and_zip(tmp_path):
     assert "2 个角色配置、2 个有内容的角色轨道" in status
     assert model.calls[0]["emo_text"].endswith("克制、低沉地表达。平静。")
     assert "韵母自然舒展" in model.calls[0]["emo_text"]
-    assert model.calls[0]["duration_factor"] == 1.0
-    assert "沉稳舒缓" in model.calls[0]["emo_text"]
+    assert model.calls[0]["duration_factor"] == 1.18
+    assert "沉稳舒缓" not in model.calls[0]["emo_text"]
     with zipfile.ZipFile(package) as archive:
         names = set(archive.namelist())
         assert "full-audio.wav" in names
@@ -1663,7 +1718,7 @@ def test_render_applies_project_pronunciations_natural_rhythm_and_reuses_cache(t
     )
 
     assert first_model.calls[0]["text"] == "重 庆 银行。"
-    assert first_model.calls[0]["duration_factor"] == 1.0
+    assert first_model.calls[0]["duration_factor"] == 1.18
     assert "韵母自然舒展" in first_model.calls[0]["emo_text"]
     assert "短语间停连清晰" in first_model.calls[0]["emo_text"]
     assert "speaking with a sly mischievous smile" in first_model.calls[0]["emo_text"]

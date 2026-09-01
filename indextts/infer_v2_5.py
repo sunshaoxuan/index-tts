@@ -407,6 +407,28 @@ class IndexTTS2:
             audio = audio[:, :max_audio_samples]
         return audio, sr
 
+    @torch.inference_mode()
+    def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+        """Return CAMPPlus cosine similarity for a reference and generated WAV."""
+        def embedding(audio_path):
+            audio, sample_rate = self._load_and_cut_audio(audio_path, 15, False)
+            audio_16k = torchaudio.transforms.Resample(sample_rate, 16000)(audio).to(self.device)
+            feat = torchaudio.compliance.kaldi.fbank(
+                audio_16k,
+                num_mel_bins=80,
+                dither=0,
+                sample_frequency=16000,
+            )
+            feat = feat - feat.mean(dim=0, keepdim=True)
+            return self.campplus_model(feat.unsqueeze(0))
+
+        if self.cache_spk_audio_prompt == reference_audio_path and self.cache_s2mel_style is not None:
+            reference = self.cache_s2mel_style
+        else:
+            reference = embedding(reference_audio_path)
+        candidate = embedding(candidate_audio_path)
+        return float(F.cosine_similarity(reference, candidate, dim=1).item())
+
     SPLIT_PROTECTED_PATTERN = re.compile(r'<\|SPECIAL_TOKEN_\d+\|>.*?<\|SPECIAL_TOKEN_\d+\|>')
 
     def _token_len(self, text):

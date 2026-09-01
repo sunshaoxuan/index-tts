@@ -1026,7 +1026,7 @@ test('returns three auditable segment candidates and adopts the user selection',
     order: 1, speaker_name: '旁白', source_text: '旧原文', text: '旧原文', effective_text: '旧原文', applied_pronunciations: [],
   }, [cacheKey]: {
     order: 1, speaker_name: '旁白', source_text: '原文', text: '原文', effective_text: '原文', applied_pronunciations: [], stress_word: '原', stress_level: 'strong', selected_candidate_id: candidates[0],
-    candidate_results: candidates.map((candidate_id, index) => ({ candidate_id, rank: index + 1, selected: index === 0, score: 20 - index, stress_db: 3 - index, quality_passed: true, stress_verified: index === 0, alignment_method: 'text_proportional_proxy_v1' })),
+    candidate_results: candidates.map((candidate_id, index) => ({ candidate_id, rank: index + 1, selected: index === 0, score: 90 - index, stress_db: 3 - index, audio_quality_passed: true, quality_passed: index < 2, stress_verified: index === 0, alignment_method: 'text_proportional_proxy_v1', speaker_similarity: 0.84 - index * 0.08, speaker_similarity_threshold: 0.72, speaker_verified: index < 2, speaker_validation_method: 'campplus_cosine_v1', director_verified: false, director_validation_method: 'human_listening_required' })),
   } } }));
   const app = await buildApp({ repoRoot: root });
 
@@ -1035,12 +1035,18 @@ test('returns three auditable segment candidates and adopts the user selection',
   assert.equal(latest.fragments.length, 1);
   assert.equal(latest.fragments[0].sourceText, '原文');
   assert.equal(latest.fragments[0].candidates.length, 3);
+  assert.equal(latest.fragments[0].candidates[0].speakerSimilarity, 0.84);
+  assert.equal(latest.fragments[0].candidates[2].qualityPassed, false);
   const selected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidates[1]}/select`, payload: {} });
   assert.equal(selected.statusCode, 200);
   assert.equal((await readFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), 'utf8')), 'candidate-2');
   const index = JSON.parse(await readFile(path.join(processDir, 'segment-fragments.json'), 'utf8'));
   assert.equal(index.fragments[cacheKey].selected_candidate_id, candidates[1]);
   assert.deepEqual(index.fragments[cacheKey].candidate_results.map(item => item.selected), [false, true, false]);
+  const rejected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidates[2]}/select`, payload: {} });
+  assert.equal(rejected.statusCode, 409);
+  assert.match(rejected.json().error, /音色相似度/);
+  assert.equal((await readFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), 'utf8')), 'candidate-2');
   await app.close();
 });
 

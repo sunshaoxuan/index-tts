@@ -927,7 +927,7 @@ function Studio() {
       }
       const advanced = project.segments.find(row => row[0] === order)?.[17] === 'advanced';
       const started = await api.regenerateSegment(requestProjectId, order, advanced);
-      setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: advanced ? `分句 ${order} 已进入高级三版生成与自主验收队列` : `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
+      setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: advanced ? `分句 ${order} 已进入三版候选生成与音色门禁队列，当前片断会保留到人工采用` : `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
     } catch (error) {
       message.error(`分句 ${order} 提交失败：${(error as Error).message}。按钮已经恢复，可以重试`);
     } finally {
@@ -1015,7 +1015,12 @@ function Studio() {
         const regenerationPending = segmentRegeneration.phase !== 'idle' && segmentRegeneration.order === row[0];
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
         const stressWord = String(row[14] || '').trim();
-        const explicitEmotionText = [emotionDirection?.prompt, String(row[13] || '').trim(), stressWord ? `重点突出第 ${row[15] || 1} 个“${stressWord}”` : ''].filter(Boolean).join('. ');
+        const explicitEmotionText = [
+          `态度：${row[7]}`, `情绪：${row[8]}`, `句内节奏：${row[10]}`,
+          `情绪演绎：${emotionDirection?.label || '跟随基础情绪'}`, `权重：${Number(row[9]).toFixed(2)}`,
+          String(row[13] || '').trim() ? `细化：${String(row[13]).trim()}` : '',
+          stressWord ? `重音：第 ${row[15] || 1} 个“${stressWord}”` : '',
+        ].filter(Boolean).join('；');
         const fragmentNote = fragment?.appliedPronunciations.length ? `已应用纠音：${fragment.appliedPronunciations.join('、')}` : '当前片断未命中纠音规则';
         return <div className="segment-row-layout">
           <div className="segment-row-primary">
@@ -1042,10 +1047,10 @@ function Studio() {
             <label className="segment-field segment-stress-word-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
             <label className="segment-field segment-stress-index-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
             <label className="segment-field segment-stress-level-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
-            <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加自主验收' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
-            <div className="segment-emotion-preview" title={explicitEmotionText || '跟随角色节奏、句内节奏、态度和基础情绪自动组合'}><span>实际情绪提示</span><Text ellipsis>{explicitEmotionText || '自动组合'}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
+            <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加音色门禁' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
+            <div className="segment-emotion-preview" title={explicitEmotionText}><span>本次有效导演参数</span><Text ellipsis>{explicitEmotionText}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
           </div>
-          {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => { const selecting = segmentCandidateSelection?.order === row[0] && segmentCandidateSelection.candidateId === candidate.candidateId; return <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.stressVerified ? 'green' : 'orange'}>{candidate.stressVerified ? '重音代理达标' : '概率增强'}</Tag></header><FragmentAudioPlayer variant="candidate" src={candidate.audio} /><Text>重音能量差 {candidate.stressDb.toFixed(2)} dB · 质量{candidate.qualityPassed ? '通过' : '待复核'}</Text><small>验收方法：文本比例声学代理，评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} loading={selecting} disabled={jobRunning || candidate.selected || Boolean(segmentCandidateSelection)} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : selecting ? '采用中' : '采用此版'}</Button></div>; })}</div></div>}
+          {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => { const selecting = segmentCandidateSelection?.order === row[0] && segmentCandidateSelection.candidateId === candidate.candidateId; const similarity = candidate.speakerSimilarity == null ? '未测量' : candidate.speakerSimilarity.toFixed(3); return <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.speakerVerified ? 'green' : 'red'}>{candidate.speakerVerified ? '音色门禁通过' : '音色偏离'}</Tag></header><FragmentAudioPlayer variant="candidate" src={candidate.audio} /><Text>基础音频：{candidate.audioQualityPassed ? '通过' : '未通过'} · 音色相似度：{similarity}，门禁 {candidate.speakerSimilarityThreshold.toFixed(3)}</Text>{stressWord && <Text>重音能量差：{candidate.stressDb.toFixed(2)} dB · {candidate.stressVerified ? '代理达标' : '代理未达标'}</Text>}<small>综合门禁：{candidate.qualityPassed ? '通过' : '未通过'} · 导演效果需人工试听 · 评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} loading={selecting} disabled={jobRunning || candidate.selected || !candidate.qualityPassed || Boolean(segmentCandidateSelection)} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? '当前采用' : selecting ? '采用中' : candidate.qualityPassed ? '采用此版' : '不可采用'}</Button></div>; })}</div></div>}
         </div>;
       } },
     ];

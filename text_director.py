@@ -100,6 +100,7 @@ EMOTION_DIRECTION_PRESETS = {
 }
 PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
+SPEAKER_SIMILARITY_THRESHOLD = 0.72
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
@@ -2589,8 +2590,9 @@ def segment_emotion_text(role: dict[str, Any], segment: dict[str, Any]) -> str:
         str(segment.get("emotion_direction_prompt") or "").strip(),
         str(segment.get("emotion_detail") or "").strip(),
     ]
+    role_rhythm = str(role.get("rhythm_prompt") or "").strip() if str(segment.get("pace_preset") or "自然") == "自然" else ""
     general = [
-        str(role.get("rhythm_prompt") or "").strip(),
+        role_rhythm,
         str(segment.get("pace_prompt") or "").strip(),
         str(segment.get("attitude") or "").strip(),
         str(EMOTION_LABELS.get(str(segment.get("emotion") or ""), segment.get("emotion") or "")).strip(),
@@ -2848,7 +2850,7 @@ def render_directed_audio(
                 output_path = segment_dir / filename
                 emotion_prompt = segment_emotion_text(role, segment)
                 effective_text, applied_rules = apply_pronunciations(segment["text"], pronunciation_rules)
-                duration_factor = 1.0
+                duration_factor = PACE_FACTORS.get(str(segment.get("pace") or "medium"), 1.0)
                 advanced_generation = segment.get("generation_mode") == "advanced" or segment["order"] in advanced_orders
                 cache_payload = {
                     "text": effective_text,
@@ -2862,6 +2864,8 @@ def render_directed_audio(
                     "stress_level": segment.get("stress_level") or "none",
                     "generation_mode": "advanced" if advanced_generation else "standard",
                     "stress_validator": "text_proportional_proxy_v1",
+                    "speaker_validator": "campplus_cosine_v1",
+                    "speaker_similarity_threshold": SPEAKER_SIMILARITY_THRESHOLD,
                 }
                 cache_key = hashlib.sha256(
                     json.dumps(cache_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -2904,21 +2908,54 @@ def render_directed_audio(
                             str(segment.get("stress_word") or ""),
                             int(segment.get("stress_occurrence") or 1),
                         )
+                        metrics["audio_quality_passed"] = bool(metrics["quality_passed"])
+                        similarity_method = getattr(model, "speaker_similarity", None)
+                        similarity = float(similarity_method(str(catalog[role["voice_id"]]), str(candidate_path))) if callable(similarity_method) else None
+                        metrics["speaker_similarity"] = round(similarity, 6) if similarity is not None else None
+                        metrics["speaker_similarity_threshold"] = SPEAKER_SIMILARITY_THRESHOLD
+                        metrics["speaker_verified"] = bool(similarity is not None and similarity >= SPEAKER_SIMILARITY_THRESHOLD)
+                        metrics["speaker_validation_method"] = "campplus_cosine_v1" if similarity is not None else "unavailable"
+                        metrics["director_verified"] = False
+                        metrics["director_validation_method"] = "human_listening_required"
+                        stress_required = bool(segment.get("stress_word"))
+                        metrics["quality_passed"] = bool(
+                            metrics["audio_quality_passed"]
+                            and metrics["speaker_verified"]
+                            and (not stress_required or metrics["stress_verified"])
+                        )
+                        metrics["score"] = round(float(metrics["score"]) + (similarity * 100.0 if similarity is not None else -100.0), 4)
                         generated_paths.append((candidate_path, metrics))
                         accepted_paths = [
                             item for item in generated_paths
                             if item[1]["quality_passed"]
-                            and (not segment.get("stress_word") or item[1]["stress_verified"])
                         ]
                         if len(accepted_paths) >= requested_candidates:
                             break
-                    valid_candidates = [item for item in generated_paths if item[1]["quality_passed"]] if advanced_generation else generated_paths
+                    valid_candidates = [item for item in generated_paths if item[1]["audio_quality_passed"]] if advanced_generation else generated_paths
                     if len(valid_candidates) < requested_candidates:
                         raise DirectorError(f"第 {segment['order']} 条分句仅生成 {len(valid_candidates)} 个通过基础音频质量验收的候选，需要 {requested_candidates} 个。")
                     selected_candidates = sorted(valid_candidates, key=lambda item: float(item[1]["score"]), reverse=True)[:requested_candidates]
                     candidate_store = Path(project_process_dir) / "segment-candidates" / cache_key if project_process_dir else None
                     if candidate_store:
                         candidate_store.mkdir(parents=True, exist_ok=True)
+                    preserve_existing = False
+                    previous_cache_path = None
+                    if advanced_generation and fragment_orders and project_process_dir:
+                        try:
+                            previous_index = json.loads((Path(project_process_dir) / "segment-fragments.json").read_text(encoding="utf-8"))
+                            for previous_key, previous_item in reversed(list((previous_index.get("fragments") or {}).items())):
+                                if (
+                                    int(previous_item.get("order") or 0) == int(segment["order"])
+                                    and str(previous_item.get("source_text") or "") == str(segment["source_text"])
+                                    and str(previous_item.get("text") or "") == str(segment["text"])
+                                ):
+                                    candidate_previous = Path(project_process_dir) / "segment-cache" / f"{previous_key}.wav"
+                                    if candidate_previous.is_file():
+                                        previous_cache_path = candidate_previous
+                                        preserve_existing = True
+                                        break
+                        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                            previous_cache_path = None
                     for rank, (candidate_path, metrics) in enumerate(selected_candidates, start=1):
                         candidate_id = hashlib.sha256(f"{cache_key}:{candidate_path.name}:{time.time_ns()}".encode("utf-8")).hexdigest()[:16]
                         if candidate_store:
@@ -2926,11 +2963,12 @@ def render_directed_audio(
                         candidate_results.append({
                             "candidate_id": candidate_id,
                             "rank": rank,
-                            "selected": rank == 1,
+                            "selected": rank == 1 and not preserve_existing,
                             **metrics,
                         })
-                    if selected_candidates[0][0].resolve() != output_path.resolve():
-                        shutil.copy2(selected_candidates[0][0], output_path)
+                    chosen_output = previous_cache_path if preserve_existing else selected_candidates[0][0]
+                    if chosen_output and chosen_output.resolve() != output_path.resolve():
+                        shutil.copy2(chosen_output, output_path)
                     result = str(output_path)
                 if not result or not output_path.is_file():
                     raise DirectorError(f"第 {index} 条语音没有生成有效 WAV。")
@@ -2951,7 +2989,7 @@ def render_directed_audio(
                         "stress_level": segment.get("stress_level") or "none",
                         "generation_mode": "advanced" if advanced_generation else "standard",
                         "candidate_results": candidate_results,
-                        "selected_candidate_id": candidate_results[0]["candidate_id"] if candidate_results else "",
+                        "selected_candidate_id": next((item["candidate_id"] for item in candidate_results if item["selected"]), ""),
                         "cache_key": cache_key,
                         "cache_reused": cache_hit and segment["order"] not in forced_orders,
                         "forced_regeneration": segment["order"] in forced_orders,

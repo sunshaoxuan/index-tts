@@ -41,7 +41,7 @@ test('segment rows expose explicit IndexTTS emotion direction detail and weight 
   assert.match(app, />情绪演绎</);
   assert.match(app, />情绪细化描述</);
   assert.match(app, />情绪权重</);
-  assert.match(app, />实际情绪提示</);
+  assert.match(app, />本次有效导演参数</);
   assert.match(app, /fragment \? '重新生成' : '生成'/);
 });
 
@@ -71,7 +71,10 @@ test('segment rows expose stress targeting, advanced three-candidate generation,
   assert.match(app, />重音文字</);
   assert.match(app, />第几次出现</);
   assert.match(app, />重音强度</);
-  assert.match(app, /高级三版加自主验收/);
+  assert.match(app, /高级三版加音色门禁/);
+  assert.match(app, /本次有效导演参数/);
+  assert.match(app, /音色相似度/);
+  assert.match(app, /导演效果需人工试听/);
   assert.match(app, /重音为概率增强/);
   assert.match(app, /selectSegmentCandidate/);
   assert.match(styles, /\.segment-candidate-grid/);

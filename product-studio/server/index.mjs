@@ -1320,8 +1320,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         stressWord: String(item.stress_word || ''), stressLevel: String(item.stress_level || 'none'), selectedCandidateId: String(item.selected_candidate_id || ''),
         candidates: (item.candidate_results || []).map(candidate => ({
           candidateId: String(candidate.candidate_id), rank: Number(candidate.rank), selected: Boolean(candidate.selected),
-          score: Number(candidate.score), stressDb: Number(candidate.stress_db), qualityPassed: Boolean(candidate.quality_passed),
+          score: Number(candidate.score), stressDb: Number(candidate.stress_db), audioQualityPassed: Boolean(candidate.audio_quality_passed), qualityPassed: Boolean(candidate.quality_passed),
           stressVerified: Boolean(candidate.stress_verified), alignmentMethod: String(candidate.alignment_method || ''),
+          speakerSimilarity: candidate.speaker_similarity == null ? null : Number(candidate.speaker_similarity),
+          speakerSimilarityThreshold: Number(candidate.speaker_similarity_threshold || 0.72),
+          speakerVerified: Boolean(candidate.speaker_verified), speakerValidationMethod: String(candidate.speaker_validation_method || ''),
+          directorVerified: Boolean(candidate.director_verified), directorValidationMethod: String(candidate.director_validation_method || ''),
           audio: `/api/projects/${encodeURIComponent(id)}/cached-fragment-candidates/${cacheKey}/${encodeURIComponent(String(candidate.candidate_id))}`,
         })),
       }));
@@ -1543,6 +1547,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const entry = Object.entries(index.fragments || {}).find(([, item]) => Number(item.order) === order && (item.candidate_results || []).some(candidate => candidate.candidate_id === candidateId));
       if (!entry) throw new Error(`分句 ${order} 的候选不存在或已经过期`);
       const [cacheKey, fragment] = entry;
+      const selectedCandidate = (fragment.candidate_results || []).find(candidate => candidate.candidate_id === candidateId);
+      if (!selectedCandidate?.quality_passed || !selectedCandidate?.audio_quality_passed || !selectedCandidate?.speaker_verified) {
+        const error = new Error(`分句 ${order} 的候选未通过基础音频、音色相似度或重音门禁，不能采用`);
+        error.statusCode = 409;
+        throw error;
+      }
       await copyFile(path.join(processDir, 'segment-candidates', cacheKey, `${candidateId}.wav`), path.join(processDir, 'segment-cache', `${cacheKey}.wav`));
       fragment.selected_candidate_id = candidateId;
       fragment.candidate_results = fragment.candidate_results.map(candidate => ({ ...candidate, selected: candidate.candidate_id === candidateId }));
