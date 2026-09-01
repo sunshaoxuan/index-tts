@@ -1320,7 +1320,8 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         stressWord: String(item.stress_word || ''), stressLevel: String(item.stress_level || 'none'), selectedCandidateId: String(item.selected_candidate_id || ''),
         candidates: (item.candidate_results || []).map(candidate => ({
           candidateId: String(candidate.candidate_id), rank: Number(candidate.rank), selected: Boolean(candidate.selected),
-          score: Number(candidate.score), stressDb: Number(candidate.stress_db), audioQualityPassed: Boolean(candidate.audio_quality_passed), qualityPassed: Boolean(candidate.quality_passed),
+          score: Number(candidate.score), stressDb: Number(candidate.stress_db), audioQualityPassed: Boolean(candidate.audio_quality_passed),
+          qualityPassed: Boolean(candidate.quality_passed && candidate.audio_quality_passed && candidate.speaker_verified),
           stressVerified: Boolean(candidate.stress_verified), alignmentMethod: String(candidate.alignment_method || ''),
           speakerSimilarity: candidate.speaker_similarity == null ? null : Number(candidate.speaker_similarity),
           speakerSimilarityThreshold: Number(candidate.speaker_similarity_threshold || 0.72),

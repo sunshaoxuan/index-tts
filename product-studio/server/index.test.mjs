@@ -1050,6 +1050,30 @@ test('returns three auditable segment candidates and adopts the user selection',
   await app.close();
 });
 
+test('fails legacy segment candidates closed when speaker identity evidence is missing', async () => {
+  const { root } = await fixture();
+  const processDir = path.join(root, 'outputs', 'novel-projects', 'demo', 'process');
+  const cacheKey = 'c'.repeat(64);
+  const candidateId = '4'.repeat(16);
+  await mkdir(path.join(processDir, 'segment-cache'), { recursive: true });
+  await mkdir(path.join(processDir, 'segment-candidates', cacheKey), { recursive: true });
+  await writeFile(path.join(processDir, 'segment-cache', `${cacheKey}.wav`), Buffer.from('legacy'));
+  await writeFile(path.join(processDir, 'segment-candidates', cacheKey, `${candidateId}.wav`), Buffer.from('legacy-candidate'));
+  await writeFile(path.join(processDir, 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: { [cacheKey]: {
+    order: 1, speaker_name: '旁白', source_text: '原文', text: '原文', effective_text: '原文', selected_candidate_id: candidateId,
+    candidate_results: [{ candidate_id: candidateId, rank: 1, selected: true, score: 20, stress_db: 0, quality_passed: true, stress_verified: false, alignment_method: 'text_proportional_proxy_v1' }],
+  } } }));
+  const app = await buildApp({ repoRoot: root });
+
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.fragments[0].candidates[0].audioQualityPassed, false);
+  assert.equal(latest.fragments[0].candidates[0].speakerVerified, false);
+  assert.equal(latest.fragments[0].candidates[0].qualityPassed, false);
+  const rejected = await app.inject({ method: 'POST', url: `/api/projects/demo/segments/1/candidates/${candidateId}/select`, payload: {} });
+  assert.equal(rejected.statusCode, 409);
+  await app.close();
+});
+
 test('persists detailed segment emotion direction and validates custom descriptions', async () => {
   const { root } = await fixture();
   const app = await buildApp({ repoRoot: root });
