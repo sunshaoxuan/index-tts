@@ -800,7 +800,7 @@ function portraitPrompt({ name, profile, gender, age, portraitStyle, portraitPro
   ].filter(Boolean).join('\n');
 }
 
-function sceneKeyframePrompt(project, scene, requestedStyle) {
+function sceneKeyframePrompt(project, scene, requestedStyle, referenceCharacters = []) {
   const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
   const sceneId = safeProjectId(scene.id);
   const note = String(scene.storyboard_note || '').trim();
@@ -818,10 +818,97 @@ function sceneKeyframePrompt(project, scene, requestedStyle) {
     `场景基调：${String(scene.mood || '中性')}。叙事视角：${String(scene.narrative_perspective || '未说明')}。`,
     `AI 场景小记：${note}`,
     roleDetails.length ? `需要保持连续一致的角色设定：\n${roleDetails.join('\n')}` : '本镜头没有需要明确展示的已登记角色。',
+    referenceCharacters.length ? [
+      '人物身份参考图映射：',
+      ...referenceCharacters.map((reference, index) => `参考图 ${index + 1} 对应稳定角色 ${reference.roleId}“${reference.name}”。`),
+      '参考图只用于锁定对应人物身份。生成结果必须保持每个人的面部结构、五官比例、发型、年龄感和标志特征与对应参考图一致。姿势、表情、服装状态、镜头角度和环境可以服从本镜头画面小记。不得交换、混合或复制不同参考图中的人物身份。',
+    ].join('\n') : '',
     `画面风格：${STORYBOARD_STYLE_PROMPTS[style]}`,
     '输出单张横向关键帧。完整呈现场景小记中的主体位置、动作、前后景、镜头方向、光线、色彩和关键物件，保持人物身份和时代背景一致。',
     '画面中不出现字幕、对白文字、标题、水印、界面、边框或标志。不拼接多格分镜。',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
+}
+
+function localRoleAssetLocation(portraitUrl) {
+  const match = String(portraitUrl || '').match(/^\/api\/projects\/([^/?#]+)\/role-assets\/([^/?#]+)$/u);
+  if (!match) throw new Error('角色形象必须是工程内已保存的角色图片');
+  return {
+    sourceProjectId: safeProjectId(decodeURIComponent(match[1])),
+    filename: safeProjectId(decodeURIComponent(match[2])),
+  };
+}
+
+function imageMimeType(bytes) {
+  const extension = imageExtension(bytes);
+  return extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+}
+
+async function resolveSceneCharacterReferences(projectRoot, project, scene) {
+  const participantIds = [...new Set((Array.isArray(scene.participants) ? scene.participants : []).map(value => String(value).trim()).filter(Boolean))];
+  const roleById = new Map((project.roles || []).map(role => [String(role[0]), role]));
+  const unknownIds = participantIds.filter(roleId => !roleById.has(roleId));
+  if (unknownIds.length) throw new Error(`参与人物尚未登记为稳定角色：${unknownIds.join('、')}。请先在角色资产中补充角色并生成形象`);
+  const participantSet = new Set(participantIds);
+  const visualRoles = (project.roles || []).filter(role => participantSet.has(String(role[0])) && String(role[2]) !== 'narrator');
+  if (visualRoles.length > 16) throw new Error('一个分镜镜头最多使用 16 个角色身份参考图，请先拆分镜头');
+  const missingPortraits = visualRoles.filter(role => !String(project.character_assets?.[role[0]]?.portrait_url || '').trim());
+  if (missingPortraits.length) throw new Error(`以下画面人物缺少角色形象：${missingPortraits.map(role => role[1]).join('、')}。请先在角色资产中生成并保存形象`);
+
+  const references = [];
+  for (const role of visualRoles) {
+    const roleId = String(role[0]);
+    const portraitUrl = String(project.character_assets?.[roleId]?.portrait_url || '').trim();
+    let location;
+    try { location = localRoleAssetLocation(portraitUrl); }
+    catch (error) { throw new Error(`角色“${role[1]}”的形象无法作为身份参考：${error.message}`); }
+    const assetPath = path.join(projectRoot, location.sourceProjectId, 'role-assets', location.filename);
+    let info;
+    let bytes;
+    try {
+      info = await stat(assetPath);
+      if (!info.isFile() || info.size <= 0 || info.size > 20 * 1024 * 1024) throw new Error('文件为空或超过 20 MB');
+      bytes = await readFile(assetPath);
+    } catch (error) { throw new Error(`角色“${role[1]}”的身份参考图无法读取：${error.message}`); }
+    let mimeType;
+    try { mimeType = imageMimeType(bytes); }
+    catch (error) { throw new Error(`角色“${role[1]}”的身份参考图格式无效：${error.message}`); }
+    references.push({
+      roleId,
+      name: String(role[1]),
+      portraitUrl,
+      portraitSha256: createHash('sha256').update(bytes).digest('hex'),
+      sourceProjectId: location.sourceProjectId,
+      filename: location.filename,
+      mimeType,
+      bytes,
+    });
+  }
+  return references;
+}
+
+async function callCompatibleImageEdit(remoteFetch, settings, prompt, references) {
+  assertEndpointTransport(settings);
+  const form = new FormData();
+  form.append('model', settings.image_model);
+  form.append('prompt', prompt);
+  form.append('size', '1536x1024');
+  form.append('n', '1');
+  for (const reference of references) {
+    form.append('image[]', new Blob([reference.bytes], { type: reference.mimeType }), `${safeSlug(reference.roleId)}-${reference.filename}`);
+  }
+  const response = await remoteFetch(aiRoute(settings.endpoint, '/images/edits'), {
+    method: 'POST',
+    headers: compatibleHeaders(settings),
+    body: form,
+  });
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = {}; }
+  if (!response.ok) {
+    const detail = String(body?.error?.message || body?.message || `兼容服务请求失败 ${response.status}`);
+    throw new Error(`角色参考图关键帧生成失败：${detail}。当前服务必须支持 Images Edits 多图参考，系统未回退到纯文字生成`);
+  }
+  return body;
 }
 
 async function decodeCompatibleImage(remoteFetch, item, settings) {
@@ -840,10 +927,14 @@ async function decodeCompatibleImage(remoteFetch, item, settings) {
 
 async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle }) {
   const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
-  const prompt = sceneKeyframePrompt(project, scene, style);
-  const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
-    model: settings.image_model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
-  });
+  const references = await resolveSceneCharacterReferences(projectRoot, project, scene);
+  const publicReferences = references.map(({ bytes: _bytes, filename: _filename, mimeType: _mimeType, sourceProjectId: _sourceProjectId, ...reference }) => reference);
+  const prompt = sceneKeyframePrompt(project, scene, style, publicReferences);
+  const response = references.length
+    ? await callCompatibleImageEdit(remoteFetch, settings, prompt, references)
+    : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
+      model: settings.image_model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
+    });
   const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
   const bytes = await decodeCompatibleImage(remoteFetch, item, settings);
   if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的关键帧为空或超过 20 MB');
@@ -860,6 +951,8 @@ async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, proje
     keyframeStyle: style,
     generatedAt: new Date().toISOString(),
     model: settings.image_model,
+    identityReferenceMode: references.length ? 'role_portraits' : 'no_visual_characters',
+    referenceCharacters: publicReferences,
   };
 }
 
@@ -1433,6 +1526,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           if (!persisted) throw new Error(`分镜镜头 ${shotId} 不存在`);
           return { ...persisted.scene, ...persisted.shot, ...(shot && typeof shot === 'object' ? shot : {}), id: shotId, scene_id: String(persisted.scene.id), participants: shot.participants || persisted.shot.participants || persisted.scene.participants };
         });
+        for (const shot of preparedShots) await resolveSceneCharacterReferences(projectRoot, project, shot);
         const keyframes = [];
         for (const shot of preparedShots) {
           const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: shot, requestedStyle: request.body?.keyframeStyle });
@@ -1450,6 +1544,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         if (!persisted) throw new Error(`场景 ${sceneId} 不存在`);
         return { ...persisted, ...(scene && typeof scene === 'object' ? scene : {}), id: sceneId };
       });
+      for (const scene of prepared) await resolveSceneCharacterReferences(projectRoot, project, scene);
       const keyframes = [];
       for (const scene of prepared) {
         keyframes.push(await generateSceneKeyframe({

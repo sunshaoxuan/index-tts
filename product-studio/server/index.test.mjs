@@ -441,6 +441,105 @@ test('generates one storyboard keyframe and a full set from AI scene notes with 
   await app.close();
 });
 
+test('uses stable local and linked role portraits as ordered identity references for single and full storyboard generation', async () => {
+  const { root, project } = await fixture();
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const linkedProjectDir = path.join(root, 'outputs', 'novel-projects', 'linked-source');
+  const localPortrait = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+  const linkedPortrait = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 5, 6, 7, 8]);
+  await mkdir(path.join(projectDir, 'role-assets'), { recursive: true });
+  await mkdir(path.join(linkedProjectDir, 'role-assets'), { recursive: true });
+  await writeFile(path.join(projectDir, 'role-assets', 'role-a.png'), localPortrait);
+  await writeFile(path.join(linkedProjectDir, 'role-assets', 'role-b.png'), linkedPortrait);
+  project.roles = [
+    project.roles[0],
+    ['role_a', '甲', 'character', '甲是主要人物，短发，面部轮廓清晰，年龄与五官设定需要跨镜头保持一致。', '中性清晰', '', '自然叙述', '否'],
+    ['role_b', '乙', 'character', '乙是同行人物，长发，眼角有标志性小痣，年龄与五官设定需要跨镜头保持一致。', '中性清晰', '', '自然叙述', '否'],
+  ];
+  project.character_assets = {
+    role_a: { gender: 'female', age: 28, portrait_url: '/api/projects/demo/role-assets/role-a.png' },
+    role_b: { gender: 'male', age: 31, portrait_url: '/api/projects/linked-source/role-assets/role-b.png' },
+  };
+  project.document = { scenes: [{
+    id: 'scene_identity', title: '并肩进入', topic: '两人进入房间', location: '会客室', spatial_direction: '门口朝向窗边', time: '傍晚', mood: '克制', narrative_perspective: '第三人称', participants: ['role_b', 'narrator', 'role_a'], storyboard_note: '甲在画面左侧推门，乙在右后方观察窗边，暖光沿两人的面部轮廓落下，前景保留门框，中景呈现人物动作。', shots: [{ id: 'scene_identity_shot_001', title: '推门', participants: ['role_b', 'narrator', 'role_a'], storyboard_note: '甲在画面左侧推门，乙在右后方观察窗边，暖光沿两人的面部轮廓落下，前景保留门框，中景呈现人物动作。', start_segment_order: 1, end_segment_order: 1 }],
+  }] };
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+
+  const requests = [];
+  const generated = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9, 9]);
+  const remoteFetch = async (url, options) => {
+    const fields = [];
+    for (const [name, value] of options.body.entries()) fields.push(typeof value === 'string' ? { name, value } : { name, filename: value.name, type: value.type, bytes: Buffer.from(await value.arrayBuffer()) });
+    requests.push({ url: String(url), headers: options.headers, fields });
+    return new Response(JSON.stringify({ data: [{ b64_json: generated.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gpt-image-2' } });
+  const opened = (await app.inject('/api/projects/demo')).json();
+  const shot = opened.document.scenes[0].shots[0];
+
+  const single = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_identity/shots/scene_identity_shot_001/keyframe', payload: { shot, keyframeStyle: 'cinematic_realistic' } });
+  assert.equal(single.statusCode, 200);
+  assert.equal(single.json().identityReferenceMode, 'role_portraits');
+  assert.deepEqual(single.json().referenceCharacters.map(reference => [reference.roleId, reference.name, reference.portraitUrl]), [
+    ['role_a', '甲', '/api/projects/demo/role-assets/role-a.png'],
+    ['role_b', '乙', '/api/projects/linked-source/role-assets/role-b.png'],
+  ]);
+  assert.ok(single.json().referenceCharacters.every(reference => /^[a-f0-9]{64}$/.test(reference.portraitSha256)));
+
+  const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: [shot], keyframeStyle: 'cinematic_realistic' } });
+  assert.equal(full.statusCode, 200);
+  assert.equal(full.json().keyframes[0].referenceCharacters.length, 2);
+  assert.ok(requests.every(request => request.url === 'https://ai.example/v1/images/edits'));
+  assert.ok(requests.every(request => request.headers.Authorization === 'Bearer secret-key' && !('Content-Type' in request.headers)));
+  for (const request of requests) {
+    const images = request.fields.filter(field => field.name === 'image[]');
+    assert.deepEqual(images.map(image => image.filename), ['role_a-role-a.png', 'role_b-role-b.png']);
+    assert.deepEqual(images.map(image => image.type), ['image/png', 'image/png']);
+    assert.deepEqual(images.map(image => image.bytes), [localPortrait, linkedPortrait]);
+    const prompt = request.fields.find(field => field.name === 'prompt').value;
+    assert.match(prompt, /参考图 1 对应稳定角色 role_a“甲”/);
+    assert.match(prompt, /参考图 2 对应稳定角色 role_b“乙”/);
+    assert.doesNotMatch(prompt, /参考图 \d+ 对应稳定角色 narrator/);
+  }
+  await app.close();
+});
+
+test('preflights missing character portraits before full keyframe generation and never falls back after edit rejection', async () => {
+  const { root, project } = await fixture();
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const portrait = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2, 4, 6, 8]);
+  await mkdir(path.join(projectDir, 'role-assets'), { recursive: true });
+  await writeFile(path.join(projectDir, 'role-assets', 'ready.png'), portrait);
+  project.roles = [
+    project.roles[0],
+    ['ready', '已就绪人物', 'character', '已就绪人物拥有完整角色形象，用于验证全量生成前的身份参考预检。', '中性清晰', '', '自然叙述', '否'],
+    ['missing', '缺图人物', 'character', '缺图人物尚未生成角色形象，用于验证关键帧身份门禁和错误信息。', '中性清晰', '', '自然叙述', '否'],
+  ];
+  project.character_assets = { ready: { portrait_url: '/api/projects/demo/role-assets/ready.png' }, missing: {} };
+  project.document = { scenes: [{ id: 'scene_gate', title: '身份门禁', storyboard_note: '人物依次进入明亮房间，镜头保持中景构图，门框和窗户构成前后景层次，光线从左侧进入。', participants: ['ready'], shots: [
+    { id: 'shot_ready', storyboard_note: '已就绪人物站在门框左侧，镜头保持中景构图，窗户位于背景，光线从左侧进入。', participants: ['ready'], start_segment_order: 1, end_segment_order: 1 },
+    { id: 'shot_missing', storyboard_note: '缺图人物站在窗边右侧，镜头保持中景构图，门框位于前景，光线从左侧进入。', participants: ['missing'], start_segment_order: 1, end_segment_order: 1 },
+  ] }] };
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  const calls = [];
+  const remoteFetch = async (url) => { calls.push(String(url)); return new Response(JSON.stringify({ error: { message: 'edits unsupported' } }), { status: 501, headers: { 'Content-Type': 'application/json' } }); };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gpt-image-2' } });
+  const opened = (await app.inject('/api/projects/demo')).json();
+
+  const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: opened.document.scenes[0].shots, keyframeStyle: 'cinematic_realistic' } });
+  assert.equal(full.statusCode, 400);
+  assert.match(full.json().error, /缺少角色形象：缺图人物/);
+  assert.deepEqual(calls, []);
+
+  const single = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_gate/shots/shot_ready/keyframe', payload: { shot: opened.document.scenes[0].shots[0], keyframeStyle: 'cinematic_realistic' } });
+  assert.equal(single.statusCode, 400);
+  assert.match(single.json().error, /Images Edits 多图参考/);
+  assert.deepEqual(calls, ['https://ai.example/v1/images/edits']);
+  await app.close();
+});
+
 test('strips compatible service credentials from cross-origin portrait downloads', async () => {
   const { root } = await fixture();
   const calls = [];

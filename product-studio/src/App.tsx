@@ -955,6 +955,7 @@ function Studio() {
       updateShotFields(sceneId, shotId, {
         keyframe_url: result.keyframeUrl, keyframe_prompt: result.keyframePrompt, keyframe_style: result.keyframeStyle,
         keyframe_generated_at: result.generatedAt, keyframe_model: result.model,
+        identity_reference_mode: result.identityReferenceMode, reference_characters: result.referenceCharacters,
       });
       message.success(`分镜镜头 ${shotId} 的关键帧已生成，请保存工程`);
     } catch (error) { message.error((error as Error).message); }
@@ -977,7 +978,7 @@ function Studio() {
         const updatedScenes = currentScenes.map(scene => ({ ...scene, shots: (Array.isArray(scene.shots) ? scene.shots : []).map(raw => {
           const shot = raw as Record<string, unknown>;
           const generated = generatedById.get(String(shot.id || ''));
-          return generated ? { ...shot, keyframe_url: generated.keyframeUrl, keyframe_prompt: generated.keyframePrompt, keyframe_style: generated.keyframeStyle, keyframe_generated_at: generated.generatedAt, keyframe_model: generated.model } : shot;
+          return generated ? { ...shot, keyframe_url: generated.keyframeUrl, keyframe_prompt: generated.keyframePrompt, keyframe_style: generated.keyframeStyle, keyframe_generated_at: generated.generatedAt, keyframe_model: generated.model, identity_reference_mode: generated.identityReferenceMode, reference_characters: generated.referenceCharacters } : shot;
         }) }));
         return { ...current, document: { ...document, scenes: updatedScenes } };
       });
@@ -1146,6 +1147,19 @@ function Studio() {
   }));
   const sceneAudioRanges = useMemo(() => buildSceneAudioRanges(documentSegments, render.captions || []), [documentSegments, render.captions]);
   const allSceneNotesReady = storyboardShotRows.length > 0 && storyboardShotRows.every(shot => String(shot.storyboard_note || '').trim().length >= 20);
+  const storyboardIdentityIssues = project ? sceneRows.flatMap(scene => {
+    const sceneParticipants = Array.isArray(scene.participants) ? scene.participants.map(String) : [];
+    return ((Array.isArray(scene.shots) ? scene.shots : []) as Array<Record<string, unknown>>).flatMap(shot => {
+      const participantIds = (Array.isArray(shot.participants) ? shot.participants : sceneParticipants).map(String);
+      return participantIds.flatMap(roleId => {
+        const role = project.roles.find(candidate => candidate[0] === roleId);
+        if (!role) return [`${roleId} 尚未登记为稳定角色`];
+        if (role[2] === 'narrator') return [];
+        return project.character_assets?.[roleId]?.portrait_url ? [] : [`${role[1]} 缺少角色形象`];
+      });
+    });
+  }) : [];
+  const uniqueStoryboardIdentityIssues = [...new Set(storyboardIdentityIssues)];
   const lowConfidenceSegments = (Array.isArray(project?.document?.segments) ? project.document.segments : []).filter(item => Number((item as Record<string, unknown>).speaker_confidence ?? 1) < 0.7) as Array<Record<string, unknown>>;
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
@@ -1370,10 +1384,11 @@ function Studio() {
             </Popconfirm>
             <Button icon={<PlusOutlined />} disabled={jobRunning || !documentSegments.length} onClick={openManualStoryboard}>手工创建分镜镜头</Button>
             <Select aria-label="全量关键帧风格" disabled={jobRunning || allKeyframesGenerating} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} />
-            <Button type="primary" icon={<PictureOutlined />} loading={allKeyframesGenerating} disabled={jobRunning || !allSceneNotesReady || Boolean(keyframeGeneratingSceneId)} onClick={() => void generateAllSceneKeyframes()}>{storyboardShotRows.some(shot => shot.keyframe_url) ? `重新生成全部 ${storyboardShotRows.length} 张关键帧` : `生成全部 ${storyboardShotRows.length} 张关键帧`}</Button>
+            <Button type="primary" icon={<PictureOutlined />} loading={allKeyframesGenerating} disabled={jobRunning || !allSceneNotesReady || Boolean(keyframeGeneratingSceneId) || uniqueStoryboardIdentityIssues.length > 0} onClick={() => void generateAllSceneKeyframes()}>{storyboardShotRows.some(shot => shot.keyframe_url) ? `重新生成全部 ${storyboardShotRows.length} 张关键帧` : `生成全部 ${storyboardShotRows.length} 张关键帧`}</Button>
           </Space>}>
             <Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={`${sceneRows.length} 个场景 · ${storyboardShotRows.length} 个分镜镜头${lowConfidenceSegments.length ? ` · ${lowConfidenceSegments.length} 条说话人归属需要复核` : ''}`} description="场景按主题、地点和方位变化组织。每个场景包含多个短镜头，每个镜头对应一张关键帧；已有音频时按真实时长以目标秒数自动拆分。" />
             {sceneRows.length > 0 && !allSceneNotesReady && <Alert className="storyboard-note-warning" type="warning" showIcon message="部分分镜镜头缺少可生成关键帧的画面小记" description="可点击“AI 重新生成全部分镜”，也可以逐镜头人工补充至少 20 个字符的主体位置、镜头方向、光线和关键物件描述。" />}
+            {uniqueStoryboardIdentityIssues.length > 0 && <Alert className="storyboard-note-warning" type="warning" showIcon message="部分分镜镜头缺少人物一致性资料" description={`${uniqueStoryboardIdentityIssues.join('；')}。请先到角色资产补齐并保存，再生成单张或全部关键帧。`} />}
             {sceneRows.length ? <div className="storyboard-scene-list">{sceneRows.map((scene, index) => {
               const sceneId = String(scene.id || `scene_${index + 1}`);
               const audioRange = sceneAudioRanges[sceneId];
@@ -1396,13 +1411,20 @@ function Studio() {
                       const shotStart = Number(shot.start_segment_order || 0);
                       const shotEnd = Number(shot.end_segment_order || shotStart);
                       const hasShotTime = Number.isFinite(Number(shot.start_seconds)) && Number.isFinite(Number(shot.end_seconds));
+                      const shotParticipantIds = (Array.isArray(shot.participants) ? shot.participants : participantIds).map(String);
+                      const shotParticipantSet = new Set(shotParticipantIds);
+                      const visualParticipantRoles = project.roles.filter(role => shotParticipantSet.has(role[0]) && role[2] !== 'narrator');
+                      const missingIdentityRoles = visualParticipantRoles.filter(role => !project.character_assets?.[role[0]]?.portrait_url);
+                      const unknownParticipantIds = shotParticipantIds.filter(id => !project.roles.some(role => role[0] === id));
+                      const savedReferences = (Array.isArray(shot.reference_characters) ? shot.reference_characters : []) as Array<{ roleId?: string; name?: string; portraitUrl?: string; portraitSha256?: string }>;
                       return <article className="storyboard-shot-card" key={shotId}>
                         <header><Checkbox disabled={jobRunning} checked={selectedStoryboardShotIds.includes(shotId)} onChange={event => setSelectedStoryboardShotIds(current => toggleStoryboardShotSelection(current, sceneShotIds, shotId, event.target.checked))} /><div><strong>{String(shot.title || `镜头 ${shotIndex + 1}`)}</strong><Text>{shotId}</Text></div><Tag>第 {shotStart}{shotEnd > shotStart ? ` 至 ${shotEnd}` : ''} 句</Tag></header>
                         {hasShotTime && <div className="storyboard-shot-time"><span>{formatStoryboardTime(Number(shot.start_seconds))}</span><span>至</span><span>{formatStoryboardTime(Number(shot.end_seconds))}</span><Tag>{(Number(shot.end_seconds) - Number(shot.start_seconds)).toFixed(1)} 秒</Tag></div>}
                         <div className="storyboard-keyframe-preview">{shot.keyframe_url ? <img src={String(shot.keyframe_url)} alt={`${String(shot.title || shotId)}关键帧`} /> : <div className="storyboard-keyframe-placeholder"><PictureOutlined /><strong>KEYFRAME {String(shotIndex + 1).padStart(3, '0')}</strong><span>一个分镜镜头对应一张 16:9 画面</span></div>}</div>
+                        {savedReferences.length > 0 ? <div className="storyboard-identity-reference storyboard-identity-reference-used"><strong>最近生成已使用 {savedReferences.length} 张角色参考图</strong><span>{savedReferences.map(reference => reference.name || reference.roleId).join('、')}。每次重新生成都会继续使用这些角色的原始角色图。</span></div> : visualParticipantRoles.length > 0 && missingIdentityRoles.length === 0 && unknownParticipantIds.length === 0 ? <div className="storyboard-identity-reference"><strong>人物一致性已就绪</strong><span>生成时将使用 {visualParticipantRoles.map(role => role[1]).join('、')} 的原始角色图约束容貌。</span></div> : missingIdentityRoles.length > 0 || unknownParticipantIds.length > 0 ? <div className="storyboard-identity-reference storyboard-identity-reference-warning"><strong>人物一致性资料未完成</strong><span>{missingIdentityRoles.length ? `${missingIdentityRoles.map(role => role[1]).join('、')}缺少角色形象。` : ''}{unknownParticipantIds.length ? `${unknownParticipantIds.join('、')}尚未登记为稳定角色。` : ''}生成前请先补齐角色资产。</span></div> : <div className="storyboard-identity-reference"><strong>本镜头没有画面角色</strong><span>旁白不会作为人物图片发送，关键帧按场景小记生成。</span></div>}
                         <label><Text strong>镜头画面小记</Text><Input.TextArea disabled={jobRunning} rows={4} value={String(shot.storyboard_note || '')} onChange={event => updateShotFields(sceneId, shotId, { storyboard_note: event.target.value })} /></label>
                         <label><Text strong>关键帧风格</Text><Select disabled={jobRunning || allKeyframesGenerating || keyframeGeneratingSceneId === shotId} value={shotStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={value => updateShotFields(sceneId, shotId, { keyframe_style: value })} /></label>
-                        <Space wrap><Button disabled={jobRunning || shotEnd <= shotStart} onClick={() => splitShot(sceneId, shotId)}>从中间分句拆分镜头</Button><Button type="primary" icon={<ReloadOutlined />} loading={keyframeGeneratingSceneId === shotId} disabled={jobRunning || allKeyframesGenerating || Boolean(keyframeGeneratingSceneId && keyframeGeneratingSceneId !== shotId) || !shotNoteReady} onClick={() => void generateStoryboardShotKeyframe(sceneId, shot)}>{shot.keyframe_url ? '重新生成这一张' : '生成这一张关键帧'}</Button></Space>
+                        <Space wrap><Button disabled={jobRunning || shotEnd <= shotStart} onClick={() => splitShot(sceneId, shotId)}>从中间分句拆分镜头</Button><Button type="primary" icon={<ReloadOutlined />} loading={keyframeGeneratingSceneId === shotId} disabled={jobRunning || allKeyframesGenerating || Boolean(keyframeGeneratingSceneId && keyframeGeneratingSceneId !== shotId) || !shotNoteReady || missingIdentityRoles.length > 0 || unknownParticipantIds.length > 0} onClick={() => void generateStoryboardShotKeyframe(sceneId, shot)}>{shot.keyframe_url ? '重新生成这一张' : '生成这一张关键帧'}</Button></Space>
                       </article>;
                     }) : <Empty description="当前场景还没有镜头。点击 AI 重新生成全部分镜，或手工创建分镜镜头。" />}
                   </section>

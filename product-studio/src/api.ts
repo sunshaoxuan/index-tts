@@ -58,6 +58,13 @@ export interface SceneKeyframeResult {
   keyframeStyle: string;
   generatedAt: string;
   model: string;
+  identityReferenceMode: 'role_portraits' | 'no_visual_characters';
+  referenceCharacters: Array<{
+    roleId: string;
+    name: string;
+    portraitUrl: string;
+    portraitSha256: string;
+  }>;
 }
 
 export async function parseApiResponse<T>(response: Response): Promise<T> {

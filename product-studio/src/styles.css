@@ -693,6 +693,10 @@ body * { box-shadow: none !important; }
 .storyboard-shot-card > header .ant-typography { overflow: hidden; color: rgba(255, 237, 215, .56) !important; font-size: 9px; text-overflow: ellipsis; }
 .storyboard-shot-card > label { display: grid; gap: 7px; }
 .storyboard-shot-time { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: rgba(255, 237, 215, .68); font-variant-numeric: tabular-nums; }
+.storyboard-identity-reference { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid rgba(255, 181, 71, .34); border-radius: 9px; background: rgba(255, 181, 71, .08); color: rgba(255, 237, 215, .72); font-size: 11px; line-height: 1.55; }
+.storyboard-identity-reference strong { color: var(--cream); }
+.storyboard-identity-reference-used { border-color: rgba(105, 210, 151, .42); background: rgba(105, 210, 151, .08); }
+.storyboard-identity-reference-warning { border-color: rgba(255, 120, 91, .5); background: rgba(255, 120, 91, .1); }
 .storyboard-scene-fields { min-width: 0; }
 .storyboard-audio-range { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid rgba(255, 237, 215, .2); border-radius: 9px; background: rgba(255, 237, 215, .2); }
 .storyboard-audio-range span { display: grid; gap: 4px; padding: 11px 12px; color: rgba(255, 237, 215, .58); background: rgba(16, 9, 4, .74); font-size: 9px; }

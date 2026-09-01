@@ -127,13 +127,13 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 角色八列数组继续作为 IndexTTS 与既有导演流程的兼容层。扩展人物属性存入工程根级 `character_assets`，键为稳定角色 ID，字段包括 `gender`、`age`、`pitch_min_hz`、`pitch_max_hz`、`pitch_target_hz`、`portrait_url`、`portrait_prompt`、`portrait_style`、`portrait_notes` 和人物小传来源。Node 与 Python 在旧工程缺失该映射时使用同一性别推断、年龄频率建议和默认漫画风格规则补齐默认值。
 
-OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。图像路由使用 `/v1/images/generations`，兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
+OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。角色形象和没有画面人物的关键帧使用 `/v1/images/generations`。含有画面人物的关键帧使用 multipart `/v1/images/edits`，以重复 `image[]` 字段发送角色身份参考图。两条图像响应链都兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
 
 该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。
 
 文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。逐块分句请求复用全文注册表，每条分句保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
 
-分镜数据采用 `document.scenes[].shots[]` 两层结构。场景边界由主题、地点、空间和叙事焦点决定；镜头边界在场景内部依据 `target_shot_seconds` 继续切分。`storyboard_captions` 来自最近交付清单中每条 WAV 的实际时长和句后停顿，Worker 先建立累计时间线，再按连续分句和目标时长形成镜头；没有完整音频时以去空白文字长度估算分组且不写 `start_seconds`、`end_seconds`。镜头保存稳定 ID、标题、画面小记、参与人物、起止分句、来源摘要、创作方式和可选真实时间。关键帧生成以镜头作为最小单位，服务端把镜头字段覆盖到所属场景视觉上下文后生成图像。手工创建会占用同场景连续分句范围，原镜头剩余部分自动分成连续镜头；拆分和合并会清除范围已经变化的关键帧元数据。
+分镜数据采用 `document.scenes[].shots[]` 两层结构。场景边界由主题、地点、空间和叙事焦点决定；镜头边界在场景内部依据 `target_shot_seconds` 继续切分。`storyboard_captions` 来自最近交付清单中每条 WAV 的实际时长和句后停顿，Worker 先建立累计时间线，再按连续分句和目标时长形成镜头；没有完整音频时以去空白文字长度估算分组且不写 `start_seconds`、`end_seconds`。镜头保存稳定 ID、标题、画面小记、参与人物、起止分句、来源摘要、创作方式和可选真实时间。关键帧生成以镜头作为最小单位，服务端把镜头字段覆盖到所属场景视觉上下文后生成图像。服务端按照工程角色表顺序解析 `participants`，排除 `narrator`，从角色资产 URL 安全定位当前工程或关联工程图片，校验 20 MB 上限和 PNG、JPEG、WebP 签名，并计算 SHA256。有画面人物时，提示逐张映射参考图序号、稳定角色 ID 和名称，要求保持面部结构、五官比例、发型、年龄感和标志特征；每次从原始角色图生成，避免关键帧递推的累积漂移。单张与全量路由复用该解析器，全量路由先对全部镜头完成预检。结果保存 `identity_reference_mode` 与 `reference_characters`。手工创建会占用同场景连续分句范围，原镜头剩余部分自动分成连续镜头；拆分和合并会清除范围已经变化的关键帧元数据。
 
 分句数组第 15 至 18 列保存重音文字、出现序号、重音强度和生成方式。渲染器把重音目标追加到 `emo_text`，并将这些字段、生成方式和验收算法版本加入缓存签名。高级生成最多尝试九次；设置重音目标时，只有三个基础质量与重音代理同时达标的候选才能提前结束抽取，预算耗尽后从基础质量合格项中按文本比例声学代理评分保留三版。代理验收比较目标估计区间与相邻区间的 RMS 能量，保存 `stress_db`、质量指标、排序和算法版本。该指标用于受约束抽卡排序，产品界面始终披露其概率性质。分句草稿索引存在同一序号的多个历史缓存时，最新写入项覆盖旧项进入页面，避免重复显示同一分句。
 
