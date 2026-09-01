@@ -368,6 +368,7 @@ function directorSnapshot(payload) {
     character_assets: structuredClone(payload.character_assets || {}),
     segments: structuredClone(payload.segments || []),
     pronunciations: structuredClone(payload.pronunciations || []),
+    storyboard: structuredClone(payload.document?.scenes || []),
   };
 }
 
@@ -379,6 +380,7 @@ function directorChangeKinds(before, after) {
   if (JSON.stringify(before.segments.map(row => row.slice(0, 6))) !== JSON.stringify(after.segments.map(row => row.slice(0, 6)))) kinds.push('断句与角色分配');
   if (JSON.stringify(before.segments.map(row => row.slice(6))) !== JSON.stringify(after.segments.map(row => row.slice(6)))) kinds.push('合成文字与导演参数');
   if (JSON.stringify(before.pronunciations) !== JSON.stringify(after.pronunciations)) kinds.push('全篇纠音');
+  if (JSON.stringify(before.storyboard) !== JSON.stringify(after.storyboard)) kinds.push('视频分镜');
   return kinds;
 }
 
@@ -533,6 +535,23 @@ async function latestRender(projectDir) {
     }))).filter(Boolean);
     return candidates.sort((a, b) => b.time - a.time)[0]?.name;
   } catch { return undefined; }
+}
+
+async function renderCaptions(projectDir, renderName) {
+  if (!renderName) return [];
+  const renderDir = path.join(projectDir, 'renders', renderName);
+  try {
+    const manifest = JSON.parse(await readFile(path.join(renderDir, 'director-manifest.json'), 'utf8'));
+    const captions = [];
+    for (const item of manifest.segments || []) {
+      try {
+        const filename = path.basename(String(item.audio || '').replaceAll('\\', '/'));
+        const durationSeconds = await wavDurationSeconds(path.join(renderDir, 'segments', filename));
+        captions.push({ order: Number(item.order), speakerName: String(item.speaker_name || '').trim(), text: String(item.source_text || item.text || '').trim(), durationSeconds, pauseAfterMs: Math.max(0, Number(item.pause_after_ms) || 0) });
+      } catch {}
+    }
+    return captions;
+  } catch { return []; }
 }
 
 export async function wavDurationSeconds(filePath) {
@@ -1373,6 +1392,26 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       });
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.post('/api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const sceneId = safeProjectId(request.params.sceneId);
+      const shotId = safeProjectId(request.params.shotId);
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
+      const settings = await readAiMediaSettings(aiMediaSettingsFile);
+      if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const persistedScene = (Array.isArray(project.document?.scenes) ? project.document.scenes : []).find(scene => String(scene?.id || '') === sceneId);
+      if (!persistedScene) throw new Error('场景不存在');
+      const persistedShot = (Array.isArray(persistedScene.shots) ? persistedScene.shots : []).find(shot => String(shot?.id || '') === shotId);
+      if (!persistedShot) throw new Error('分镜镜头不存在');
+      const requestedShot = request.body?.shot && typeof request.body.shot === 'object' ? request.body.shot : {};
+      const draft = { ...persistedScene, ...persistedShot, ...requestedShot, id: shotId, scene_id: sceneId, participants: requestedShot.participants || persistedShot.participants || persistedScene.participants };
+      const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: draft, requestedStyle: request.body?.keyframeStyle });
+      return { ...generated, shotId };
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
   app.post('/api/projects/:id/storyboard/keyframes', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
@@ -1382,6 +1421,25 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!settings.endpoint || !settings.api_key || !settings.image_model) throw new Error('请先在系统配置中填写兼容服务 Endpoint、API Key 和图像模型');
       const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
       const persistedScenes = Array.isArray(project.document?.scenes) ? project.document.scenes : [];
+      const requestedShots = Array.isArray(request.body?.shots) ? request.body.shots : undefined;
+      if (requestedShots) {
+        if (!requestedShots.length) throw new Error('当前工程没有可生成的分镜镜头');
+        if (requestedShots.length > 500) throw new Error('单次全量关键帧生成最多处理 500 个分镜镜头');
+        const persistedShots = new Map();
+        for (const scene of persistedScenes) for (const shot of Array.isArray(scene?.shots) ? scene.shots : []) persistedShots.set(String(shot?.id || ''), { scene, shot });
+        const preparedShots = requestedShots.map(shot => {
+          const shotId = safeProjectId(shot?.id);
+          const persisted = persistedShots.get(shotId);
+          if (!persisted) throw new Error(`分镜镜头 ${shotId} 不存在`);
+          return { ...persisted.scene, ...persisted.shot, ...(shot && typeof shot === 'object' ? shot : {}), id: shotId, scene_id: String(persisted.scene.id), participants: shot.participants || persisted.shot.participants || persisted.scene.participants };
+        });
+        const keyframes = [];
+        for (const shot of preparedShots) {
+          const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: shot, requestedStyle: request.body?.keyframeStyle });
+          keyframes.push({ ...generated, shotId: String(shot.id) });
+        }
+        return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
+      }
       const requestedScenes = Array.isArray(request.body?.scenes) ? request.body.scenes : persistedScenes;
       if (!requestedScenes.length) throw new Error('当前工程没有可生成的分镜场景');
       if (requestedScenes.length > 200) throw new Error('单次全量关键帧生成最多处理 200 个场景');
@@ -1425,7 +1483,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     const base = name ? `/api/projects/${encodeURIComponent(id)}/render-file/${encodeURIComponent(name)}` : '';
     let fragments = [];
     let draftFragments = [];
-    let captions = [];
+    const captions = await renderCaptions(path.join(projectRoot, id), name);
     let stale;
     try { stale = JSON.parse(await readFile(path.join(projectRoot, id, 'renders', name, '.stale.json'), 'utf8')); } catch {}
     if (name) try {
@@ -1438,13 +1496,6 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: Boolean(item.cache_reused),
         forcedRegeneration: Boolean(item.forced_regeneration), audio: `${base}/segments/${encodeURIComponent(path.basename(String(item.audio || '').replaceAll('\\', '/')))}`,
       }));
-      for (const item of manifestSegments) {
-        try {
-          const filename = path.basename(String(item.audio || '').replaceAll('\\', '/'));
-          const durationSeconds = await wavDurationSeconds(path.join(projectRoot, id, 'renders', name, 'segments', filename));
-          captions.push({ order: Number(item.order), speakerName: String(item.speaker_name || '').trim(), text: String(item.source_text || item.text || '').trim(), durationSeconds, pauseAfterMs: Math.max(0, Number(item.pause_after_ms) || 0) });
-        } catch {}
-      }
     } catch {}
     try {
       const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
@@ -1521,7 +1572,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     const input = path.join(dir, 'input.json');
     const status = path.join(dir, 'status.json');
     const result = path.join(dir, 'result.json');
-    const worker = job.kind === 'analyze' ? 'product_analysis_worker.py' : job.kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
+    const worker = job.kind === 'analyze' || job.kind === 'storyboard' ? 'product_analysis_worker.py' : job.kind === 'voice' ? 'product_voice_worker.py' : 'product_render_worker.py';
     activeJob = { ...job };
     await writeFile(status, JSON.stringify({ phase: 'queued', fraction: 0, message: `模型队列已选中任务：${job.modelKey}`, modelKey: job.modelKey, dependencies: job.dependencies, queuePosition: 0 }), 'utf8');
     await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
@@ -1618,7 +1669,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     await mkdir(dir, { recursive: true });
     const payload = { root: repoRoot, project_id: id, ...options };
     try {
-      if (kind === 'analyze' || kind === 'voice') {
+      if (kind === 'analyze' || kind === 'storyboard' || kind === 'voice') {
         const settings = await readAiMediaSettings(aiMediaSettingsFile);
         if (settings.director_provider === 'compatible') {
           if (!settings.endpoint || !settings.api_key) throw new Error('兼容全文分析需要先在全局 AI 设置中保存 Endpoint 和 API Key');
@@ -1653,6 +1704,17 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   }
   app.post('/api/projects/:id/analyze', async (request, reply) => {
     try { return reply.code(202).send(await startJob(request.params.id, 'analyze')); }
+    catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.post('/api/projects/:id/storyboard/regenerate', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const targetShotSeconds = Math.max(3, Math.min(60, Number(request.body?.targetShotSeconds) || 10));
+      const projectDir = path.join(projectRoot, id);
+      const renderName = await latestRender(projectDir);
+      const storyboardCaptions = await renderCaptions(projectDir, renderName);
+      return reply.code(202).send(await startJob(id, 'storyboard', { storyboard_only: true, target_shot_seconds: targetShotSeconds, storyboard_captions: storyboardCaptions }));
+    }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/render', async (request, reply) => {

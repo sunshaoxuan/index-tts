@@ -2,19 +2,19 @@
 
 ## 目标
 
-模型权重和冷启动阶段频繁读取的 PyTorch CUDA 运行依赖统一放在 C 盘 SSD，通过只读语义的宿主机目录向容器提供。项目输出、运行记录、交付物和其他业务数据继续放在 D 盘。
+模型权重和冷启动阶段频繁读取的 PyTorch CUDA 运行依赖统一放在 C 盘 SSD。模型目录通过只读外部 Docker 卷 `indextts25-models-ssd` 向容器提供，运行依赖通过只读宿主机目录挂载。项目输出、运行记录、交付物和其他业务数据继续放在 D 盘。
 
 ## 正式路径
 
 | 内容 | 宿主机路径 | 容器路径 |
 | --- | --- | --- |
-| 全部模型权重 | `C:\workspace\IndexTTS-2.5\models\checkpoints` | `/app/checkpoints` |
+| 全部模型权重 | `C:\workspace\IndexTTS-2.5\models\checkpoints`，外部卷 `indextts25-models-ssd` | `/app/checkpoints` |
 | Python 3.11 推理依赖 | `C:\workspace\IndexTTS-2.5\runtime-python\python3.11\site-packages` | `/app/.venv/lib/python3.11/site-packages` |
 | 生成输出 | `D:\workspace\IndexTTS-2.5\outputs` | `/app/outputs` |
 | 运行记录 | `D:\workspace\IndexTTS-2.5\runtime-output` | `/app/runtime-output` |
 | 交付物 | `D:\workspace\IndexTTS-2.5\artifacts` | `/app/artifacts` |
 
-`Qwen3-TTS-12Hz-1.7B-VoiceDesign` 包含在 C 盘的统一模型目录中。现行服务不再为该子目录叠加 Docker 命名卷。
+`Qwen3-TTS-12Hz-1.7B-VoiceDesign` 包含在 C 盘的统一模型目录中。外部卷使用本地驱动的 bind 选项指向该目录，保留 Docker 卷名称和只读挂载语义。现行服务不再为 VoiceDesign 子目录叠加其他卷。
 
 Python 3.11 推理依赖原本位于 Docker overlay 镜像层。Docker Desktop 数据盘位于 D 盘时，首次导入 PyTorch 和后续加载 Pynini、LLVM、SciPy、OpenCV、Transformers 等依赖都会读取 D 盘 VHDX。现行 Compose 将完整 `site-packages` 从 C 盘 SSD 只读挂载到原包路径，其他镜像层、Docker 数据卷和业务数据仍保留在 D 盘。
 
@@ -24,7 +24,7 @@ Python 3.11 推理依赖原本位于 Docker overlay 镜像层。Docker Desktop �
 
 迁移前后应逐项检查模型文件数量、总字节数、关键权重 SHA256、运行依赖文件数量、关键共享库 SHA256、Compose 展开配置、容器实际挂载、只读标记、健康状态、GPU 可用性、真实冷启动任务和浏览器页面。
 
-容器实际挂载中的 `/app/checkpoints` 和 Python 3.11 推理依赖目录来源必须为 C 盘正式路径。推理依赖挂载必须为只读。输出、运行记录和交付物的来源必须保持为 D 盘正式路径。
+容器实际挂载中的 `/app/checkpoints` 和 Python 3.11 推理依赖目录来源必须为 C 盘正式路径。模型卷和推理依赖挂载必须为只读。输出、运行记录和交付物的来源必须保持为 D 盘正式路径。
 
 Windows 工作树可能使用 CRLF 行尾。增量镜像构建会在统一去除 CR 字节后比较 `package.json` 和 `pnpm-lock.yaml`，并统一规范化应用入口和后端目录中的 shell 脚本。依赖内容发生变化时构建仍会停止，单纯行尾变化不会阻断构建和容器启动。
 

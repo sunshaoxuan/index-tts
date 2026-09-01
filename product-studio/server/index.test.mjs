@@ -280,6 +280,29 @@ test('writes global compatible director configuration to the analysis worker wit
   await app.close();
 });
 
+test('starts an isolated storyboard regeneration job with the director worker', async () => {
+  const { root } = await fixture();
+  let child;
+  let launch;
+  const app = await buildApp({ repoRoot: root, launchWorker: details => {
+    launch = details;
+    child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); return child;
+  } });
+
+  const started = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/regenerate', payload: {} });
+
+  assert.equal(started.statusCode, 202);
+  assert.equal(started.json().kind, 'storyboard');
+  assert.match(launch.args[0], /product_analysis_worker\.py$/u);
+  const input = JSON.parse(await readFile(launch.args[2], 'utf8'));
+  assert.equal(input.storyboard_only, true);
+  assert.equal(input.target_shot_seconds, 10);
+  assert.deepEqual(input.storyboard_captions, []);
+  assert.equal(input.config.model, 'qwen3:14b');
+  child.emit('close', 0);
+  await app.close();
+});
+
 test('uses Cockpit instance headers and the Responses API for character profiles', async () => {
   const { root } = await fixture();
   const calls = [];
@@ -379,8 +402,8 @@ test('generates one storyboard keyframe and a full set from AI scene notes with 
   const projectPath = path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json');
   const stored = JSON.parse(await readFile(projectPath, 'utf8'));
   stored.document = { scenes: [
-    { id: 'scene_001', title: '雨夜抵达', topic: '访客抵达', location: '旧宅门廊', spatial_direction: '室外朝向门内', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '悬疑', storyboard_note: '雨幕覆盖旧宅门廊，访客站在画面左侧收起黑伞，门内暖光从右后方切入，前景积水映出人物剪影，中景木门半开，远景保持在暗色庭院。镜头采用中远景并从室外朝向门内。', boundary_reason: '地点从街道切换到旧宅门廊', evidence: '访客在雨夜抵达旧宅' },
-    { id: 'scene_002', title: '进入客厅', topic: '室内会面', location: '旧宅客厅', spatial_direction: '室内面向壁炉', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '克制', storyboard_note: '客厅以壁炉为视觉中心，人物停在画面右侧入口处，前景旧木桌压住信封，中景空椅形成等待感，壁炉微光照亮织物和灰尘，背景楼梯隐入阴影。镜头使用平视广角并面向壁炉。', boundary_reason: '人物由门廊进入室内', evidence: '木门关闭后人物进入客厅' },
+    { id: 'scene_001', title: '雨夜抵达', topic: '访客抵达', location: '旧宅门廊', spatial_direction: '室外朝向门内', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '悬疑', storyboard_note: '雨幕覆盖旧宅门廊，访客站在画面左侧收起黑伞，门内暖光从右后方切入，前景积水映出人物剪影，中景木门半开，远景保持在暗色庭院。镜头采用中远景并从室外朝向门内。', boundary_reason: '地点从街道切换到旧宅门廊', evidence: '访客在雨夜抵达旧宅', shots: [{ id: 'scene_001_shot_001', title: '收伞', storyboard_note: '访客站在门廊左侧收起黑伞，前景积水映出剪影，镜头低位朝向门内暖光。', participants: ['narrator'], start_segment_order: 1, end_segment_order: 1 }] },
+    { id: 'scene_002', title: '进入客厅', topic: '室内会面', location: '旧宅客厅', spatial_direction: '室内面向壁炉', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '克制', storyboard_note: '客厅以壁炉为视觉中心，人物停在画面右侧入口处，前景旧木桌压住信封，中景空椅形成等待感，壁炉微光照亮织物和灰尘，背景楼梯隐入阴影。镜头使用平视广角并面向壁炉。', boundary_reason: '人物由门廊进入室内', evidence: '木门关闭后人物进入客厅', shots: [{ id: 'scene_002_shot_001', title: '望向壁炉', storyboard_note: '人物停在客厅右侧入口，前景木桌压着信封，平视广角朝向壁炉和空椅。', participants: ['narrator'], start_segment_order: 2, end_segment_order: 2 }] },
   ] };
   await writeFile(projectPath, JSON.stringify(stored));
   const calls = [];
@@ -403,11 +426,16 @@ test('generates one storyboard keyframe and a full set from AI scene notes with 
   assert.match(calls[0].body.prompt, /黑白悬疑墨线分镜/);
   assert.match(calls[0].body.prompt, /16:9/);
 
-  const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { scenes: project.document.scenes, keyframeStyle: 'cinematic_realistic' } });
+  const shot = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_001/shots/scene_001_shot_001/keyframe', payload: { shot: project.document.scenes[0].shots[0], keyframeStyle: 'clean_cel' } });
+  assert.equal(shot.statusCode, 200);
+  assert.equal(shot.json().shotId, 'scene_001_shot_001');
+
+  const allShots = project.document.scenes.flatMap(scene => scene.shots);
+  const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: allShots, keyframeStyle: 'cinematic_realistic' } });
   assert.equal(full.statusCode, 200);
   assert.equal(full.json().generatedCount, 2);
-  assert.deepEqual(full.json().keyframes.map(item => item.sceneId), ['scene_001', 'scene_002']);
-  assert.ok(calls.slice(1).every(call => /电影写实关键帧/.test(call.body.prompt)));
+  assert.deepEqual(full.json().keyframes.map(item => item.shotId), ['scene_001_shot_001', 'scene_002_shot_001']);
+  assert.ok(calls.slice(2).every(call => /电影写实关键帧/.test(call.body.prompt)));
   assert.ok(calls.every(call => call.body.model === 'image-model'));
   assert.equal((await app.inject(full.json().keyframes[1].keyframeUrl)).headers['content-type'], 'image/png');
   await app.close();

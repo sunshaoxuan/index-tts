@@ -36,6 +36,10 @@ Linux GPU 镜像内置 Product Studio、Node.js 24、IndexTTS Python 环境、Vo
 11. `GET /api/active-job`
 12. `GET /api/projects/:id/latest-render`
 13. `DELETE /api/projects/:id/renders/:renderId`
+14. `POST /api/projects/:id/storyboard/regenerate`
+15. `POST /api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe`
+16. `POST /api/projects/:id/storyboard/keyframes`
+17. `GET /api/projects/:id/scene-assets/:file`
 
 ## 数据边界
 
@@ -53,7 +57,7 @@ IndexTTS 音频合成由持久 Render Runtime 处理。Node 继续为每个产�
 
 Node 产品服务在 `runtime-output/product-jobs/job-queue.json` 持久保存后台模型任务队列。全文分析的模型键由 Provider、Endpoint 和模型名组成，角色音色与音频合成分别使用 VoiceDesign 和 IndexTTS 稳定模型键。同一工程的后续任务显式依赖此前仍活动或等待的任务，其他工程任务可以独立进入可运行集合。调度器先拦截未完成依赖并传播依赖失败，再从可运行集合中优先选择与上一驻留模型相同的任务，同模型内按进入时间和任务 ID 稳定排序。活动任务与等待任务都会锁定对应工程，防止队列输入在执行前发生漂移。任务状态公开 `modelKey`、`dependencies` 和 `queuePosition`，服务恢复时会清理已终止记录并继续调度有效等待项。
 
-当前后台模型队列覆盖 AI 全文分析、角色音色生成、完整音频、严格串接和分句重新生成。人物小传扩写与角色画像仍是请求内完成的即时兼容服务调用，不写入该后台队列。
+当前后台模型队列覆盖 AI 全文分析、AI 全量分镜重建、角色音色生成、完整音频、严格串接和分句重新生成。AI 全量分镜重建复用全文导演模型键与分析 Worker，在新分析结果和当前人工分句之间按无空白原文覆盖对齐，只回写场景、分句 `scene_id` 和镜头清单。人物小传扩写与角色画像仍是请求内完成的即时兼容服务调用，不写入该后台队列。
 
 Node 服务恢复时还会检查 Render Runtime 的 `busy` 状态和 `.processing` 请求信封。只有运行时 PID 存活、请求 ID 合法、输入与状态文件严格位于一个产品任务目录、工程存在且任务状态未结束时才接管。接管任务继续使用原任务 ID、状态文件和已生成片断，并恢复工程锁；状态进入 `complete` 或 `error` 后清除活动任务记录。
 
@@ -128,6 +132,8 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。
 
 文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。逐块分句请求复用全文注册表，每条分句保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
+
+分镜数据采用 `document.scenes[].shots[]` 两层结构。场景边界由主题、地点、空间和叙事焦点决定；镜头边界在场景内部依据 `target_shot_seconds` 继续切分。`storyboard_captions` 来自最近交付清单中每条 WAV 的实际时长和句后停顿，Worker 先建立累计时间线，再按连续分句和目标时长形成镜头；没有完整音频时以去空白文字长度估算分组且不写 `start_seconds`、`end_seconds`。镜头保存稳定 ID、标题、画面小记、参与人物、起止分句、来源摘要、创作方式和可选真实时间。关键帧生成以镜头作为最小单位，服务端把镜头字段覆盖到所属场景视觉上下文后生成图像。手工创建会占用同场景连续分句范围，原镜头剩余部分自动分成连续镜头；拆分和合并会清除范围已经变化的关键帧元数据。
 
 分句数组第 15 至 18 列保存重音文字、出现序号、重音强度和生成方式。渲染器把重音目标追加到 `emo_text`，并将这些字段、生成方式和验收算法版本加入缓存签名。高级生成最多尝试九次；设置重音目标时，只有三个基础质量与重音代理同时达标的候选才能提前结束抽取，预算耗尽后从基础质量合格项中按文本比例声学代理评分保留三版。代理验收比较目标估计区间与相邻区间的 RMS 能量，保存 `stress_db`、质量指标、排序和算法版本。该指标用于受约束抽卡排序，产品界面始终披露其概率性质。分句草稿索引存在同一序号的多个历史缓存时，最新写入项覆盖旧项进入页面，避免重复显示同一分句。
 

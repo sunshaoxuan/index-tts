@@ -6,18 +6,17 @@ Docker 镜像包含 Product Studio、Node.js 24、两套 Python 3.11 推理环�
 
 | 持久化来源 | 容器目录 | 内容 |
 |---|---|---|
-| 宿主机 `checkpoints` | `/app/checkpoints` | IndexTTS 2.5 模型和模型导入源 |
-| Docker 卷 `indextts25-qwen-voice-design-model` | `/app/checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | VoiceDesign 模型，避免 Windows 绑定挂载的随机读取性能损失 |
+| 外部卷 `indextts25-models-ssd`，实际目录 `C:\workspace\IndexTTS-2.5\models\checkpoints` | `/app/checkpoints` | IndexTTS 2.5 与 VoiceDesign 模型，位于 NVMe SSD 并以只读方式挂载 |
 | `outputs` | `/app/outputs` | 小说工程、永久音色、渲染版本与分轨包 |
 | `runtime-output` | `/app/runtime-output` | 全局 AI 配置、API Key、任务状态与日志 |
 | `artifacts` | `/app/artifacts` | 字幕、样本发布包和其他正式成果物 |
 
-这些目录和数据卷不会进入镜像层。删除或替换容器不会删除其中的内容。首次部署需把宿主机 `checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign` 导入命名卷。迁移时应同时传输镜像、四个目录和 VoiceDesign 模型卷备份。
+这些目录和数据卷不会进入镜像层。删除或替换容器不会删除其中的内容。首次部署需把完整模型目录复制到目标机器的 SSD，并创建指向该目录的外部 Docker 卷。迁移时应同时传输镜像、模型目录、`outputs`、`runtime-output` 和 `artifacts`。
 
 首次启动或恢复备份前创建模型卷：
 
 ```powershell
-docker volume create indextts25-qwen-voice-design-model
+docker volume create --driver local --opt type=none --opt o=bind --opt device=/run/desktop/mnt/host/c/workspace/IndexTTS-2.5/models/checkpoints indextts25-models-ssd
 ```
 
 ## 本机启动
@@ -50,7 +49,7 @@ docker compose ps
 docker save --output indextts25-product-studio-1.1.0.tar indextts25-product-studio:1.1.0
 ```
 
-将镜像文件、`compose.yaml`、`checkpoints`、`outputs`、`runtime-output`、`artifacts` 和 VoiceDesign 模型卷备份复制到目标机器。目标机器加载镜像并恢复模型卷后启动：
+将镜像文件、`compose.yaml`、SSD 模型目录、`outputs`、`runtime-output` 和 `artifacts` 复制到目标机器。目标机器加载镜像、创建指向 SSD 模型目录的外部卷后启动：
 
 ```powershell
 docker load --input indextts25-product-studio-1.1.0.tar

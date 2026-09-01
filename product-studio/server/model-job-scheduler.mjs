@@ -5,7 +5,7 @@ function normalizedPart(value, fallback) {
 export function jobModelKey(kind, config = {}) {
   if (kind === 'render') return 'indextts:index-tts-2.5';
   if (kind === 'voice') return 'voice-design:qwen3-tts-1.7b';
-  if (kind === 'analyze') {
+  if (kind === 'analyze' || kind === 'storyboard') {
     const provider = normalizedPart(config.provider, 'ollama');
     const endpoint = normalizedPart(config.base_url, 'http://127.0.0.1:11434').replace(/\/+$/u, '');
     const model = normalizedPart(config.model, 'qwen3:14b');

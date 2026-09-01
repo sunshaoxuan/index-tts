@@ -14,6 +14,7 @@ from character_assets import normalize_character_assets, recommend_pitch_range
 from voice_controls import recommended_voice_traits
 from novel_project import NovelProjectStore, pronunciation_rows
 from director_memory import reapply_director_memory
+from storyboard_regeneration import regenerate_storyboard_document
 from text_director import DirectorConfig, OllamaTextDirector, document_to_tables
 
 
@@ -409,6 +410,62 @@ def apply_validated_character_profiles(
     return {"analyzed": analyzed, "changed": changed}
 
 
+def current_document_with_project_segments(project: dict[str, Any]) -> dict[str, Any]:
+    """Build the storyboard document against the user's current segment table."""
+    document = deepcopy(project.get("document")) if isinstance(project.get("document"), dict) else {}
+    existing_rows = [item for item in document.get("segments") or [] if isinstance(item, dict)]
+    existing_by_order = {
+        int(item.get("order") or 0): item
+        for item in existing_rows
+        if isinstance(item, dict) and int(item.get("order") or 0) > 0
+    }
+    role_kind_by_id = {
+        str(row[0]): str(row[2])
+        for row in project.get("roles") or []
+        if isinstance(row, list) and len(row) >= 3
+    }
+    existing_spans: list[tuple[int, int, dict[str, Any]]] = []
+    existing_cursor = 0
+    for item in existing_rows:
+        length = len(re.sub(r"\s+", "", str(item.get("source_text") or "")))
+        if length > 0:
+            existing_spans.append((existing_cursor, existing_cursor + length, item))
+            existing_cursor += length
+    segments: list[dict[str, Any]] = []
+    current_cursor = 0
+    for raw in project.get("segments") or []:
+        if not isinstance(raw, list) or len(raw) < 12:
+            continue
+        order = int(raw[0])
+        length = len(re.sub(r"\s+", "", str(raw[5] or "")))
+        current_end = current_cursor + length
+        aligned = max(
+            existing_spans,
+            key=lambda span: max(0, min(current_end, span[1]) - max(current_cursor, span[0])),
+            default=None,
+        )
+        segment = deepcopy(aligned[2] if aligned and max(0, min(current_end, aligned[1]) - max(current_cursor, aligned[0])) > 0 else existing_by_order.get(order, {}))
+        segment.update({
+            "order": order,
+            "section": str(raw[1]),
+            "speaker_id": str(raw[2]),
+            "speaker_name": str(raw[3]),
+            "speaker_kind": role_kind_by_id.get(str(raw[2]), str(segment.get("speaker_kind") or "character")),
+            "language": str(raw[4]),
+            "source_text": str(raw[5]),
+            "text": str(raw[6]),
+            "attitude": str(raw[7]),
+            "emotion": str(raw[8]),
+            "intensity": float(raw[9]),
+            "pace": str(raw[10]),
+            "pause_after_ms": int(raw[11]),
+        })
+        segments.append(segment)
+        current_cursor = current_end
+    document["segments"] = segments
+    return document
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -416,6 +473,7 @@ def main() -> int:
     parser.add_argument("--status", required=True)
     args = parser.parse_args()
     payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    storyboard_only = bool(payload.get("storyboard_only"))
     root = Path(payload["root"]).resolve()
     status_path = Path(args.status).resolve()
     store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
@@ -439,6 +497,51 @@ def main() -> int:
         progress=progress,
         demographic_reference_text=demographic_reference,
     )
+    if storyboard_only:
+        storyboard_document = regenerate_storyboard_document(
+            current_document_with_project_segments(project),
+            document,
+            captions=payload.get("storyboard_captions") if isinstance(payload.get("storyboard_captions"), list) else None,
+            target_shot_seconds=float(payload.get("target_shot_seconds") or 10.0),
+        )
+        history = list(project.get("director_history") or [])
+        history.append({
+            "operation_id": str(uuid.uuid4()),
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "actor": "ai-storyboard",
+            "changes": ["AI 重新生成全部分镜"],
+            "memory_report": storyboard_document["storyboard_regeneration"],
+        })
+        store.save(
+            project["project_id"],
+            title=project["title"],
+            content_type=project["content_type"],
+            source_text=project["source_text"],
+            guidance=project.get("guidance", ""),
+            document=storyboard_document,
+            roles=project.get("roles") or [],
+            segments=project.get("segments") or [],
+            pronunciations=pronunciation_rows(project.get("pronunciations")),
+            voice_files=project.get("voice_files") or [],
+            director_history=history,
+            director_memory=project.get("director_memory") or {},
+            character_assets=project.get("character_assets") or {},
+        )
+        scene_count = len(storyboard_document.get("scenes") or [])
+        shot_count = int(storyboard_document["storyboard_regeneration"].get("shot_count") or 0)
+        result = {
+            "document": storyboard_document,
+            "roles": project.get("roles") or [],
+            "segments": project.get("segments") or [],
+            "storyboard_regeneration": storyboard_document["storyboard_regeneration"],
+        }
+        write_json(Path(args.result).resolve(), result)
+        write_json(status_path, {
+            "phase": "complete",
+            "fraction": 1.0,
+            "message": f"AI 已重新生成全部分镜，共 {scene_count} 个场景、{shot_count} 个镜头",
+        })
+        return 0
     single_anchor = document.get("content_type") in {"news", "commentary"}
     if single_anchor:
         document["character_validation"] = {

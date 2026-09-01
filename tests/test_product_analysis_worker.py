@@ -4,11 +4,31 @@ from product_analysis_worker import (
     analysis_voice_ids,
     apply_analysis_demographics,
     apply_validated_character_profiles,
+    current_document_with_project_segments,
     enforce_single_anchor_tables,
     linked_article_demographic_reference,
     merge_analysis_roles,
     prepare_single_anchor_analysis,
 )
+
+
+def test_storyboard_regeneration_uses_current_user_edited_segments():
+    project = {
+        "roles": [["narrator", "旁白", "narrator"]],
+        "segments": [[1, "第 1 章", "narrator", "旁白", "ZH", "当前原文", "人工朗读文字", "中性叙述", "平静", 0.4, "自然", 250]],
+        "document": {
+            "characters": [{"id": "narrator"}],
+            "segments": [{"order": 1, "source_text": "旧原文", "text": "旧朗读", "scene_id": "scene_old", "speaker_confidence": 0.8}],
+        },
+    }
+
+    document = current_document_with_project_segments(project)
+
+    assert document["characters"] == [{"id": "narrator"}]
+    assert document["segments"][0]["source_text"] == "当前原文"
+    assert document["segments"][0]["text"] == "人工朗读文字"
+    assert document["segments"][0]["speaker_kind"] == "narrator"
+    assert document["segments"][0]["speaker_confidence"] == 0.8
 
 
 def test_analysis_voice_ids_use_project_and_library_voices_without_examples(tmp_path: Path):

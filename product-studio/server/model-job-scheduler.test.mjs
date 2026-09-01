@@ -6,6 +6,7 @@ test('builds stable model keys for each background generation kind', () => {
   assert.equal(jobModelKey('render'), 'indextts:index-tts-2.5');
   assert.equal(jobModelKey('voice'), 'voice-design:qwen3-tts-1.7b');
   assert.equal(jobModelKey('analyze', { provider: 'OLLAMA', base_url: 'http://127.0.0.1:11434/', model: 'Qwen3:14B' }), 'director:ollama:http://127.0.0.1:11434:qwen3:14b');
+  assert.equal(jobModelKey('storyboard', { provider: 'OLLAMA', base_url: 'http://127.0.0.1:11434/', model: 'Qwen3:14B' }), 'director:ollama:http://127.0.0.1:11434:qwen3:14b');
 });
 
 test('keeps blocked jobs behind their dependencies', () => {

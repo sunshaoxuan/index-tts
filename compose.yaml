@@ -23,11 +23,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - type: volume
-        source: indextts-model
+        source: models-ssd
         target: /app/checkpoints
-      - type: volume
-        source: qwen-voice-design-model
-        target: /app/checkpoints/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+        read_only: true
       - type: bind
         source: C:/workspace/IndexTTS-2.5/runtime-python/python3.11/site-packages
         target: /app/.venv/lib/python3.11/site-packages
@@ -51,9 +49,6 @@ services:
               capabilities: [gpu]
 
 volumes:
-  indextts-model:
-    name: indextts25-indextts-model
-    external: true
-  qwen-voice-design-model:
-    name: indextts25-qwen-voice-design-model
+  models-ssd:
+    name: indextts25-models-ssd
     external: true

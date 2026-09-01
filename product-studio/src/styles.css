@@ -682,6 +682,16 @@ body * { box-shadow: none !important; }
 .storyboard-keyframe-panel label { min-width: 0; display: grid; gap: 8px; }
 .storyboard-keyframe-panel label > small { color: rgba(255, 237, 215, .64); font-size: 9px; line-height: 1.5; }
 .storyboard-keyframe-panel > .ant-typography { color: rgba(255, 237, 215, .58) !important; font-size: 9px; line-height: 1.5; }
+.storyboard-shot-workbench { min-width: 0; display: grid; gap: 14px; align-content: start; }
+.storyboard-shot-toolbar { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line-medium); border-radius: 10px; background: var(--surface-inset); }
+.storyboard-shot-toolbar > .ant-space { justify-content: space-between; }
+.storyboard-shot-card { min-width: 0; display: grid; gap: 12px; padding: 14px; border: 1px solid rgba(255, 237, 215, .24); border-radius: 12px; background: rgba(16, 9, 4, .5); }
+.storyboard-shot-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.storyboard-shot-card > header > div { min-width: 0; display: grid; gap: 3px; }
+.storyboard-shot-card > header strong { color: var(--cream); font-size: 14px; }
+.storyboard-shot-card > header .ant-typography { overflow: hidden; color: rgba(255, 237, 215, .56) !important; font-size: 9px; text-overflow: ellipsis; }
+.storyboard-shot-card > label { display: grid; gap: 7px; }
+.storyboard-shot-time { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: rgba(255, 237, 215, .68); font-variant-numeric: tabular-nums; }
 .storyboard-scene-fields { min-width: 0; }
 .storyboard-audio-range { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid rgba(255, 237, 215, .2); border-radius: 9px; background: rgba(255, 237, 215, .2); }
 .storyboard-audio-range span { display: grid; gap: 4px; padding: 11px 12px; color: rgba(255, 237, 215, .58); background: rgba(16, 9, 4, .74); font-size: 9px; }

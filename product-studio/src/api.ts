@@ -52,6 +52,7 @@ export interface JobStatus {
 
 export interface SceneKeyframeResult {
   sceneId: string;
+  shotId?: string;
   keyframeUrl: string;
   keyframePrompt: string;
   keyframeStyle: string;
@@ -95,7 +96,7 @@ export const api = {
   testAiMediaSettings: (settings: { endpoint: string; apiKey?: string; instanceId: string; allowInsecureHttp: boolean }) => request<AiMediaModelDiscovery>('/api/settings/ai-media/test', { method: 'POST', body: JSON.stringify(settings) }),
   testDirectorSettings: (settings: { directorProvider: 'ollama' | 'compatible'; ollamaEndpoint: string; endpoint: string; apiKey?: string; instanceId: string; allowInsecureHttp: boolean }) => request<AiMediaModelDiscovery>('/api/settings/ai-media/director-test', { method: 'POST', body: JSON.stringify(settings) }),
   saveAiMediaSettings: (settings: { endpoint: string; apiKey?: string; clearApiKey?: boolean; textModel: string; directorProvider: 'ollama' | 'compatible'; directorModel: string; ollamaEndpoint: string; directorMaxChunkChars: number; imageModel: string; instanceId: string; textApi: 'responses' | 'chat_completions'; allowInsecureHttp: boolean }) => request<AiMediaSettings>('/api/settings/ai-media', { method: 'PUT', body: JSON.stringify(settings) }),
-  activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
+  activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'storyboard' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
   projects: () => request<Array<{ label: string; value: string; roleCount: number }>>('/api/projects'),
   createProject: (title: string, contentType: string, sourceProjectIds: string[]) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType, source_project_ids: sourceProjectIds }) }),
   project: (id: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}`),
@@ -106,6 +107,7 @@ export const api = {
   latestRender: (id: string) => request<RenderInfo>(`/api/projects/${encodeURIComponent(id)}/latest-render`),
   deleteRender: (id: string, renderId: string) => request<{ deleted: boolean; renderId: string }>(`/api/projects/${encodeURIComponent(id)}/renders/${encodeURIComponent(renderId)}`, { method: 'DELETE', body: JSON.stringify({}) }),
   analyze: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/analyze`, emptyPost),
+  regenerateStoryboard: (id: string, targetShotSeconds: number) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/storyboard/regenerate`, { method: 'POST', body: JSON.stringify({ targetShotSeconds }) }),
   render: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/render`, emptyPost),
   assemble: (id: string) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/assemble`, emptyPost),
   regenerateSegment: (id: string, order: number, advanced = false) => request<{ jobId: string }>(`/api/projects/${encodeURIComponent(id)}/segments/${order}/regenerate`, { method: 'POST', body: JSON.stringify({ advanced }) }),
@@ -114,6 +116,8 @@ export const api = {
   expandCharacterProfile: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number }) => request<{ profile: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/expand-profile`, { method: 'POST', body: JSON.stringify(draft) }),
   generateCharacterPortrait: (id: string, roleId: string, draft: { name: string; profile: string; gender: string; age: number; portraitStyle: string; portraitPrompt?: string }) => request<{ portraitUrl: string; portraitPrompt: string; portraitStyle: string; model: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/portrait`, { method: 'POST', body: JSON.stringify(draft) }),
   generateSceneKeyframe: (id: string, sceneId: string, scene: Record<string, unknown>, keyframeStyle: string) => request<SceneKeyframeResult>(`/api/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/keyframe`, { method: 'POST', body: JSON.stringify({ scene, keyframeStyle }) }),
+  generateStoryboardShotKeyframe: (id: string, sceneId: string, shotId: string, shot: Record<string, unknown>, keyframeStyle: string) => request<SceneKeyframeResult>(`/api/projects/${encodeURIComponent(id)}/scenes/${encodeURIComponent(sceneId)}/shots/${encodeURIComponent(shotId)}/keyframe`, { method: 'POST', body: JSON.stringify({ shot, keyframeStyle }) }),
   generateStoryboardKeyframes: (id: string, scenes: Array<Record<string, unknown>>, keyframeStyle: string) => request<{ keyframes: SceneKeyframeResult[]; generatedCount: number; model: string }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ scenes, keyframeStyle }) }),
+  generateStoryboardShotKeyframes: (id: string, shots: Array<Record<string, unknown>>, keyframeStyle: string) => request<{ keyframes: SceneKeyframeResult[]; generatedCount: number; model: string }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ shots, keyframeStyle }) }),
   job: (id: string) => request<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
 };
