@@ -1544,6 +1544,33 @@ test('aligns inserted draft audio without clearing the following delivered fragm
   ]);
 });
 
+test('latest render keeps a shifted next fragment when a split fragment reuses its historical order', async () => {
+  const { root, project } = await fixture();
+  project.segments = [
+    [15, '第 1 章', 'narrator', '旁白', 'ZH', '拆分出的后半句', '拆分出的后半句', '中性叙述', '平静', 0.5, '自然', 300],
+    [16, '第 1 章', 'narrator', '旁白', 'ZH', '原有下一句', '原有下一句', '中性叙述', '平静', 0.5, '自然', 300],
+  ];
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  const processDir = path.join(projectDir, 'process');
+  await mkdir(processDir, { recursive: true });
+  const splitKey = '1'.repeat(64);
+  const shiftedNextKey = '2'.repeat(64);
+  await writeFile(path.join(processDir, 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: {
+    [splitKey]: { order: 15, speaker_name: '旁白', source_text: '拆分出的后半句', text: '拆分出的后半句' },
+    [shiftedNextKey]: { order: 15, speaker_name: '旁白', source_text: '原有下一句', text: '原有下一句' },
+  } }));
+  const app = await buildApp({ repoRoot: root });
+
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+
+  assert.deepEqual(latest.fragments.map(item => ({ order: item.order, sourceText: item.sourceText, audio: item.audio })), [
+    { order: 15, sourceText: '拆分出的后半句', audio: `/api/projects/demo/cached-fragments/${splitKey}` },
+    { order: 16, sourceText: '原有下一句', audio: `/api/projects/demo/cached-fragments/${shiftedNextKey}` },
+  ]);
+  await app.close();
+});
+
 test('consumes repeated-text audio fragments once and keeps their current orders', () => {
   const manifest = [
     { order: 1, sourceText: '重复句', synthesisText: '重复句', audio: '/delivered-first.wav' },

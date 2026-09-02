@@ -1594,9 +1594,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     } catch {}
     try {
       const draft = JSON.parse(await readFile(path.join(projectRoot, id, 'process', 'segment-fragments.json'), 'utf8'));
-      const latestDraftByOrder = new Map();
-      for (const [cacheKey, item] of Object.entries(draft.fragments || {})) latestDraftByOrder.set(Number(item.order), { cacheKey, item });
-      draftFragments = [...latestDraftByOrder.values()].map(({ cacheKey, item }) => ({
+      draftFragments = Object.entries(draft.fragments || {}).map(([cacheKey, item]) => ({
         order: Number(item.order), speakerName: String(item.speaker_name || ''), sourceText: String(item.source_text || ''),
         synthesisText: String(item.text || ''), effectiveText: String(item.effective_text || item.text || ''),
         appliedPronunciations: item.applied_pronunciations || [], cacheReused: false, forcedRegeneration: true,
