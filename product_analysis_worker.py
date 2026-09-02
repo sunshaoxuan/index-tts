@@ -488,13 +488,17 @@ def main() -> int:
     director.health_summary()
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
+    def storyboard_analysis_progress(fraction: float, desc: str = "", description: str = "") -> None:
+        progress(0.02 + max(0.0, min(1.0, fraction)) * 0.68, desc or description)
+    def storyboard_shot_progress(fraction: float, desc: str = "", description: str = "") -> None:
+        progress(0.72 + max(0.0, min(1.0, fraction)) * 0.27, desc or description)
     requested_type = str(project.get("content_type") or "auto")
     demographic_reference = linked_article_demographic_reference(store, project) if requested_type in {"auto", "novel", "story"} else ""
     document = director.analyze_document(
         project["source_text"],
         content_type=project["content_type"],
         guidance=project.get("guidance", ""),
-        progress=progress,
+        progress=storyboard_analysis_progress if storyboard_only else progress,
         demographic_reference_text=demographic_reference,
     )
     if storyboard_only:
@@ -504,12 +508,16 @@ def main() -> int:
             captions=payload.get("storyboard_captions") if isinstance(payload.get("storyboard_captions"), list) else None,
             target_shot_seconds=float(payload.get("target_shot_seconds") or 10.0),
         )
+        storyboard_document = director.author_storyboard_shots(
+            storyboard_document,
+            progress=storyboard_shot_progress,
+        )
         history = list(project.get("director_history") or [])
         history.append({
             "operation_id": str(uuid.uuid4()),
             "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "actor": "ai-storyboard",
-            "changes": ["AI 重新生成全部分镜"],
+            "changes": ["AI 重新生成全部分镜", "AI 根据各镜头对应原文独立撰写画面小记"],
             "memory_report": storyboard_document["storyboard_regeneration"],
         })
         store.save(

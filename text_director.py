@@ -374,6 +374,30 @@ CHARACTER_VALIDATION_SCHEMA: dict[str, Any] = {
 }
 
 
+STORYBOARD_SHOT_AUTHORING_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["shots"],
+    "properties": {
+        "shots": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "title", "storyboard_note", "source_evidence", "participant_ids"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "storyboard_note": {"type": "string"},
+                    "source_evidence": {"type": "string"},
+                    "participant_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+}
+
+
 @dataclass(frozen=True)
 class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
@@ -616,6 +640,225 @@ class OllamaTextDirector:
             raise DirectorError(f"AI 模型 {self.config.model} 不可用。当前模型：{available}")
         provider_label = "本地 Ollama" if self.config.provider == "ollama" else "兼容 Endpoint"
         return f"{provider_label} 已连接｜{self.config.model}｜{self.base_url}"
+
+    def author_storyboard_shots(
+        self,
+        document: dict[str, Any],
+        progress: Callable[..., Any] | None = None,
+        batch_size: int = 8,
+    ) -> dict[str, Any]:
+        authored = deepcopy(document)
+        character_rows = [
+            item for item in authored.get("characters") or []
+            if isinstance(item, dict) and item.get("id")
+        ]
+        characters = {
+            str(item.get("id") or ""): str(item.get("name") or item.get("id") or "")
+            for item in character_rows
+        }
+        character_aliases = {
+            str(item.get("id") or ""): [
+                value for value in [str(item.get("name") or "").strip(), *(str(alias).strip() for alias in item.get("aliases") or [])]
+                if value
+            ]
+            for item in character_rows
+        }
+        short_alias_owners: dict[str, list[str]] = {}
+        for role_id, name in characters.items():
+            if role_id != "narrator" and re.fullmatch(r"[\u3400-\u9fff]{3,}", name):
+                short_alias_owners.setdefault(name[:2], []).append(role_id)
+        for alias, owners in short_alias_owners.items():
+            if len(owners) == 1 and alias not in character_aliases[owners[0]]:
+                character_aliases[owners[0]].append(alias)
+        pending: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for scene in authored.get("scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            for shot in scene.get("shots") or []:
+                if not isinstance(shot, dict):
+                    continue
+                shot_id = str(shot.get("id") or "").strip()
+                source_text = str(shot.get("source_text") or shot.get("source_excerpt") or "").strip()
+                if not shot_id:
+                    raise DirectorValidationError("分镜镜头缺少稳定 ID，无法撰写镜头画面小记")
+                if not source_text:
+                    raise DirectorValidationError(f"分镜镜头 {shot_id} 缺少对应原文，无法撰写镜头画面小记")
+                pending.append((scene, shot))
+        if not pending:
+            raise DirectorValidationError("当前分镜没有可供 AI 撰写画面小记的镜头")
+
+        required_characters_by_shot: dict[str, set[str]] = {}
+        last_explicit_by_scene: dict[str, list[str]] = {}
+        for scene, shot in pending:
+            scene_id = str(scene.get("id") or "")
+            shot_id = str(shot.get("id") or "")
+            source_text = str(shot.get("source_text") or shot.get("source_excerpt") or "")
+            explicit = [
+                role_id for role_id, aliases in character_aliases.items()
+                if role_id != "narrator" and any(alias in source_text for alias in aliases)
+            ]
+            if explicit:
+                last_explicit_by_scene[scene_id] = explicit
+            continuity = (
+                last_explicit_by_scene.get(scene_id, [])
+                if not explicit and len(last_explicit_by_scene.get(scene_id, [])) == 1 and re.search(r"(?:他|她|他们|她们|其|自己|这位|那位)", source_text)
+                else []
+            )
+            required_characters_by_shot[shot_id] = set([*explicit, *continuity])
+
+        batch_size = max(1, min(12, int(batch_size or 8)))
+        updates: dict[str, dict[str, Any]] = {}
+        note_keys: set[str] = set()
+        metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0, "requests": 0}
+        _notify(progress, 0.0, f"正在准备 {len(pending)} 个镜头的独立画面小记")
+        for offset in range(0, len(pending), batch_size):
+            batch = pending[offset:offset + batch_size]
+            inputs: list[dict[str, Any]] = []
+            for scene, shot in batch:
+                speaker_ids = [str(item) for item in shot.get("participants") or []]
+                scene_participant_ids = [str(item) for item in scene.get("participants") or []]
+                source_text = str(shot.get("source_text") or shot.get("source_excerpt") or "")
+                explicit_character_ids = [
+                    role_id for role_id in required_characters_by_shot[str(shot["id"])]
+                    if any(alias in source_text for alias in character_aliases[role_id])
+                ]
+                continuity_character_ids = [
+                    role_id for role_id in required_characters_by_shot[str(shot["id"])]
+                    if role_id not in explicit_character_ids
+                ]
+                explicit_character_ids.sort()
+                continuity_character_ids.sort()
+                inputs.append({
+                    "id": str(shot["id"]),
+                    "start_segment_order": int(shot.get("start_segment_order") or 0),
+                    "end_segment_order": int(shot.get("end_segment_order") or 0),
+                    "start_seconds": shot.get("start_seconds"),
+                    "end_seconds": shot.get("end_seconds"),
+                    "source_text": source_text,
+                    "explicit_character_ids": explicit_character_ids,
+                    "continuity_character_ids": continuity_character_ids,
+                    "speakers": [
+                        {"id": role_id, "name": characters.get(role_id, role_id)}
+                        for role_id in speaker_ids
+                    ],
+                    "scene_participants": [
+                        {"id": role_id, "name": characters.get(role_id, role_id)}
+                        for role_id in scene_participant_ids
+                    ],
+                    "scene": {
+                        "id": str(scene.get("id") or ""),
+                        "title": str(scene.get("title") or ""),
+                        "topic": str(scene.get("topic") or ""),
+                        "location": str(scene.get("location") or ""),
+                        "spatial_direction": str(scene.get("spatial_direction") or ""),
+                        "time": str(scene.get("time") or ""),
+                        "narrative_perspective": str(scene.get("narrative_perspective") or ""),
+                        "mood": str(scene.get("mood") or ""),
+                    },
+                })
+            prompt = f"""
+你是视频分镜导演。请逐个读取每个镜头自己的 source_text，为每个稳定镜头 ID 撰写独立的镜头标题和画面小记。
+
+要求：
+1. 返回项必须与输入 ID 一一对应，完整覆盖，顺序保持一致。
+2. 每个 storyboard_note 使用 80 到 220 个中文字符，描述这个镜头可见的主体、人物动作与位置、前后景、构图、景别或机位、光线、色彩和关键物件。
+3. 场景字段只提供连续性背景。镜头动作、视觉焦点和关键物件必须从当前镜头自己的 source_text 提取，禁止复制场景级小记，禁止为不同镜头复用同一句画面描述。
+4. source_evidence 必须原样摘录当前镜头 source_text 中能直接支持画面的连续文字，不能改写，也不能引用其他镜头原文。
+5. participant_ids 只填写当前镜头画面中实际可见的已登记人物稳定 ID。registered_characters 提供全工程人物 ID、名称和别名映射，speakers 只是声音线索，scene_participants 是场景分析候选；应根据当前 source_text 中出现的姓名、代词和连续上下文选择人物。explicit_character_ids 是当前原文明示人物，continuity_character_ids 是场景内代词连续指向的人物，两组 ID 都必须全部包含。旁白 narrator 不得作为画面人物。两组都为空且没有可见人物时返回空数组。
+6. 原文只写心理、判断或抽象叙述时，使用原文支持的表情、姿态、环境或物件表现，不虚构新事件。
+7. 不写字幕、对白文字、水印、界面或多格拼图。未知的服饰、外貌和环境细节保持克制。
+
+镜头输入：
+{json.dumps({"registered_characters": [{"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "aliases": character_aliases[str(item.get("id") or "")], "kind": str(item.get("kind") or "")} for item in character_rows], "shots": inputs}, ensure_ascii=False, indent=2)}
+""".strip()
+            expected_ids = [str(shot["id"]) for _, shot in batch]
+            source_by_id = {
+                str(shot["id"]): str(shot.get("source_text") or shot.get("source_excerpt") or "")
+                for _, shot in batch
+            }
+            validation_feedback = ""
+            for attempt in range(1, 4):
+                attempt_prompt = prompt if not validation_feedback else f"{prompt}\n\n上一次输出未通过校验：{validation_feedback}\n请完整重写当前批次全部镜头，逐项修正并确保每条画面小记包含至少 80 个中文字符。"
+                result, current_metrics = self._request_structured(
+                    attempt_prompt,
+                    STORYBOARD_SHOT_AUTHORING_SCHEMA,
+                    system="你只输出严格符合 JSON Schema 的逐镜头画面小记，逐项消费对应原文。",
+                    schema_name="storyboard_shot_authoring",
+                    context_tokens=8192,
+                    keep_alive="30m",
+                )
+                metrics["prompt_tokens"] += current_metrics["prompt_tokens"]
+                metrics["output_tokens"] += current_metrics["output_tokens"]
+                metrics["duration_seconds"] += current_metrics["duration_seconds"]
+                metrics["requests"] += 1
+                try:
+                    rows = result.get("shots") if isinstance(result, dict) else None
+                    if not isinstance(rows, list):
+                        raise DirectorValidationError("AI 镜头画面小记结果缺少 shots")
+                    returned_ids = [str(item.get("id") or "").strip() for item in rows if isinstance(item, dict)]
+                    if len(rows) != len(expected_ids) or len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected_ids):
+                        raise DirectorValidationError("AI 镜头画面小记未按稳定 ID 完整覆盖当前批次")
+                    batch_updates: dict[str, dict[str, Any]] = {}
+                    batch_note_keys: set[str] = set()
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            raise DirectorValidationError("AI 镜头画面小记包含无效项")
+                        shot_id = str(row.get("id") or "").strip()
+                        title = str(row.get("title") or "").strip()
+                        note = str(row.get("storyboard_note") or "").strip()
+                        evidence = str(row.get("source_evidence") or "").strip()
+                        participant_ids = list(dict.fromkeys(str(item).strip() for item in row.get("participant_ids") or [] if str(item).strip()))
+                        if len(title) < 2 or len(title) > 60:
+                            raise DirectorValidationError(f"镜头 {shot_id} 的 AI 标题长度无效")
+                        if len(note) < 50 or len(note) > 320:
+                            raise DirectorValidationError(f"镜头 {shot_id} 的 AI 画面小记必须包含足够的独立视觉信息")
+                        evidence_key = canonical_coverage_key(evidence)
+                        if not evidence_key or evidence_key not in canonical_coverage_key(source_by_id[shot_id]):
+                            raise DirectorValidationError(f"镜头 {shot_id} 的 AI 取景证据不属于该镜头对应原文")
+                        note_key = canonical_coverage_key(note).casefold()
+                        if note_key in note_keys or note_key in batch_note_keys:
+                            raise DirectorValidationError(f"镜头 {shot_id} 的 AI 画面小记与其他镜头完全重复")
+                        unknown_participants = [role_id for role_id in participant_ids if role_id not in characters]
+                        if unknown_participants:
+                            raise DirectorValidationError(f"镜头 {shot_id} 的 AI 画面人物包含未登记角色：{'、'.join(unknown_participants)}")
+                        if "narrator" in participant_ids:
+                            raise DirectorValidationError(f"镜头 {shot_id} 把旁白错误地列为画面人物")
+                        for role_id in sorted(required_characters_by_shot[shot_id]):
+                            if role_id not in participant_ids:
+                                participant_ids.append(role_id)
+                        batch_note_keys.add(note_key)
+                        batch_updates[shot_id] = {
+                            "title": title,
+                            "storyboard_note": note,
+                            "source_evidence": evidence,
+                            "participants": participant_ids,
+                            "participant_resolution": "ai_plus_source_continuity",
+                        }
+                except DirectorValidationError as exc:
+                    validation_feedback = str(exc)
+                    if attempt == 3:
+                        raise
+                    _notify(progress, offset / len(pending), f"AI 镜头小记第 {attempt} 次校验未通过，正在重写当前批次")
+                    continue
+                updates.update(batch_updates)
+                note_keys.update(batch_note_keys)
+                break
+            completed = min(offset + len(batch), len(pending))
+            _notify(progress, completed / len(pending), f"AI 已撰写 {completed}/{len(pending)} 个独立镜头画面小记")
+
+        for _, shot in pending:
+            shot.update(updates[str(shot["id"])])
+            shot["authoring"] = "ai_shot_source"
+        regeneration = dict(authored.get("storyboard_regeneration") or {})
+        regeneration.update({
+            "shot_notes_authored_by_ai": True,
+            "shot_note_count": len(updates),
+            "shot_note_provider": self.config.provider,
+            "shot_note_model": self.config.model,
+            "shot_note_metrics": metrics,
+        })
+        authored["storyboard_regeneration"] = regeneration
+        return authored
 
     def analyze_document(
         self,

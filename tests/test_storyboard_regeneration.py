@@ -39,6 +39,11 @@ def test_regenerates_only_storyboard_against_current_segment_boundaries() -> Non
     assert result["scenes"][0]["shots"][0]["end_seconds"] == 6.0
     assert result["scenes"][1]["shots"][0]["start_seconds"] == 6.0
     assert result["scenes"][1]["shots"][0]["end_seconds"] == 17.5
+    assert result["scenes"][0]["shots"][0]["source_text"] == "甲。"
+    assert result["scenes"][1]["shots"][0]["source_text"] == "乙。丙。"
+    assert result["scenes"][0]["shots"][0]["storyboard_note"] == ""
+    assert result["scenes"][0]["shots"][0]["authoring"] == "pending_ai"
+    assert result["storyboard_regeneration"]["shot_notes_authored_by_ai"] is False
 
 
 def test_rejects_storyboard_regeneration_when_source_coverage_changed() -> None:
@@ -73,3 +78,6 @@ def test_twenty_minute_audio_builds_about_one_hundred_twenty_shots_at_ten_second
     assert result["storyboard_regeneration"]["shot_count"] == 120
     assert result["scenes"][0]["shots"][0]["start_seconds"] == 0.0
     assert result["scenes"][0]["shots"][-1]["end_seconds"] == 1200.0
+    assert result["scenes"][0]["shots"][0]["source_text"] == "第1句。"
+    assert result["scenes"][0]["shots"][1]["source_text"] == "第2句。"
+    assert all(shot["storyboard_note"] == "" for shot in result["scenes"][0]["shots"])

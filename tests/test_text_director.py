@@ -1944,3 +1944,109 @@ def test_independent_speech_attribution_is_narrator_text(text):
 
 def test_spoken_sentence_with_reporting_verb_is_not_reclassified():
     assert not is_speech_attribution("他说今天会下雨。")
+
+
+def _storyboard_shot_document():
+    return {
+        "characters": [{"id": "narrator", "name": "旁白"}, {"id": "role_01", "name": "笹垣"}],
+        "scenes": [{
+            "id": "scene_001",
+            "title": "布施站外",
+            "topic": "刑警前往案发现场",
+            "location": "近铁布施站外",
+            "spatial_direction": "车站出口朝向公路",
+            "time": "清晨",
+            "narrative_perspective": "第三人称",
+            "mood": "冷峻",
+            "storyboard_note": "这是场景级背景，只能用于维持地点连续性。",
+            "shots": [
+                {"id": "scene_001_shot_001", "source_text": "出了近铁布施站，笹垣沿着清晨的街道向前走。", "participants": ["role_01"], "start_segment_order": 1, "end_segment_order": 1, "start_seconds": 0.0, "end_seconds": 9.8, "storyboard_note": "", "authoring": "pending_ai"},
+                {"id": "scene_001_shot_002", "source_text": "每当卡车疾驰而过，路旁积水便溅向他的裤脚。", "participants": ["role_01"], "start_segment_order": 2, "end_segment_order": 2, "start_seconds": 9.8, "end_seconds": 20.1, "storyboard_note": "", "authoring": "pending_ai"},
+            ],
+        }],
+        "storyboard_regeneration": {"shot_notes_authored_by_ai": False},
+    }
+
+
+def test_ai_authors_each_storyboard_shot_from_its_own_source_text():
+    director = OllamaTextDirector(DirectorConfig())
+    prompts = []
+
+    def request_structured(prompt, schema, **kwargs):
+        prompts.append(prompt)
+        assert kwargs["schema_name"] == "storyboard_shot_authoring"
+        assert "出了近铁布施站" in prompt
+        assert "每当卡车疾驰而过" in prompt
+        return {
+            "shots": [
+                {"id": "scene_001_shot_001", "title": "走出布施站", "source_evidence": "笹垣沿着清晨的街道向前走", "participant_ids": [], "storyboard_note": "清晨冷光笼罩近铁布施站出口，笹垣从画面左后方走向街道纵深，中景跟拍他的步伐，前景保留湿润路面和站口边缘，远处建筑压低天际线，灰蓝色调与平视中景突出他独自赶路的动作。"},
+                {"id": "scene_001_shot_002", "title": "卡车溅起积水", "source_evidence": "路旁积水便溅向他的裤脚", "participant_ids": [], "storyboard_note": "一辆卡车从画面右侧高速掠过，轮胎卷起路旁积水扑向笹垣裤脚，镜头降到膝部高度捕捉飞散水珠，人物在中景本能侧身，公路护栏延伸至背景，冷灰晨光在湿地上形成锐利反光。"},
+            ],
+        }, {"prompt_tokens": 100, "output_tokens": 80, "duration_seconds": 0.4}
+
+    director._request_structured = request_structured
+    source = _storyboard_shot_document()
+    result = director.author_storyboard_shots(source)
+    shots = result["scenes"][0]["shots"]
+
+    assert len(prompts) == 1
+    assert shots[0]["storyboard_note"] != shots[1]["storyboard_note"]
+    assert shots[0]["source_evidence"] == "笹垣沿着清晨的街道向前走"
+    assert shots[1]["source_evidence"] == "路旁积水便溅向他的裤脚"
+    assert all(shot["authoring"] == "ai_shot_source" for shot in shots)
+    assert all(shot["participants"] == ["role_01"] for shot in shots)
+    assert all(shot["participant_resolution"] == "ai_plus_source_continuity" for shot in shots)
+    assert result["storyboard_regeneration"]["shot_notes_authored_by_ai"] is True
+    assert source["scenes"][0]["shots"][0]["storyboard_note"] == ""
+
+
+def test_ai_storyboard_shot_authoring_rejects_duplicate_notes_without_partial_update():
+    director = OllamaTextDirector(DirectorConfig())
+    duplicate = "清晨街道采用平视中景，人物位于画面中央向前行走，湿润路面延伸到背景，冷灰光线勾勒人物轮廓，前景保留水迹与道路边缘，镜头完整呈现人物动作、空间方向和环境关键物件。"
+    director._request_structured = lambda *_args, **_kwargs: ({
+        "shots": [
+            {"id": "scene_001_shot_001", "title": "走出车站", "source_evidence": "出了近铁布施站", "participant_ids": ["role_01"], "storyboard_note": duplicate},
+            {"id": "scene_001_shot_002", "title": "卡车经过", "source_evidence": "每当卡车疾驰而过", "participant_ids": ["role_01"], "storyboard_note": duplicate},
+        ],
+    }, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1})
+    source = _storyboard_shot_document()
+
+    with pytest.raises(DirectorValidationError, match="完全重复"):
+        director.author_storyboard_shots(source)
+
+    assert all(shot["storyboard_note"] == "" for shot in source["scenes"][0]["shots"])
+
+
+def test_ai_storyboard_shot_authoring_rejects_evidence_from_another_shot():
+    director = OllamaTextDirector(DirectorConfig())
+    director._request_structured = lambda *_args, **_kwargs: ({
+        "shots": [
+            {"id": "scene_001_shot_001", "title": "走出车站", "source_evidence": "卡车疾驰而过", "participant_ids": ["role_01"], "storyboard_note": "清晨冷光笼罩车站出口，人物从站口步入湿润街道，中景平视跟随他的行进方向，前景保留路面反光，背景建筑逐层收拢，灰蓝色调强调独自赶路时的克制氛围与空间纵深。"},
+            {"id": "scene_001_shot_002", "title": "卡车经过", "source_evidence": "卡车疾驰而过", "participant_ids": ["role_01"], "storyboard_note": "卡车贴近路边高速掠过，轮胎卷起积水扑向人物裤脚，低机位近景冻结飞散水珠，人物在中景侧身闪避，护栏和湿路延伸至远处，冷灰晨光在水面形成明亮反射。"},
+        ],
+    }, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.1})
+
+    with pytest.raises(DirectorValidationError, match="不属于该镜头对应原文"):
+        director.author_storyboard_shots(_storyboard_shot_document())
+
+
+def test_ai_storyboard_shot_authoring_rewrites_the_whole_batch_after_validation_failure():
+    director = OllamaTextDirector(DirectorConfig())
+    attempts = []
+
+    def request_structured(prompt, *_args, **_kwargs):
+        attempts.append(prompt)
+        short = len(attempts) == 1
+        return ({
+            "shots": [
+                {"id": "scene_001_shot_001", "title": "走出车站", "source_evidence": "出了近铁布施站", "participant_ids": [], "storyboard_note": "描述过短。" if short else "清晨冷光压在近铁布施站出口，笹垣从站口走向街道纵深，平视中景跟随他的步伐，前景湿路反光，背景建筑压低天际线，灰蓝色调和站口阴影共同表现他独自赶路时的沉重状态。"},
+                {"id": "scene_001_shot_002", "title": "卡车经过", "source_evidence": "路旁积水便溅向他的裤脚", "participant_ids": [], "storyboard_note": "卡车从画面右侧高速掠过，轮胎卷起路旁积水扑向笹垣裤脚，低机位近景捕捉飞散水珠，人物在中景侧身闪避，公路护栏延伸到背景，冷灰晨光在湿地形成锐利反射。"},
+            ],
+        }, {"prompt_tokens": 10, "output_tokens": 10, "duration_seconds": 0.1})
+
+    director._request_structured = request_structured
+    result = director.author_storyboard_shots(_storyboard_shot_document())
+
+    assert len(attempts) == 2
+    assert "上一次输出未通过校验" in attempts[1]
+    assert result["storyboard_regeneration"]["shot_note_metrics"]["requests"] == 2

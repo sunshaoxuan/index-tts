@@ -50,3 +50,9 @@ test('styles a responsive and visually distinct progress panel', () => {
   assert.match(styles, /\.workspace-tabs\.is-keyframe-locked/s);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.storyboard-keyframe-progress-detail\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
 });
+
+test('stacks scene titles and metadata on narrow screens', () => {
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.storyboard-scene-card > \.ant-card-head > \.ant-card-head-wrapper\s*\{[^}]*display:\s*grid;[^}]*gap:\s*10px;/s);
+  assert.match(styles, /\.storyboard-scene-card > \.ant-card-head \.ant-card-head-title,[\s\S]*?\.storyboard-scene-card > \.ant-card-head \.ant-card-extra\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
+  assert.match(styles, /\.storyboard-scene-card > \.ant-card-head \.ant-card-extra \.ant-space\s*\{[^}]*width:\s*100%;[^}]*justify-content:\s*flex-start;/s);
+});

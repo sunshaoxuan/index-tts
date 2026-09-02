@@ -12,8 +12,8 @@ function fixture() {
   return {
     scenes: [{ id: 'scene_001', title: '旧宅', shots: [{ id: 'scene_001_shot_001', title: '原镜头', storyboard_note: '原镜头画面描述足够完整，人物沿着旧宅门廊移动。', keyframe_url: '/old.png', start_segment_order: 1, end_segment_order: 4 }] }],
     segments: [
-      { order: 1, scene_id: 'scene_001', speaker_id: 'narrator' }, { order: 2, scene_id: 'scene_001', speaker_id: 'role_01' },
-      { order: 3, scene_id: 'scene_001', speaker_id: 'role_02' }, { order: 4, scene_id: 'scene_001', speaker_id: 'narrator' },
+      { order: 1, scene_id: 'scene_001', speaker_id: 'narrator', source_text: '第一句。' }, { order: 2, scene_id: 'scene_001', speaker_id: 'role_01', source_text: '第二句。' },
+      { order: 3, scene_id: 'scene_001', speaker_id: 'role_02', source_text: '第三句。' }, { order: 4, scene_id: 'scene_001', speaker_id: 'narrator', source_text: '第四句。' },
     ],
   };
 }
@@ -34,6 +34,9 @@ test('creates one manual shot and keeps the remaining shot ranges continuous', (
   ]);
   assert.equal('keyframe_url' in shots[1], false);
   assert.equal('keyframe_url' in shots[2], false);
+  assert.equal(shots[1].source_text, '第二句。第三句。');
+  assert.equal(shots[0].storyboard_note, '');
+  assert.equal(shots[2].storyboard_note, '');
 });
 
 test('splits and merges adjacent storyboard shots while clearing stale images', () => {
@@ -41,11 +44,14 @@ test('splits and merges adjacent storyboard shots while clearing stale images', 
   const splitShots = (split.document.scenes as Array<Record<string, unknown>>)[0].shots as Array<Record<string, unknown>>;
   assert.deepEqual(splitShots.map(shot => [shot.start_segment_order, shot.end_segment_order]), [[1, 2], [3, 4]]);
   assert.ok(splitShots.every(shot => !('keyframe_url' in shot)));
+  assert.deepEqual(splitShots.map(shot => shot.source_text), ['第一句。第二句。', '第三句。第四句。']);
+  assert.ok(splitShots.every(shot => shot.storyboard_note === ''));
 
   const merged = mergeStoryboardShots(split.document, 'scene_001', splitShots.map(shot => String(shot.id)));
   const mergedShots = (merged.document.scenes as Array<Record<string, unknown>>)[0].shots as Array<Record<string, unknown>>;
   assert.deepEqual(mergedShots.map(shot => [shot.start_segment_order, shot.end_segment_order]), [[1, 4]]);
   assert.equal(mergedShots[0].authoring, 'manual_merge');
+  assert.equal(mergedShots[0].source_text, '第一句。第二句。第三句。第四句。');
 });
 
 test('does not allow a manual shot to cross scene boundaries', () => {

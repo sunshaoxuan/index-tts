@@ -943,6 +943,12 @@ body * { box-shadow: none !important; }
   .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-space { width: 100%; display: grid; grid-template-columns: 1fr; }
   .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-select,
   .storyboard-workspace-card > .ant-card-head .ant-card-extra .ant-btn { width: 100%; }
+  .storyboard-scene-card > .ant-card-head { padding-block: 12px !important; }
+  .storyboard-scene-card > .ant-card-head > .ant-card-head-wrapper { display: grid; gap: 10px; }
+  .storyboard-scene-card > .ant-card-head .ant-card-head-title,
+  .storyboard-scene-card > .ant-card-head .ant-card-extra { width: 100%; min-width: 0; }
+  .storyboard-scene-card > .ant-card-head .ant-card-head-title { overflow: visible; white-space: normal; }
+  .storyboard-scene-card > .ant-card-head .ant-card-extra .ant-space { width: 100%; justify-content: flex-start; }
   .storyboard-keyframe-progress { padding: 16px; }
   .storyboard-keyframe-progress > header { align-items: flex-start; }
   .storyboard-keyframe-progress > header strong { font-size: 16px; }

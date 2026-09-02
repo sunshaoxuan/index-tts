@@ -113,17 +113,18 @@ def _scene_shots(
             speaker_id = str(item.get("speaker_id") or "").strip()
             if speaker_id and speaker_id not in participants:
                 participants.append(speaker_id)
-        excerpt = "".join(str(item.get("source_text") or "") for item in group).strip()
-        base_note = str(scene.get("storyboard_note") or "").strip()
+        source_text = "".join(str(item.get("source_text") or "") for item in group).strip()
         shot = {
             "id": f"{scene_id}_shot_{index:03d}",
             "title": f"{str(scene.get('title') or scene_id)} · 镜头 {index:03d}",
-            "storyboard_note": f"{base_note} 本镜头聚焦原文片段：{excerpt[:220]}",
-            "source_excerpt": excerpt[:500],
+            "storyboard_note": "",
+            "source_text": source_text,
+            "source_excerpt": source_text[:500],
+            "source_evidence": "",
             "participants": participants,
             "start_segment_order": min(orders),
             "end_segment_order": max(orders),
-            "authoring": "ai",
+            "authoring": "pending_ai",
         }
         timed_orders = [order for order in orders if order in timeline]
         if len(timed_orders) == len(orders):
@@ -213,6 +214,7 @@ def regenerate_storyboard_document(
         "shot_count": sum(len(scene.get("shots") or []) for scene in scenes),
         "target_shot_seconds": target_shot_seconds,
         "audio_timeline_used": bool(timeline),
+        "shot_notes_authored_by_ai": False,
         "preserved_roles": True,
         "preserved_audio_segments": True,
     }

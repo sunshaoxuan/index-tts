@@ -52,6 +52,17 @@ function required(value: string, label: string) {
   return cleaned;
 }
 
+function sourceForSegments(segments: Array<Record<string, unknown>>) {
+  return segments.map(segment => String(segment.source_text || segment.text || '')).join('').trim();
+}
+
+function applyShotSource(shot: Record<string, unknown>, segments: Array<Record<string, unknown>>) {
+  const sourceText = sourceForSegments(segments);
+  shot.source_text = sourceText;
+  shot.source_excerpt = sourceText.slice(0, 500);
+  return shot;
+}
+
 function documentParts(sourceDocument: Record<string, unknown>) {
   const document = structuredClone(sourceDocument || {});
   const segments = (Array.isArray(document.segments) ? document.segments : [])
@@ -76,6 +87,8 @@ function sceneShots(scene: Record<string, unknown>, sceneSegments: Array<Record<
     id: `${String(scene.id)}_shot_001`,
     title: `${String(scene.title || scene.id)} · 镜头 001`,
     storyboard_note: String(scene.storyboard_note || ''),
+    source_text: sourceForSegments(sceneSegments),
+    source_excerpt: sourceForSegments(sceneSegments).slice(0, 500),
     participants: scene.participants || [],
     start_segment_order: first,
     end_segment_order: last,
@@ -148,18 +161,29 @@ export function createManualStoryboardShot(
         authoring: 'manual',
       };
     } else {
-      shot = { ...(originalById.get(group.sourceId) || { id: group.sourceId, title: group.sourceId }) };
+      const original = originalById.get(group.sourceId) || { id: group.sourceId, title: group.sourceId };
+      shot = { ...original };
       if (count > 0) {
         shotId = nextId(`${sceneId}_split`, used);
         shot = cleanGenerated(shot);
         shot.id = shotId;
         shot.title = `${String(shot.title || group.sourceId)}（续）`;
       }
+      const groupStart = Number(group.segments[0].order);
+      const groupEnd = Number(group.segments.at(-1)?.order);
+      const rangeChanged = groupStart !== Number(original.start_segment_order || groupStart) || groupEnd !== Number(original.end_segment_order || groupEnd);
+      if (rangeChanged) {
+        shot = cleanGenerated(shot);
+        shot.storyboard_note = '';
+        shot.source_evidence = '';
+        shot.authoring = 'manual_range_pending';
+      }
     }
     const participants = [...new Set(group.segments.map(segment => String(segment.speaker_id || '')).filter(Boolean))];
     shot.participants = participants;
     shot.start_segment_order = Number(group.segments[0].order);
     shot.end_segment_order = Number(group.segments.at(-1)?.order);
+    applyShotSource(shot, group.segments);
     if (group.sourceId === manualId || count > 0) {
       delete shot.start_seconds;
       delete shot.end_seconds;
@@ -176,7 +200,7 @@ export function createManualStoryboardShot(
 export const createManualStoryboardScene = createManualStoryboardShot;
 
 export function splitStoryboardShot(sourceDocument: Record<string, unknown>, sceneId: string, shotId: string): StoryboardEditResult {
-  const { document, scenes } = documentParts(sourceDocument);
+  const { document, segments, scenes } = documentParts(sourceDocument);
   const sceneIndex = scenes.findIndex(scene => String(scene.id || '') === sceneId);
   if (sceneIndex < 0) throw new Error('场景不存在');
   const scene = scenes[sceneIndex];
@@ -190,8 +214,12 @@ export function splitStoryboardShot(sourceDocument: Record<string, unknown>, sce
   const splitAfter = Math.floor((start + end) / 2);
   const used = new Set(shots.map(item => String(item.id || '')).filter(Boolean));
   const newId = nextId(`${sceneId}_split`, used);
-  const left = cleanGenerated({ ...shot, start_segment_order: start, end_segment_order: splitAfter, title: `${String(shot.title || shotId)} A` });
-  const right = cleanGenerated({ ...shot, id: newId, start_segment_order: splitAfter + 1, end_segment_order: end, title: `${String(shot.title || shotId)} B` });
+  const leftSegments = segments.filter(segment => Number(segment.order) >= start && Number(segment.order) <= splitAfter);
+  const rightSegments = segments.filter(segment => Number(segment.order) > splitAfter && Number(segment.order) <= end);
+  const left = cleanGenerated({ ...shot, start_segment_order: start, end_segment_order: splitAfter, title: `${String(shot.title || shotId)} A`, storyboard_note: '', source_evidence: '', authoring: 'manual_split_pending' });
+  const right = cleanGenerated({ ...shot, id: newId, start_segment_order: splitAfter + 1, end_segment_order: end, title: `${String(shot.title || shotId)} B`, storyboard_note: '', source_evidence: '', authoring: 'manual_split_pending' });
+  applyShotSource(left, leftSegments);
+  applyShotSource(right, rightSegments);
   if (Number.isFinite(Number(shot.start_seconds)) && Number.isFinite(Number(shot.end_seconds))) {
     const ratio = (splitAfter - start + 1) / (end - start + 1);
     const splitSeconds = Number(shot.start_seconds) + (Number(shot.end_seconds) - Number(shot.start_seconds)) * ratio;
@@ -204,7 +232,7 @@ export function splitStoryboardShot(sourceDocument: Record<string, unknown>, sce
 }
 
 export function mergeStoryboardShots(sourceDocument: Record<string, unknown>, sceneId: string, shotIds: string[]): StoryboardEditResult {
-  const { document, scenes } = documentParts(sourceDocument);
+  const { document, segments, scenes } = documentParts(sourceDocument);
   const sceneIndex = scenes.findIndex(scene => String(scene.id || '') === sceneId);
   if (sceneIndex < 0) throw new Error('场景不存在');
   const scene = scenes[sceneIndex];
@@ -224,6 +252,9 @@ export function mergeStoryboardShots(sourceDocument: Record<string, unknown>, sc
     end_segment_order: Number(mergeRows.at(-1)?.end_segment_order),
     authoring: 'manual_merge',
   });
+  const mergedSegments = segments.filter(segment => Number(segment.order) >= Number(first.start_segment_order) && Number(segment.order) <= Number(mergeRows.at(-1)?.end_segment_order));
+  applyShotSource(merged, mergedSegments);
+  merged.source_evidence = [...new Set(mergeRows.map(shot => String(shot.source_evidence || '').trim()).filter(Boolean))].join('；');
   const timed = mergeRows.every(shot => Number.isFinite(Number(shot.start_seconds)) && Number.isFinite(Number(shot.end_seconds)));
   if (timed) {
     merged.start_seconds = Number(first.start_seconds);
