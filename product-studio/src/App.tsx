@@ -1203,7 +1203,7 @@ function Studio() {
             <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
             <div className="segment-field"><span>章节</span><strong>{row[1]}</strong></div>
             <div className="segment-field segment-source-field"><span>原文</span><Text>{row[5]}</Text></div>
-            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} autoSize={{ minRows: 1, maxRows: 2 }} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
+            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} rows={1} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
           </div>
           <div className="segment-row-voice">
             <div className={`segment-action-cell${fragment ? ' has-fragment' : ' no-fragment'}`} title={fragment ? `${fragment.effectiveText}。${fragmentNote}` : undefined}>

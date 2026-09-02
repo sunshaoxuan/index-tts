@@ -31,6 +31,13 @@ test('segment rows keep basic copy above a compact voice control grid', () => {
   assert.match(app, /className=\{`segment-action-cell[\s\S]*segment-role-field/);
 });
 
+test('source and synthesis copy share one visual height on desktop rows', () => {
+  assert.match(app, /className="segment-field segment-synthesis-field"[\s\S]*<Input\.TextArea disabled=\{jobRunning\} rows=\{1\}/);
+  assert.doesNotMatch(app, /segment-synthesis-field"[\s\S]{0,180}autoSize=\{\{ minRows: 1, maxRows: 2 \}\}/);
+  assert.match(styles, /\.segment-source-field, \.segment-synthesis-field \{[^}]*align-self: stretch;[^}]*grid-template-rows: auto minmax\(0, 1fr\);/s);
+  assert.match(styles, /\.segment-synthesis-field textarea \{[^}]*height: 100% !important;[^}]*overflow-y: auto !important;[^}]*resize: none;/s);
+});
+
 test('candidate audio uses the full row with three, two, and one column breakpoints', () => {
   assert.match(styles, /\.segment-candidate-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(240px, 1fr\)\);/s);
   assert.match(styles, /@media \(max-width: 1200px\) \{[\s\S]*\.segment-candidate-grid \{ grid-template-columns: repeat\(2, minmax\(220px, 1fr\)\); \}/);
