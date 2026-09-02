@@ -30,3 +30,18 @@ git diff --check
 ## 环境差异
 
 当前 PowerShell PATH 没有 Node。第一次聚焦测试命令未启动测试，随后改用 Codex 工作区 Node 的绝对路径。同一测试集合通过。
+
+## Git 交付
+
+```powershell
+git commit -m "fix: ground storyboard shots in source text"
+git fetch fork master
+git merge-base --is-ancestor refs/remotes/fork/master HEAD
+git push fork HEAD:master
+git fetch fork master
+git rev-parse HEAD
+git rev-parse refs/remotes/fork/master
+git ls-remote fork refs/heads/master
+```
+
+功能提交为 `4f1a76a608f5a03f23665104c595153cee712b64`。首次推送后本地 HEAD、跟踪引用和远端服务器 `master` 三方一致。交付回执提交推送后再次进行同一核验。

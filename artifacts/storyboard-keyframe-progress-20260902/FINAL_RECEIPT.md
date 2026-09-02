@@ -6,4 +6,4 @@
 
 187 项 Product Studio 测试、101 项 Python 分镜与文本导演测试、生产构建、Compose、桌面浏览器、390 像素移动端、Console 和截图验收已经通过。白夜行第一场景 8 个镜头使用本机 `qwen3:14b` 做过只读内存副本实跑，8 条取景证据均属于各自原文且 8 条小记全部唯一。浏览器图像响应使用本机延迟 mock，真实外部付费图像生成记录为 `evidence_missing`。
 
-Git 提交、`fork/master` 推送和本地、远端跟踪、远端服务器三方哈希一致性将在最终交付阶段记录。
+功能、测试、README、CHANGELOG、需求、架构和正式证据提交为 `4f1a76a608f5a03f23665104c595153cee712b64`。该提交已推送到 `fork/master`，首次核验得到本地 HEAD、`refs/remotes/fork/master` 和远端 `refs/heads/master` 三方哈希一致。交付回执更新完成后再次执行推送与最终三方哈希核验。
