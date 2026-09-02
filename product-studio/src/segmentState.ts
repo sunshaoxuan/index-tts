@@ -24,6 +24,16 @@ function resequenceSegments(segments: SegmentRow[]): SegmentRow[] {
   return segments.map((row, index) => [index + 1, ...row.slice(1)] as SegmentRow);
 }
 
+export function deleteSegmentsByOrder(segments: SegmentRow[], selectedOrders: number[]): SegmentRow[] {
+  const selected = new Set(selectedOrders);
+  if (!selected.size) throw new Error('请至少选择一条要删除的分句');
+  const existingOrders = new Set(segments.map(row => row[0]));
+  if ([...selected].some(order => !existingOrders.has(order))) {
+    throw new Error('所选分句已变化，请重新选择');
+  }
+  return resequenceSegments(segments.filter(row => !selected.has(row[0])));
+}
+
 export function mergeAdjacentSegments(segments: SegmentRow[], selectedOrders: number[]): SegmentRow[] {
   const selected = [...new Set(selectedOrders)].sort((a, b) => a - b);
   if (selected.length < 2) throw new Error('请至少选择两条相邻分句');

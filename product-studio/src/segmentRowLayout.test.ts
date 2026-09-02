@@ -52,6 +52,13 @@ test('segment rows expose explicit IndexTTS emotion direction detail and weight 
   assert.match(app, /fragment \? '重新生成' : '生成'/);
 });
 
+test('segment toolbar exposes confirmed deletion from the voice production range', () => {
+  assert.match(app, /onConfirm=\{deleteSelectedSegments\}/);
+  assert.match(app, />删除所选<\/Button>/);
+  assert.match(app, /正文原稿继续保留/);
+  assert.match(app, /相关旧片断和完整交付会按现有规则失效/);
+});
+
 test('fragment action cell uses compact playback and leaves no empty player placeholder', () => {
   assert.match(app, /fragment && <FragmentAudioPlayer compact variant="primary" src=\{fragmentAudioSelectionUrl/);
   assert.match(app, /fragment \? ' has-fragment' : ' no-fragment'/);

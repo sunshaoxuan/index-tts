@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RoleRow, SegmentRow } from './types.ts';
-import { mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState.ts';
+import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState.ts';
 
 const roles: RoleRow[] = [
   ['narrator', '旁白', 'narrator', '', '', '', '', '否'],
@@ -42,6 +42,23 @@ test('keeps an edited synthesis text in the project segment state', () => {
   assert.equal(updated[0][5], '原文 21');
   assert.equal(updated[0][6], edited);
   assert.equal(updated[1], segments[1]);
+});
+
+test('deletes one or more selected segments and resequences the remaining rows', () => {
+  const rows = [segment(1), segment(2), segment(3), segment(4)];
+
+  const deleted = deleteSegmentsByOrder(rows, [2, 4]);
+
+  assert.deepEqual(deleted.map(row => row[0]), [1, 2]);
+  assert.deepEqual(deleted.map(row => row[5]), ['原文 1', '原文 3']);
+  assert.equal(rows.length, 4);
+});
+
+test('allows deleting every segment and rejects empty or stale selections', () => {
+  const rows = [segment(1), segment(2)];
+  assert.deepEqual(deleteSegmentsByOrder(rows, [1, 2]), []);
+  assert.throws(() => deleteSegmentsByOrder(rows, []), /至少选择一条/);
+  assert.throws(() => deleteSegmentsByOrder(rows, [3]), /已变化/);
 });
 
 test('merges two or more adjacent rows and keeps final pause while resequencing', () => {

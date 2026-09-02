@@ -936,6 +936,48 @@ test('invalidates changed segment audio and marks complete renders stale without
   await app.close();
 });
 
+test('invalidates a deleted segment while preserving and resequencing later matching audio', async () => {
+  const { root, project } = await fixture();
+  const deletedKey = 'd'.repeat(64);
+  const preservedKey = 'e'.repeat(64);
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const renderDir = path.join(projectDir, 'renders', 'render-delete-segment');
+  const cacheDir = path.join(projectDir, 'process', 'segment-cache');
+  const row = (order, text) => [order, '正文', 'narrator', '旁白', 'ZH', text, text, '中性叙述', '平静', 0.5, '自然', 300];
+  project.segments = [row(1, '保留第一句。'), row(2, '删除这条注释。'), row(3, '保留第三句。')];
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  await mkdir(path.join(renderDir, 'segments'), { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(path.join(renderDir, 'full-audio.wav'), Buffer.from('full'));
+  await writeFile(path.join(renderDir, 'director-manifest.json'), JSON.stringify({ segments: [
+    { order: 2, speaker_id: 'narrator', speaker_name: '旁白', language: 'ZH', source_text: '删除这条注释。', text: '删除这条注释。', cache_key: deletedKey, audio: 'segments/0002.wav' },
+    { order: 3, speaker_id: 'narrator', speaker_name: '旁白', language: 'ZH', source_text: '保留第三句。', text: '保留第三句。', cache_key: preservedKey, audio: 'segments/0003.wav' },
+  ] }));
+  await writeFile(path.join(renderDir, 'segments', '0002.wav'), pcmWav(0.2));
+  await writeFile(path.join(renderDir, 'segments', '0003.wav'), pcmWav(0.2));
+  await writeFile(path.join(cacheDir, `${deletedKey}.wav`), Buffer.from('deleted'));
+  await writeFile(path.join(cacheDir, `${preservedKey}.wav`), Buffer.from('preserved'));
+  await writeFile(path.join(projectDir, 'process', 'segment-fragments.json'), JSON.stringify({ version: 1, fragments: {
+    [deletedKey]: { order: 2, speaker_id: 'narrator', language: 'ZH', source_text: '删除这条注释。', text: '删除这条注释。', audio_file: `${deletedKey}.wav` },
+    [preservedKey]: { order: 3, speaker_id: 'narrator', language: 'ZH', source_text: '保留第三句。', text: '保留第三句。', audio_file: `${preservedKey}.wav` },
+  } }));
+  const app = await buildApp({ repoRoot: root });
+
+  project.segments = [row(1, '保留第一句。'), row(2, '保留第三句。')];
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().artifact_invalidation, { invalidatedCacheKeys: [deletedKey], staleRenders: 1 });
+  await assert.rejects(access(path.join(cacheDir, `${deletedKey}.wav`)));
+  await access(path.join(cacheDir, `${preservedKey}.wav`));
+  const latest = (await app.inject('/api/projects/demo/latest-render')).json();
+  assert.equal(latest.stale, true);
+  assert.equal(latest.fragments.length, 1);
+  assert.equal(latest.fragments[0].order, 2);
+  assert.equal(latest.fragments[0].sourceText, '保留第三句。');
+  await app.close();
+});
+
 test('invalidates only the edited segment when its emotion direction changes', async () => {
   const { root, project } = await fixture();
   const firstKey = '3'.repeat(64);
