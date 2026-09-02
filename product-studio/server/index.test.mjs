@@ -210,7 +210,7 @@ test('stores AI media credentials locally without returning the API key', async 
   const app = await buildApp({ repoRoot: root });
   const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'http://127.0.0.1:49530/v1/', apiKey: 'secret-key', textModel: 'gemini-pro', imageModel: 'gpt-image' } });
   assert.equal(saved.statusCode, 200);
-  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', directorProvider: 'ollama', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image', instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
+  assert.deepEqual(saved.json(), { endpoint: 'http://127.0.0.1:49530/v1', textModel: 'gemini-pro', directorProvider: 'ollama', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image', imageFallbackModel: '', imageFallbackEnabled: false, instanceId: '', textApi: 'chat_completions', allowInsecureHttp: false, transportRisk: false, hasApiKey: true });
   const loaded = await app.inject('/api/settings/ai-media');
   assert.equal(loaded.json().hasApiKey, true);
   assert.equal(JSON.stringify(loaded.json()).includes('secret-key'), false);
@@ -277,6 +277,34 @@ test('writes global compatible director configuration to the analysis worker wit
   assert.equal(input.config.staged_analysis, true);
   assert.equal(JSON.stringify(input).includes('director-secret'), false);
   child.emit('close', 0);
+  await app.close();
+});
+
+test('stores distinct primary and complement image models with cooldown switching enabled', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: {
+    endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model',
+    imageModel: 'gpt-image-2', imageFallbackModel: 'gemini-3-pro-image', imageFallbackEnabled: true,
+  } });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().imageModel, 'gpt-image-2');
+  assert.equal(saved.json().imageFallbackModel, 'gemini-3-pro-image');
+  assert.equal(saved.json().imageFallbackEnabled, true);
+  const stored = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-settings.json'), 'utf8'));
+  assert.equal(stored.image_model, 'gpt-image-2');
+  assert.equal(stored.image_fallback_model, 'gemini-3-pro-image');
+  assert.equal(stored.image_fallback_enabled, true);
+  const missingComplement = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: {
+    endpoint: 'https://ai.example/v1', textModel: 'text-model', imageModel: 'gpt-image-2', imageFallbackEnabled: true,
+  } });
+  assert.equal(missingComplement.statusCode, 400);
+  assert.match(missingComplement.json().error, /填写互补图像模型/);
+  const duplicateModels = await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: {
+    endpoint: 'https://ai.example/v1', textModel: 'text-model', imageModel: 'gpt-image-2', imageFallbackModel: 'gpt-image-2', imageFallbackEnabled: true,
+  } });
+  assert.equal(duplicateModels.statusCode, 400);
+  assert.match(duplicateModels.json().error, /必须与主图像模型不同/);
   await app.close();
 });
 
@@ -491,7 +519,7 @@ test('uses stable local and linked role portraits as ordered identity references
   const requestCountBeforePreflight = requests.length;
   const preflight = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: [shot], keyframeStyle: 'cinematic_realistic', preflightOnly: true } });
   assert.equal(preflight.statusCode, 200);
-  assert.deepEqual(preflight.json(), { validatedCount: 1, shotIds: ['scene_identity_shot_001'], model: 'gpt-image-2' });
+  assert.deepEqual(preflight.json(), { validatedCount: 1, shotIds: ['scene_identity_shot_001'], model: 'gpt-image-2', candidateModels: ['gpt-image-2'] });
   assert.equal(requests.length, requestCountBeforePreflight);
 
   const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: [shot], keyframeStyle: 'cinematic_realistic' } });
@@ -512,7 +540,66 @@ test('uses stable local and linked role portraits as ordered identity references
   await app.close();
 });
 
-test('preflights missing character portraits before full keyframe generation and never falls back after edit rejection', async () => {
+test('switches from GPT Image to Gemini after 429 and preserves character reference uploads and audit fields', async () => {
+  const { root, project } = await fixture();
+  const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
+  const portrait = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 4, 3, 2, 1]);
+  const generated = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 9, 8, 7, 6]);
+  await mkdir(path.join(projectDir, 'role-assets'), { recursive: true });
+  await writeFile(path.join(projectDir, 'role-assets', 'role-a.png'), portrait);
+  project.roles.push(['role_a', '甲', 'character', '甲是主要人物，短发且面部轮廓清晰，跨镜头保持年龄与五官一致。', '中性清晰', '', '自然叙述', '否']);
+  project.character_assets = { role_a: { portrait_url: '/api/projects/demo/role-assets/role-a.png' } };
+  project.document = { scenes: [{ id: 'scene_fallback', title: '冷却切换', participants: ['role_a'], shots: [{
+    id: 'shot_fallback', title: '走近窗边', participants: ['role_a'], start_segment_order: 1, end_segment_order: 1,
+    storyboard_note: '甲从画面左侧走向窗边，面部保持角色参考图身份，窗框位于前景，冷光从右侧进入。', source_text: '甲走近窗边。',
+  }] }] };
+  await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
+  const requests = [];
+  const remoteFetch = async (url, options) => {
+    const fields = [];
+    for (const [name, value] of options.body.entries()) fields.push(typeof value === 'string' ? { name, value } : { name, filename: value.name, bytes: Buffer.from(await value.arrayBuffer()) });
+    requests.push({ url: String(url), fields });
+    if (requests.length === 1) return new Response(JSON.stringify({ error: { message: 'RESOURCE_EXHAUSTED', code: 'quota' } }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '15' } });
+    return new Response(JSON.stringify({ data: [{ b64_json: generated.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: {
+    endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model',
+    imageModel: 'gpt-image-2', imageFallbackModel: 'gemini-3-pro-image', imageFallbackEnabled: true,
+  } });
+  const opened = (await app.inject('/api/projects/demo')).json();
+  const shot = opened.document.scenes[0].shots[0];
+  const generatedResponse = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_fallback/shots/shot_fallback/keyframe', payload: {
+    shot, keyframeStyle: 'cinematic_realistic', imageModel: 'gpt-image-2', allowFallback: true,
+  } });
+  assert.equal(generatedResponse.statusCode, 200);
+  assert.equal(generatedResponse.json().requestedModel, 'gpt-image-2');
+  assert.equal(generatedResponse.json().model, 'gemini-3-pro-image');
+  assert.equal(generatedResponse.json().modelFallbackUsed, true);
+  assert.match(generatedResponse.json().modelFallbackReason, /RESOURCE_EXHAUSTED/);
+  assert.equal(generatedResponse.json().modelPromptProfile, 'gemini_visual_spec_v1');
+  assert.deepEqual(requests.map(request => request.url), ['https://ai.example/v1/images/edits', 'https://ai.example/v1/images/edits']);
+  assert.deepEqual(requests.map(request => request.fields.find(field => field.name === 'model').value), ['gpt-image-2', 'gemini-3-pro-image']);
+  for (const request of requests) {
+    const image = request.fields.find(field => field.name === 'image[]');
+    assert.equal(image.filename, 'role_a-role-a.png');
+    assert.deepEqual(image.bytes, portrait);
+  }
+  assert.match(requests[0].fields.find(field => field.name === 'prompt').value, /GPT Image 执行说明/);
+  assert.match(requests[1].fields.find(field => field.name === 'prompt').value, /Gemini 图像执行说明/);
+
+  const beforeSecond = requests.length;
+  const cooledResponse = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_fallback/shots/shot_fallback/keyframe', payload: {
+    shot, keyframeStyle: 'cinematic_realistic', imageModel: 'gpt-image-2', allowFallback: true,
+  } });
+  assert.equal(cooledResponse.statusCode, 200);
+  assert.equal(requests.length, beforeSecond + 1);
+  assert.equal(requests.at(-1).fields.find(field => field.name === 'model').value, 'gemini-3-pro-image');
+  assert.match(cooledResponse.json().modelFallbackReason, /仍在冷却/);
+  await app.close();
+});
+
+test('preflights missing character portraits before full keyframe generation and never switches after a non-cooldown edit rejection', async () => {
   const { root, project } = await fixture();
   const projectDir = path.join(root, 'outputs', 'novel-projects', 'demo');
   const portrait = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2, 4, 6, 8]);
@@ -530,9 +617,9 @@ test('preflights missing character portraits before full keyframe generation and
   ] }] };
   await writeFile(path.join(projectDir, 'project.json'), JSON.stringify(project));
   const calls = [];
-  const remoteFetch = async (url) => { calls.push(String(url)); return new Response(JSON.stringify({ error: { message: 'edits unsupported' } }), { status: 501, headers: { 'Content-Type': 'application/json' } }); };
+  const remoteFetch = async (url) => { calls.push(String(url)); return new Response(JSON.stringify({ error: { message: 'invalid reference image' } }), { status: 400, headers: { 'Content-Type': 'application/json' } }); };
   const app = await buildApp({ repoRoot: root, remoteFetch });
-  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gpt-image-2' } });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gpt-image-2', imageFallbackModel: 'gemini-3-pro-image', imageFallbackEnabled: true } });
   const opened = (await app.inject('/api/projects/demo')).json();
 
   const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: opened.document.scenes[0].shots, keyframeStyle: 'cinematic_realistic' } });

@@ -111,6 +111,8 @@ export interface AiMediaSettings {
   ollamaEndpoint: string;
   directorMaxChunkChars: number;
   imageModel: string;
+  imageFallbackModel: string;
+  imageFallbackEnabled: boolean;
   instanceId: string;
   textApi: 'responses' | 'chat_completions';
   allowInsecureHttp: boolean;

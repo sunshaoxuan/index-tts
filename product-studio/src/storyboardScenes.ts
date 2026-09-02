@@ -30,7 +30,11 @@ export function toggleStoryboardShotSelection(
   return selectedInScene.includes(shotId) ? selectedInScene : [...selectedInScene, shotId];
 }
 
-const GENERATED_FIELDS = ['keyframe_url', 'keyframe_prompt', 'keyframe_style', 'keyframe_generated_at', 'keyframe_model'] as const;
+const GENERATED_FIELDS = [
+  'keyframe_url', 'keyframe_prompt', 'keyframe_style', 'keyframe_generated_at', 'keyframe_model',
+  'keyframe_requested_model', 'keyframe_model_fallback_used', 'keyframe_model_fallback_reason',
+  'keyframe_model_prompt_profile', 'identity_reference_mode', 'reference_characters',
+] as const;
 
 function cleanGenerated(shot: Record<string, unknown>) {
   const copy = { ...shot };

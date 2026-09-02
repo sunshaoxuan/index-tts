@@ -131,7 +131,9 @@ React 分句表使用稳定序号作为多选键。`mergeAdjacentSegments` 验�
 
 角色八列数组继续作为 IndexTTS 与既有导演流程的兼容层。扩展人物属性存入工程根级 `character_assets`，键为稳定角色 ID，字段包括 `gender`、`age`、`pitch_min_hz`、`pitch_max_hz`、`pitch_target_hz`、`portrait_url`、`portrait_prompt`、`portrait_style`、`portrait_notes` 和人物小传来源。Node 与 Python 在旧工程缺失该映射时使用同一性别推断、年龄频率建议和默认漫画风格规则补齐默认值。
 
-OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。角色形象和没有画面人物的关键帧使用 `/v1/images/generations`。含有画面人物的关键帧使用 multipart `/v1/images/edits`，以重复 `image[]` 字段发送角色身份参考图。两条图像响应链都兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
+OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /api/settings/ai-media` 只返回 Endpoint、模型名、文本接口模式、Cockpit Instance ID、传输风险状态和 `hasApiKey`；`PUT` 写入或清除本机密钥。图像路由配置保存 `image_model`、`image_fallback_model` 和 `image_fallback_enabled`。人物小传从角色名字命中的句子向前后各取两句并限制为 30000 字符，可显式选择 `/v1/responses` 或 `/v1/chat/completions`。角色形象和没有画面人物的关键帧使用 `/v1/images/generations`。含有画面人物的关键帧使用 multipart `/v1/images/edits`，以重复 `image[]` 字段发送角色身份参考图。两条图像响应链都兼容 `b64_json`、远程 URL 和 Gemini inline data，限制图像为 PNG、JPEG 或 WebP 且不超过 20 MB。
+
+`image-model-routing.mjs` 按模型 ID 区分 GPT Image、Gemini Image 和普通兼容图像模型，为同一基础画面规格追加模型专用执行说明。服务进程使用内存 Map 保存模型冷却截止时间。图像请求只允许选择已配置的主模型或互补模型；启用切换后，429、503、资源耗尽、限流、配额和临时过载会按 `Retry-After` 或默认 60 秒登记冷却，再尝试另一个模型。取消与普通请求错误直接返回。含角色参考的两次尝试始终重建 multipart `/images/edits` 请求并上传全部原始角色图。生成结果返回 `requestedModel`、`model`、`modelFallbackUsed`、`modelFallbackReason` 和 `modelPromptProfile`，前端分别保存为镜头模型审计字段。
 
 该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。
 
@@ -139,7 +141,7 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 
 分镜数据采用 `document.scenes[].shots[]` 两层结构。场景边界由主题、地点、空间和叙事焦点决定；镜头边界在场景内部依据 `target_shot_seconds` 继续切分。`storyboard_captions` 来自最近交付清单中每条 WAV 的实际时长和句后停顿，Worker 先建立累计时间线，再按连续分句和目标时长形成镜头；没有完整音频时以去空白文字长度估算分组且不写 `start_seconds`、`end_seconds`。第一阶段只建立稳定镜头 ID、声音参与者、起止分句、完整 `source_text`、来源摘要、待撰写状态和可选真实时间，不从场景小记拼接镜头描述。第二阶段由 `OllamaTextDirector.author_storyboard_shots()` 以最多十二个镜头的小批次接收镜头 ID、起止分句、起止时间、完整对应原文、声音参与者、场景候选人物以及地点、方位、时间和基调，返回独立标题、`storyboard_note`、`source_evidence` 与实际可见人物 `participant_ids`。校验器要求稳定 ID 全覆盖且无重复，取景证据经规范化后必须是当前镜头原文的连续子串，画面小记必须达到视觉信息长度且不得与已处理镜头完全重复；AI 返回的画面人物必须属于已登记角色并排除 `narrator`。人物解析器还为唯一的三字以上中日文姓名建立无冲突双字短别名，按镜头顺序识别原文明示姓名，并在同一场景只有一个最近明示人物时解析“他、她、自己”等代词连续指向；确定性结果与 AI `participant_ids` 合并后保存 `participant_resolution=ai_plus_source_continuity`。全部批次成功后才在内存副本中统一回写并保存；任何批次失败时旧工程保持原状。关键帧生成以镜头作为最小单位，服务端把镜头字段覆盖到所属场景视觉上下文，并把当前镜头原文与独立画面小记同时写入图像提示。服务端按照工程角色表顺序解析 `participants`，排除 `narrator`，从角色资产 URL 安全定位当前工程或关联工程图片，校验 20 MB 上限和 PNG、JPEG、WebP 签名，并计算 SHA256。有画面人物时，提示逐张映射参考图序号、稳定角色 ID 和名称，要求保持面部结构、五官比例、发型、年龄感和标志特征；每次从原始角色图生成，避免关键帧递推的累积漂移。单张与全量路由复用该解析器，全量路由先对全部镜头完成预检。结果保存 `identity_reference_mode` 与 `reference_characters`。手工创建会占用同场景连续分句范围并按新范围写入对应原文，原镜头剩余部分自动分成连续镜头；范围缩小或拆分会清除范围已变化的画面小记、取景证据和关键帧，合并会组合原文并清除关键帧元数据。
 
-全量关键帧由前端 `storyboardKeyframeBatch` 状态机编排。前端先调用 `POST /api/projects/:id/storyboard/keyframes` 并设置 `preflightOnly: true`，服务端完成全部镜头与身份参考解析后只返回校验数量、镜头 ID 和模型，不请求外部图像。预检通过后，前端按稳定队列逐张调用 `POST /api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe`，每张成功即写入 React 工程状态并更新完成计数。状态机公开 `preflight`、`generating`、`complete`、`cancelled` 和 `error`，携带总数、完成数、当前序号、镜头 ID、标题、起止时间与错误信息；剩余时间由已用时间和已完成数量估算。React 以 `projectLocked` 统一控制工程切换、保存、工作区标签、分镜字段和冲突操作，任务终态解除锁定。单张与全量请求各自持有 `AbortController`，取消会中止当前 HTTP 请求，Node 把断开的请求传递为兼容服务 `AbortSignal`。批处理中已经回写的图片不会因后续取消或失败回滚。
+全量关键帧由前端 `storyboardKeyframeBatch` 状态机编排。前端先调用 `POST /api/projects/:id/storyboard/keyframes` 并设置 `preflightOnly: true`，同时传递本批 `imageModel` 与 `allowFallback`。服务端完成全部镜头与身份参考解析后只返回校验数量、镜头 ID、请求模型和候选模型，不请求外部图像。预检通过后，前端按稳定队列逐张调用 `POST /api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe`，每张成功即写入 React 工程状态并更新完成计数。状态机公开 `preflight`、`generating`、`complete`、`cancelled` 和 `error`，携带总数、完成数、当前序号、镜头 ID、标题、起止时间与错误信息；剩余时间由已用时间和已完成数量估算。React 以 `projectLocked` 统一控制工程切换、保存、工作区标签、分镜字段和冲突操作，任务终态解除锁定。单张与全量请求各自持有 `AbortController`，取消会中止当前 HTTP 请求，Node 把断开的请求传递为兼容服务 `AbortSignal`。批处理中已经回写的图片不会因后续取消或失败回滚。
 
 分句数组第 15 至 18 列保存重音文字、出现序号、重音强度和生成方式。渲染器把重音目标追加到 `emo_text`，并将这些字段、生成方式和验收算法版本加入缓存签名。高级生成最多尝试九次；设置重音目标时，只有三个基础质量与重音代理同时达标的候选才能提前结束抽取，预算耗尽后从基础质量合格项中按文本比例声学代理评分保留三版。代理验收比较目标估计区间与相邻区间的 RMS 能量，保存 `stress_db`、质量指标、排序和算法版本。该指标用于受约束抽卡排序，产品界面始终披露其概率性质。分句草稿索引存在同一序号的多个历史缓存时，最新写入项覆盖旧项进入页面，避免重复显示同一分句。
 
@@ -147,7 +149,7 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 
 角色删除在前端以纯函数同步处理工程中的四组活动引用。角色表和 `character_assets` 移除目标 ID；分句表及 `document.segments` 的目标引用改为 narrator；`document.characters` 和 `director_memory` 移除目标角色；旁白禁止删除。历史导演操作和永久音色库保持原状。用户保存工程后，现有 PUT 校验、导演历史和成果失效链继续生效。
 
-设置窗口通过 `POST /api/settings/ai-media/test` 触发模型发现。Node 使用当前保存或请求中待保存的 Endpoint 与 API Key 请求兼容 `/v1/models`，去重并排序模型 ID 后回传浏览器。响应不包含密钥。前端把模型 ID 用作两个可搜索下拉框的数据源，并继续允许手工模型名，以兼容模型列表延迟或服务端自定义路由。
+设置窗口通过 `POST /api/settings/ai-media/test` 触发模型发现。Node 使用当前保存或请求中待保存的 Endpoint 与 API Key 请求兼容 `/v1/models`，去重并排序模型 ID 后回传浏览器。响应不包含密钥。前端把全部模型 ID 用作人物小传选择器，把包含 `image` 的 ID 优先用于主图像模型和互补图像模型选择器，并继续允许手工模型名，以兼容模型列表延迟或服务端自定义路由。分镜工作区只列出当前已保存的主模型和互补模型，确保批次请求不能绕过全局允许范围。
 
 本机 Cockpit 和远端节点没有继承关系。Node 只向当前配置 Endpoint 发送请求；可选 `instance_id` 作为 `X-Cockpit-Instance-Id` 同时应用于模型发现、文本和同源图像请求。回环 HTTP 视为本机传输；公网 HTTP 在 `allow_insecure_http` 未明确启用时于发出请求前停止，从而避免默认明文发送 Bearer Key。远程图像 URL 只有与 Endpoint 同源时才携带认证头。
 

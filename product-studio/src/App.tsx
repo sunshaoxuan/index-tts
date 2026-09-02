@@ -358,6 +358,8 @@ function Studio() {
   const [portraitGenerating, setPortraitGenerating] = useState(false);
   const portraitAbortRef = useRef<AbortController | undefined>(undefined);
   const [storyboardStyle, setStoryboardStyle] = useState(DEFAULT_STORYBOARD_STYLE);
+  const [storyboardImageModel, setStoryboardImageModel] = useState('');
+  const [storyboardAllowImageFallback, setStoryboardAllowImageFallback] = useState(false);
   const [targetShotSeconds, setTargetShotSeconds] = useState(10);
   const [keyframeGeneratingSceneId, setKeyframeGeneratingSceneId] = useState<string>();
   const [allKeyframesGenerating, setAllKeyframesGenerating] = useState(false);
@@ -369,7 +371,7 @@ function Studio() {
   const [selectedStoryboardShotIds, setSelectedStoryboardShotIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
-  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
+  const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', imageFallbackModel: '', imageFallbackEnabled: false, instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsTesting, setSettingsTesting] = useState(false);
   const settingsTestAbortRef = useRef<AbortController | undefined>(undefined);
@@ -470,7 +472,9 @@ function Studio() {
   useEffect(() => {
     Promise.all([api.presets(), api.projects(), api.activeJob(), api.health(), api.aiMediaSettings()]).then(([p, list, active, health, mediaSettings]) => {
       setPresets(p); setProjects(list); setRuntimeHealth(health); setAiMediaSettings(mediaSettings);
-      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, directorProvider: mediaSettings.directorProvider, directorModel: mediaSettings.directorModel, ollamaEndpoint: mediaSettings.ollamaEndpoint, directorMaxChunkChars: mediaSettings.directorMaxChunkChars, imageModel: mediaSettings.imageModel, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
+      setSettingsDraft({ endpoint: mediaSettings.endpoint, apiKey: '', textModel: mediaSettings.textModel, directorProvider: mediaSettings.directorProvider, directorModel: mediaSettings.directorModel, ollamaEndpoint: mediaSettings.ollamaEndpoint, directorMaxChunkChars: mediaSettings.directorMaxChunkChars, imageModel: mediaSettings.imageModel, imageFallbackModel: mediaSettings.imageFallbackModel, imageFallbackEnabled: mediaSettings.imageFallbackEnabled, instanceId: mediaSettings.instanceId, textApi: mediaSettings.textApi, allowInsecureHttp: mediaSettings.allowInsecureHttp, clearApiKey: false });
+      setStoryboardImageModel(mediaSettings.imageModel);
+      setStoryboardAllowImageFallback(mediaSettings.imageFallbackEnabled);
       if (active.available && active.jobId && active.kind && active.projectId) {
         void switchProject(active.projectId, list);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
@@ -885,9 +889,9 @@ function Studio() {
     portraitAbortRef.current = controller;
     setPortraitGenerating(true);
     try {
-      const result = await api.generateCharacterPortrait(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age, portraitStyle: roleAssetDraft.portrait_style, portraitPrompt: roleAssetDraft.portrait_notes }, controller.signal);
+      const result = await api.generateCharacterPortrait(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age, portraitStyle: roleAssetDraft.portrait_style, portraitPrompt: roleAssetDraft.portrait_notes, imageModel: aiMediaSettings?.imageModel || settingsDraft.imageModel, allowFallback: Boolean(aiMediaSettings?.imageFallbackEnabled) }, controller.signal);
       setRoleAssetDraft(current => current ? { ...current, portrait_url: result.portraitUrl, portrait_prompt: result.portraitPrompt, portrait_style: result.portraitStyle } : current);
-      message.success(`角色形象已由 ${result.model} 生成，请应用角色设置并保存工程`);
+      message.success(`角色形象已由 ${result.model} 生成${result.modelFallbackUsed ? `，已从 ${result.requestedModel} 切换` : ''}，请应用角色设置并保存工程`);
     } catch (error) { operationCancelled(error) ? message.info('角色形象生成已取消') : message.error((error as Error).message); }
     finally {
       if (portraitAbortRef.current === controller) portraitAbortRef.current = undefined;
@@ -900,7 +904,9 @@ function Studio() {
     try {
       const saved = await api.saveAiMediaSettings(settingsDraft);
       setAiMediaSettings(saved);
-      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, directorProvider: saved.directorProvider, directorModel: saved.directorModel, ollamaEndpoint: saved.ollamaEndpoint, directorMaxChunkChars: saved.directorMaxChunkChars, imageModel: saved.imageModel, instanceId: saved.instanceId, textApi: saved.textApi, allowInsecureHttp: saved.allowInsecureHttp, clearApiKey: false });
+      setSettingsDraft({ endpoint: saved.endpoint, apiKey: '', textModel: saved.textModel, directorProvider: saved.directorProvider, directorModel: saved.directorModel, ollamaEndpoint: saved.ollamaEndpoint, directorMaxChunkChars: saved.directorMaxChunkChars, imageModel: saved.imageModel, imageFallbackModel: saved.imageFallbackModel, imageFallbackEnabled: saved.imageFallbackEnabled, instanceId: saved.instanceId, textApi: saved.textApi, allowInsecureHttp: saved.allowInsecureHttp, clearApiKey: false });
+      setStoryboardImageModel(saved.imageModel);
+      setStoryboardAllowImageFallback(saved.imageFallbackEnabled);
       setSettingsOpen(false);
       message.success('全局 AI 设置已保存在本机运行目录');
     } catch (error) { message.error((error as Error).message); }
@@ -914,7 +920,7 @@ function Studio() {
     try {
       const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp }, controller.signal);
       setAvailableAiModels(result.models);
-      const missing = [settingsDraft.textModel, settingsDraft.imageModel].filter(model => model && !result.models.includes(model));
+      const missing = [settingsDraft.textModel, settingsDraft.imageModel, settingsDraft.imageFallbackModel].filter(model => model && !result.models.includes(model));
       if (missing.length) message.warning(`连接成功，已加载 ${result.modelCount} 个模型。当前选择不在可用列表：${missing.join('、')}`);
       else message.success(`连接成功，已加载 ${result.modelCount} 个可用模型`);
     } catch (error) {
@@ -1039,6 +1045,10 @@ function Studio() {
             keyframe_style: result.keyframeStyle,
             keyframe_generated_at: result.generatedAt,
             keyframe_model: result.model,
+            keyframe_requested_model: result.requestedModel,
+            keyframe_model_fallback_used: result.modelFallbackUsed,
+            keyframe_model_fallback_reason: result.modelFallbackReason,
+            keyframe_model_prompt_profile: result.modelPromptProfile,
             identity_reference_mode: result.identityReferenceMode,
             reference_characters: result.referenceCharacters,
           };
@@ -1057,9 +1067,9 @@ function Studio() {
       items,
       mode,
       preflight: mode === 'all'
-        ? () => api.preflightStoryboardShotKeyframes(project.project_id, shots, keyframeStyle, signal)
+        ? () => api.preflightStoryboardShotKeyframes(project.project_id, shots, keyframeStyle, storyboardImageModel, storyboardAllowImageFallback, signal)
         : async () => undefined,
-      generate: item => api.generateStoryboardShotKeyframe(project.project_id, item.sceneId, item.shotId, item.shot, keyframeStyle, signal),
+      generate: item => api.generateStoryboardShotKeyframe(project.project_id, item.sceneId, item.shotId, item.shot, keyframeStyle, storyboardImageModel, storyboardAllowImageFallback, signal),
       onGenerated: (item, result) => {
         applyGeneratedKeyframe(item.sceneId, item.shotId, result);
         onItemGenerated?.();
@@ -1080,8 +1090,8 @@ function Studio() {
     keyframeAbortRef.current = controller;
     setKeyframeGeneratingSceneId(shotId);
     try {
-      await runKeyframeQueue([{ sceneId, shotId, title: String(shot.title || shotId), shot }], 'single', keyframeStyle, controller.signal);
-      message.success(`分镜镜头 ${shotId} 的关键帧已生成，请保存工程`);
+      const [result] = await runKeyframeQueue([{ sceneId, shotId, title: String(shot.title || shotId), shot }], 'single', keyframeStyle, controller.signal);
+      message.success(`分镜镜头 ${shotId} 的关键帧已由 ${result.model} 生成${result.modelFallbackUsed ? `，已从 ${result.requestedModel} 切换` : ''}，请保存工程`);
     } catch (error) { operationCancelled(error) ? message.info(`分镜镜头 ${shotId} 的关键帧生成已取消`) : message.error(`关键帧生成失败：${(error as Error).message}`); }
     finally {
       if (keyframeAbortRef.current === controller) keyframeAbortRef.current = undefined;
@@ -1284,10 +1294,14 @@ function Studio() {
       : [];
   });
   const activeRole = project?.roles.find(row => row[0] === activeRoleId);
-  const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel, settingsDraft.imageModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel, settingsDraft.imageModel]);
+  const aiModelOptions = useMemo(() => [...new Set([...availableAiModels, settingsDraft.textModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.textModel]);
+  const imageModelOptions = useMemo(() => [...new Set([...availableAiModels.filter(model => model.toLowerCase().includes('image')), settingsDraft.imageModel, settingsDraft.imageFallbackModel].filter(Boolean))].map(value => ({ value })), [availableAiModels, settingsDraft.imageModel, settingsDraft.imageFallbackModel]);
+  const storyboardImageModelOptions = useMemo(() => [...new Set([aiMediaSettings?.imageModel, aiMediaSettings?.imageFallbackModel].filter(Boolean))].map(value => ({ value, label: `${value}${value === aiMediaSettings?.imageModel ? ' · 主模型' : ' · 互补模型'}` })), [aiMediaSettings]);
   const directorModelOptions = useMemo(() => [...new Set([...availableDirectorModels, settingsDraft.directorModel].filter(Boolean))].map(value => ({ value })), [availableDirectorModels, settingsDraft.directorModel]);
   const textModelUnavailable = Boolean(availableAiModels.length && settingsDraft.textModel && !availableAiModels.includes(settingsDraft.textModel));
   const imageModelUnavailable = Boolean(availableAiModels.length && settingsDraft.imageModel && !availableAiModels.includes(settingsDraft.imageModel));
+  const imageFallbackModelUnavailable = Boolean(availableAiModels.length && settingsDraft.imageFallbackModel && !availableAiModels.includes(settingsDraft.imageFallbackModel));
+  const duplicateImageModels = Boolean(settingsDraft.imageModel && settingsDraft.imageFallbackModel && settingsDraft.imageModel === settingsDraft.imageFallbackModel);
   const directorModelUnavailable = Boolean(availableDirectorModels.length && settingsDraft.directorModel && !availableDirectorModels.includes(settingsDraft.directorModel));
   const insecurePublicEndpoint = isPublicHttpEndpoint(settingsDraft.endpoint);
   const sceneRows = (Array.isArray(project?.document?.scenes) ? project.document.scenes : []) as Array<Record<string, unknown>>;
@@ -1546,13 +1560,16 @@ function Studio() {
             <Popconfirm title="AI 重新生成全部分镜" description="将重新划分场景与场景小记，并清除旧场景关键帧。角色、当前分句、人工朗读文字、音频、纠音和导演记忆会保留。" okText="开始重新生成" cancelText="取消" onConfirm={() => void regenerateAllStoryboard()}>
               <Button icon={<ReloadOutlined />} disabled={projectLocked || !project.source_text.trim() || !documentSegments.length}>AI 重新生成全部分镜</Button>
             </Popconfirm>
-            <Button icon={<PlusOutlined />} disabled={projectLocked || !documentSegments.length} onClick={openManualStoryboard}>手工创建分镜镜头</Button>
-            <Select aria-label="全量关键帧风格" disabled={projectLocked} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} />
+             <Button icon={<PlusOutlined />} disabled={projectLocked || !documentSegments.length} onClick={openManualStoryboard}>手工创建分镜镜头</Button>
+             <Select aria-label="全量关键帧风格" disabled={projectLocked} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} />
+             <Select aria-label="关键帧图像模型" disabled={projectLocked} value={storyboardImageModel || undefined} options={storyboardImageModelOptions} style={{ minWidth: 220 }} onChange={setStoryboardImageModel} placeholder="选择图像模型" />
+             <Tooltip title="主模型因限流、配额冷却或临时不可用时，使用另一个已配置模型"><span><Switch disabled={projectLocked || !aiMediaSettings?.imageFallbackEnabled || storyboardImageModelOptions.length < 2} checked={storyboardAllowImageFallback} onChange={setStoryboardAllowImageFallback} /> <Text>冷却切换</Text></span></Tooltip>
             {allKeyframesGenerating
               ? <Button danger icon={<StopOutlined />} onClick={cancelKeyframeGeneration}>取消全量关键帧</Button>
               : <Button type="primary" icon={<PictureOutlined />} disabled={projectLocked || !allSceneNotesReady || uniqueStoryboardIdentityIssues.length > 0} onClick={() => void generateAllSceneKeyframes()}>{storyboardShotRows.some(shot => shot.keyframe_url) ? `重新生成全部 ${storyboardShotRows.length} 张关键帧` : `生成全部 ${storyboardShotRows.length} 张关键帧`}</Button>}
-          </Space>}>
-            {storyboardKeyframeProgress && <section className={`storyboard-keyframe-progress storyboard-keyframe-progress-${storyboardKeyframeProgress.phase}`} role="status" aria-live="polite" aria-label="关键帧生成进度">
+           </Space>}>
+             {storyboardImageModelOptions.length > 1 && <Alert className="storyboard-note-warning" type="warning" showIcon message={`当前批次请求模型：${storyboardImageModel || '未选择'}`} description={storyboardAllowImageFallback ? `冷却切换已启用。实际模型可能变为 ${storyboardImageModelOptions.find(option => option.value !== storyboardImageModel)?.value || '互补模型'}，跨模型画面可能出现风格差异，实际模型会写入每个镜头。` : '冷却切换已关闭，本批次只使用所选模型。'} />}
+             {storyboardKeyframeProgress && <section className={`storyboard-keyframe-progress storyboard-keyframe-progress-${storyboardKeyframeProgress.phase}`} role="status" aria-live="polite" aria-label="关键帧生成进度">
               <header>
                 <div><span>{storyboardKeyframeProgress.mode === 'all' ? 'BATCH KEYFRAMES / 全量关键帧' : 'SINGLE KEYFRAME / 单张关键帧'}</span><strong>{storyboardKeyframeProgress.phase === 'preflight' ? storyboardKeyframeProgress.mode === 'all' ? '正在检查全部镜头' : '正在准备单张关键帧' : storyboardKeyframeProgress.phase === 'generating' ? storyboardKeyframeProgress.mode === 'all' ? `正在生成第 ${storyboardKeyframeProgress.currentIndex || 1} 张` : '等待图像服务响应' : storyboardKeyframeProgress.phase === 'complete' ? '关键帧生成完成' : storyboardKeyframeProgress.phase === 'cancelled' ? '关键帧生成已取消' : '关键帧生成已停止'}</strong></div>
                 <div className="storyboard-keyframe-progress-count"><b>{storyboardKeyframeProgress.completed} / {storyboardKeyframeProgress.total}</b><Tag color={storyboardKeyframeProgress.phase === 'complete' ? 'green' : storyboardKeyframeProgress.phase === 'error' ? 'red' : storyboardKeyframeProgress.phase === 'cancelled' ? 'blue' : 'gold'}>{storyboardKeyframePercent}%</Tag>{!keyframeGenerationActive && <Tooltip title="关闭进度"><Button type="text" icon={<CloseOutlined />} aria-label="关闭关键帧进度" onClick={() => setStoryboardKeyframeProgress(undefined)} /></Tooltip>}</div>
@@ -1598,7 +1615,7 @@ function Studio() {
                       const unknownParticipantIds = shotParticipantIds.filter(id => !project.roles.some(role => role[0] === id));
                       const savedReferences = (Array.isArray(shot.reference_characters) ? shot.reference_characters : []) as Array<{ roleId?: string; name?: string; portraitUrl?: string; portraitSha256?: string }>;
                       return <article className="storyboard-shot-card" key={shotId}>
-                        <header><Checkbox disabled={projectLocked} checked={selectedStoryboardShotIds.includes(shotId)} onChange={event => setSelectedStoryboardShotIds(current => toggleStoryboardShotSelection(current, sceneShotIds, shotId, event.target.checked))} /><div><strong>{String(shot.title || `镜头 ${shotIndex + 1}`)}</strong><Text>{shotId}</Text></div><Tag>第 {shotStart}{shotEnd > shotStart ? ` 至 ${shotEnd}` : ''} 句</Tag></header>
+                        <header><Checkbox disabled={projectLocked} checked={selectedStoryboardShotIds.includes(shotId)} onChange={event => setSelectedStoryboardShotIds(current => toggleStoryboardShotSelection(current, sceneShotIds, shotId, event.target.checked))} /><div><strong>{String(shot.title || `镜头 ${shotIndex + 1}`)}</strong><Text>{shotId}</Text></div><Tag>第 {shotStart}{shotEnd > shotStart ? ` 至 ${shotEnd}` : ''} 句</Tag>{Boolean(shot.keyframe_model) && <Tooltip title={Boolean(shot.keyframe_model_fallback_used) ? String(shot.keyframe_model_fallback_reason || '主模型冷却后使用互补模型') : '最近一次生成实际使用的图像模型'}><Tag color={Boolean(shot.keyframe_model_fallback_used) ? 'gold' : 'blue'}>{String(shot.keyframe_model)}{Boolean(shot.keyframe_model_fallback_used) ? ' · 已切换' : ''}</Tag></Tooltip>}</header>
                         {hasShotTime && <div className="storyboard-shot-time"><span>{formatStoryboardTime(Number(shot.start_seconds))}</span><span>至</span><span>{formatStoryboardTime(Number(shot.end_seconds))}</span><Tag>{(Number(shot.end_seconds) - Number(shot.start_seconds)).toFixed(1)} 秒</Tag></div>}
                         <div className="storyboard-shot-source"><strong>镜头对应原文</strong><span>{shotSource || '当前镜头没有可核对的原文范围，请重新生成全部分镜。'}</span>{shotEvidence && <Text type="secondary">AI 取景证据：{shotEvidence}</Text>}</div>
                         <div className="storyboard-keyframe-preview">{shot.keyframe_url ? <img src={String(shot.keyframe_url)} alt={`${String(shot.title || shotId)}关键帧`} /> : <div className="storyboard-keyframe-placeholder"><PictureOutlined /><strong>KEYFRAME {String(shotIndex + 1).padStart(3, '0')}</strong><span>一个分镜镜头对应一张 16:9 画面</span></div>}</div>
@@ -1679,8 +1696,12 @@ function Studio() {
           <div className="editor-two-column"><label><Text strong>Cockpit Instance ID（可选）</Text><Input value={settingsDraft.instanceId} onChange={event => setSettingsDraft(current => ({ ...current, instanceId: event.target.value }))} placeholder="例如：.codex-gemini-agent" /></label><label><Text strong>兼容文本接口</Text><Select value={settingsDraft.textApi} onChange={value => setSettingsDraft(current => ({ ...current, textApi: value }))} options={[{ value: 'responses', label: 'Responses API · /v1/responses' }, { value: 'chat_completions', label: 'Chat Completions · /v1/chat/completions' }]} /></label></div>
           <Text type="secondary">全文分析选择兼容 Endpoint 时与人物小传共用该文本接口；本地 Ollama 全文分析不受此项影响。</Text>
           {settingsTesting ? <Button danger icon={<StopOutlined />} onClick={() => settingsTestAbortRef.current?.abort()}>取消兼容 Endpoint 测试</Button> : <Button icon={<ReloadOutlined />} onClick={testAiMediaSettings}>测试兼容 Endpoint 并加载模型</Button>}
-          {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型`} description={textModelUnavailable || imageModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请从下拉列表重新选择。' : '人物小传模型和角色图像模型都在当前可用列表中。'} />}
-          <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>
+          {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable || imageFallbackModelUnavailable || duplicateImageModels ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型，其中 ${imageModelOptions.length} 个图像模型`} description={textModelUnavailable || imageModelUnavailable || imageFallbackModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请重新选择。' : duplicateImageModels ? '主图像模型和互补图像模型需要使用不同的模型 ID。' : '人物小传、主图像模型和互补图像模型均在当前可用列表中。'} />}
+          <label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label>
+          <div className="editor-section-heading"><span>03 / Image Routing</span><strong>图像生成模型</strong><Text>角色图与分镜图共用配置。分镜工作区可以为每批生成选择其中一个模型。</Text></div>
+          <div className="editor-two-column"><label><Text strong>主图像模型</Text><AutoComplete status={imageModelUnavailable || duplicateImageModels ? 'warning' : undefined} value={settingsDraft.imageModel} options={imageModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="例如 gpt-image-2" /></label><label><Text strong>互补图像模型</Text><AutoComplete allowClear status={imageFallbackModelUnavailable || duplicateImageModels ? 'warning' : undefined} value={settingsDraft.imageFallbackModel} options={imageModelOptions.filter(option => option.value !== settingsDraft.imageModel)} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageFallbackModel: value, imageFallbackEnabled: value ? current.imageFallbackEnabled : false }))} placeholder="例如 gemini-3-pro-image" /></label></div>
+          <label className="clear-key-control"><Switch disabled={!settingsDraft.imageFallbackModel || duplicateImageModels} checked={settingsDraft.imageFallbackEnabled} onChange={checked => setSettingsDraft(current => ({ ...current, imageFallbackEnabled: checked }))} /><Text>主模型限流、配额冷却或临时不可用时使用互补模型</Text></label>
+          {settingsDraft.imageFallbackEnabled && !duplicateImageModels && <Alert type="warning" showIcon message="互补模型切换可能改变画面风格" description="系统会保持同一画面规格、人物身份参考和构图约束，并记录请求模型、实际模型、切换原因和提示词规格。" />}
         </Space>
       </Modal>
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => { setCreateOpen(false); setNewSourceProjectIds([]); }}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'auto', label: '自动识别' }, { value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'commentary', label: '一般评论' }, { value: 'story', label: '故事体' }]} /><Text type="secondary">新闻与一般评论使用唯一主播，小说和故事体保留多角色分析。</Text></div><div><Text strong>关联已有工程并导入角色、音色与纠音</Text><Select disabled={jobRunning} mode="multiple" allowClear showSearch value={newSourceProjectIds} onChange={setNewSourceProjectIds} options={projects.map(item => ({ value: item.value, label: `${item.label} · ${item.roleCount} 个角色` }))} placeholder="可多选，留空则建立空工程" /><Text type="secondary">建立时导入角色资料、当前音色、全部候选音色和全篇纠音规则，并保存来源、角色映射及纠音重复与冲突回执。后续修改彼此独立。</Text></div></Space></Modal>

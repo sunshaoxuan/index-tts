@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyPendingJobs, jobModelKey } from './model-job-scheduler.mjs';
 import { assignNumberedChapterSections, splitChapters } from './chapterSections.mjs';
+import { adaptImagePrompt, compatibleServiceError, imageModelCandidates, runWithImageModelFallback } from './image-model-routing.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(here, '..', '..');
@@ -694,12 +695,14 @@ async function readAiMediaSettings(file) {
       ollama_endpoint: configuredOllamaEndpoint(stored.ollama_endpoint),
       director_max_chunk_chars: Math.max(320, Math.min(12000, Math.round(Number(stored.director_max_chunk_chars) || 1400))),
       image_model: String(stored.image_model || 'gpt-image-1'),
+      image_fallback_model: String(stored.image_fallback_model || ''),
+      image_fallback_enabled: Boolean(stored.image_fallback_enabled),
       instance_id: String(stored.instance_id || ''),
       text_api: stored.text_api === 'responses' ? 'responses' : 'chat_completions',
       allow_insecure_http: Boolean(stored.allow_insecure_http),
     };
   } catch {
-    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:14b', ollama_endpoint: configuredOllamaEndpoint(), director_max_chunk_chars: 1400, image_model: 'gpt-image-1', instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
+    return { endpoint: '', api_key: '', text_model: 'gemini-2.5-pro', director_provider: 'ollama', director_model: 'qwen3:14b', ollama_endpoint: configuredOllamaEndpoint(), director_max_chunk_chars: 1400, image_model: 'gpt-image-1', image_fallback_model: '', image_fallback_enabled: false, instance_id: '', text_api: 'chat_completions', allow_insecure_http: false };
   }
 }
 
@@ -712,6 +715,8 @@ function publicAiMediaSettings(settings) {
     ollamaEndpoint: settings.ollama_endpoint,
     directorMaxChunkChars: settings.director_max_chunk_chars,
     imageModel: settings.image_model,
+    imageFallbackModel: settings.image_fallback_model,
+    imageFallbackEnabled: settings.image_fallback_enabled,
     instanceId: settings.instance_id,
     textApi: settings.text_api,
     allowInsecureHttp: settings.allow_insecure_http,
@@ -756,7 +761,7 @@ async function callCompatibleJson(remoteFetch, url, settings, payload, signal) {
   const text = await response.text();
   let body;
   try { body = JSON.parse(text); } catch { body = {}; }
-  if (!response.ok) throw new Error(String(body?.error?.message || body?.message || `兼容服务请求失败 ${response.status}`));
+  if (!response.ok) throw compatibleServiceError(response, body);
   return body;
 }
 
@@ -915,11 +920,11 @@ async function resolveSceneCharacterReferences(projectRoot, project, scene) {
   return references;
 }
 
-async function callCompatibleImageEdit(remoteFetch, settings, prompt, references, signal) {
+async function callCompatibleImageEdit(remoteFetch, settings, model, prompt, references, signal) {
   assertEndpointTransport(settings);
   throwIfAborted(signal);
   const form = new FormData();
-  form.append('model', settings.image_model);
+  form.append('model', model);
   form.append('prompt', prompt);
   form.append('size', '1536x1024');
   form.append('n', '1');
@@ -936,8 +941,9 @@ async function callCompatibleImageEdit(remoteFetch, settings, prompt, references
   let body;
   try { body = JSON.parse(text); } catch { body = {}; }
   if (!response.ok) {
-    const detail = String(body?.error?.message || body?.message || `兼容服务请求失败 ${response.status}`);
-    throw new Error(`角色参考图关键帧生成失败：${detail}。当前服务必须支持 Images Edits 多图参考，系统未回退到纯文字生成`);
+    const error = compatibleServiceError(response, body);
+    error.message = `角色参考图关键帧生成失败：${error.message}。当前服务必须支持 Images Edits 多图参考，系统未回退到纯文字生成`;
+    throw error;
   }
   return body;
 }
@@ -956,19 +962,30 @@ async function decodeCompatibleImage(remoteFetch, item, settings, signal) {
   throw new Error('兼容服务没有返回图像数据');
 }
 
-async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle, signal }) {
+async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle, requestedModel, allowFallback, imageModelCooldowns, signal }) {
   throwIfAborted(signal);
   const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
   const references = await resolveSceneCharacterReferences(projectRoot, project, scene);
   const publicReferences = references.map(({ bytes: _bytes, filename: _filename, mimeType: _mimeType, sourceProjectId: _sourceProjectId, ...reference }) => reference);
-  const prompt = sceneKeyframePrompt(project, scene, style, publicReferences);
-  const response = references.length
-    ? await callCompatibleImageEdit(remoteFetch, settings, prompt, references, signal)
-    : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
-      model: settings.image_model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
-    }, signal);
-  const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
-  const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+  const basePrompt = sceneKeyframePrompt(project, scene, style, publicReferences);
+  const routed = await runWithImageModelFallback({
+    settings,
+    requestedModel,
+    allowFallback,
+    cooldowns: imageModelCooldowns,
+    execute: async model => {
+      const prompt = adaptImagePrompt(basePrompt, model, 'storyboard');
+      const response = references.length
+        ? await callCompatibleImageEdit(remoteFetch, settings, model, prompt, references, signal)
+        : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
+          model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
+        }, signal);
+      const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+      const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+      return { bytes, prompt };
+    },
+  });
+  const { bytes, prompt } = routed.value;
   throwIfAborted(signal);
   if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的关键帧为空或超过 20 MB');
   const extension = imageExtension(bytes);
@@ -983,7 +1000,11 @@ async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, proje
     keyframePrompt: prompt,
     keyframeStyle: style,
     generatedAt: new Date().toISOString(),
-    model: settings.image_model,
+    model: routed.actualModel,
+    requestedModel: routed.requestedModel,
+    modelFallbackUsed: routed.fallbackUsed,
+    modelFallbackReason: routed.fallbackReason,
+    modelPromptProfile: routed.promptProfile,
     identityReferenceMode: references.length ? 'role_portraits' : 'no_visual_characters',
     referenceCharacters: publicReferences,
   };
@@ -1009,6 +1030,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
   const productVersion = (await readFile(path.join(repoRoot, 'VERSION'), 'utf8')).trim();
+  const imageModelCooldowns = new Map();
   const aiMediaSettingsFile = path.join(repoRoot, 'runtime-output', 'product-settings.json');
 
   async function reconcileRoleVoiceFiles(project) {
@@ -1297,14 +1319,19 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const ollamaEndpoint = normalizeOllamaEndpoint(request.body?.ollamaEndpoint);
       const directorMaxChunkChars = Math.max(320, Math.min(12000, Math.round(Number(request.body?.directorMaxChunkChars) || 1400)));
       const imageModel = String(request.body?.imageModel || '').trim();
+      const imageFallbackModel = String(request.body?.imageFallbackModel || '').trim();
+      const imageFallbackRequested = Boolean(request.body?.imageFallbackEnabled);
+      const imageFallbackEnabled = Boolean(imageFallbackRequested && imageFallbackModel && imageFallbackModel !== imageModel);
       const instanceId = String(request.body?.instanceId || '').trim();
       const textApi = request.body?.textApi === 'responses' ? 'responses' : 'chat_completions';
       const allowInsecureHttp = Boolean(request.body?.allowInsecureHttp);
       const apiKey = request.body?.clearApiKey ? '' : String(request.body?.apiKey || current.api_key || '').trim();
       if (endpoint && !textModel) throw new Error('请填写人物小传模型名称');
       if (endpoint && !imageModel) throw new Error('请填写图像模型名称');
+      if (imageFallbackRequested && !imageFallbackModel) throw new Error('启用冷却切换时请填写互补图像模型');
+      if (imageFallbackRequested && imageFallbackModel === imageModel) throw new Error('互补图像模型必须与主图像模型不同');
       if (directorProvider === 'compatible' && (!endpoint || !apiKey)) throw new Error('兼容全文分析需要 Endpoint 和 API Key');
-      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', director_provider: directorProvider, director_model: directorModel, ollama_endpoint: ollamaEndpoint, director_max_chunk_chars: directorMaxChunkChars, image_model: imageModel || 'gpt-image-1', instance_id: instanceId, text_api: textApi, allow_insecure_http: allowInsecureHttp };
+      const stored = { endpoint, api_key: apiKey, text_model: textModel || 'gemini-2.5-pro', director_provider: directorProvider, director_model: directorModel, ollama_endpoint: ollamaEndpoint, director_max_chunk_chars: directorMaxChunkChars, image_model: imageModel || 'gpt-image-1', image_fallback_model: imageFallbackModel, image_fallback_enabled: imageFallbackEnabled, instance_id: instanceId, text_api: textApi, allow_insecure_http: allowInsecureHttp };
       const temporary = `${aiMediaSettingsFile}.tmp`;
       await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
       await rename(temporary, aiMediaSettingsFile);
@@ -1473,12 +1500,23 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         portraitPrompt: String(request.body?.portraitPrompt ?? project.character_assets[roleId]?.portrait_notes ?? '').trim(),
       };
       if (draft.profile.length < 20) throw new Error('人物小传至少填写 20 个字符后才能生成形象');
-      const prompt = portraitPrompt(draft);
-      const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
-        model: settings.image_model, prompt, size: '1024x1024', n: 1, response_format: 'b64_json',
-      }, signal);
-      const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
-      const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+      const basePrompt = portraitPrompt(draft);
+      const routed = await runWithImageModelFallback({
+        settings,
+        requestedModel: request.body?.imageModel,
+        allowFallback: request.body?.allowFallback !== false,
+        cooldowns: imageModelCooldowns,
+        execute: async model => {
+          const prompt = adaptImagePrompt(basePrompt, model, 'portrait');
+          const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
+            model, prompt, size: '1024x1024', n: 1, response_format: 'b64_json',
+          }, signal);
+          const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+          const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+          return { bytes, prompt };
+        },
+      });
+      const { bytes, prompt } = routed.value;
       throwIfAborted(signal);
       if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的图像为空或超过 20 MB');
       const extension = imageExtension(bytes);
@@ -1486,7 +1524,16 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       await mkdir(assetsDir, { recursive: true });
       const filename = `${safeSlug(roleId)}-${Date.now()}${extension}`;
       await writeFile(path.join(assetsDir, filename), bytes);
-      return { portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`, portraitPrompt: prompt, portraitStyle: draft.portraitStyle, model: settings.image_model };
+      return {
+        portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`,
+        portraitPrompt: prompt,
+        portraitStyle: draft.portraitStyle,
+        model: routed.actualModel,
+        requestedModel: routed.requestedModel,
+        modelFallbackUsed: routed.fallbackUsed,
+        modelFallbackReason: routed.fallbackReason,
+        modelPromptProfile: routed.promptProfile,
+      };
     } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/role-assets/:file', async (request, reply) => {
@@ -1524,6 +1571,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         project,
         scene: draft,
         requestedStyle: request.body?.keyframeStyle,
+        requestedModel: request.body?.imageModel,
+        allowFallback: request.body?.allowFallback !== false,
+        imageModelCooldowns,
         signal,
       });
     } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
@@ -1545,7 +1595,19 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!persistedShot) throw new Error('分镜镜头不存在');
       const requestedShot = request.body?.shot && typeof request.body.shot === 'object' ? request.body.shot : {};
       const draft = { ...persistedScene, ...persistedShot, ...requestedShot, id: shotId, scene_id: sceneId, participants: requestedShot.participants || persistedShot.participants || persistedScene.participants };
-      const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: draft, requestedStyle: request.body?.keyframeStyle, signal });
+      const generated = await generateSceneKeyframe({
+        remoteFetch,
+        settings,
+        projectRoot,
+        projectId: id,
+        project,
+        scene: draft,
+        requestedStyle: request.body?.keyframeStyle,
+        requestedModel: request.body?.imageModel,
+        allowFallback: request.body?.allowFallback !== false,
+        imageModelCooldowns,
+        signal,
+      });
       return { ...generated, shotId };
     } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
@@ -1571,16 +1633,29 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           if (!persisted) throw new Error(`分镜镜头 ${shotId} 不存在`);
           return { ...persisted.scene, ...persisted.shot, ...(shot && typeof shot === 'object' ? shot : {}), id: shotId, scene_id: String(persisted.scene.id), participants: shot.participants || persisted.shot.participants || persisted.scene.participants };
         });
+        const selectedModels = imageModelCandidates(settings, request.body?.imageModel, request.body?.allowFallback !== false);
         for (const shot of preparedShots) await resolveSceneCharacterReferences(projectRoot, project, shot);
         if (request.body?.preflightOnly === true) {
-          return { validatedCount: preparedShots.length, shotIds: preparedShots.map(shot => String(shot.id)), model: settings.image_model };
+          return { validatedCount: preparedShots.length, shotIds: preparedShots.map(shot => String(shot.id)), model: selectedModels[0], candidateModels: selectedModels };
         }
         const keyframes = [];
         for (const shot of preparedShots) {
-          const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: shot, requestedStyle: request.body?.keyframeStyle, signal });
+          const generated = await generateSceneKeyframe({
+            remoteFetch,
+            settings,
+            projectRoot,
+            projectId: id,
+            project,
+            scene: shot,
+            requestedStyle: request.body?.keyframeStyle,
+            requestedModel: request.body?.imageModel,
+            allowFallback: request.body?.allowFallback !== false,
+            imageModelCooldowns,
+            signal,
+          });
           keyframes.push({ ...generated, shotId: String(shot.id) });
         }
-        return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
+        return { keyframes, generatedCount: keyframes.length, model: selectedModels[0], candidateModels: selectedModels };
       }
       const requestedScenes = Array.isArray(request.body?.scenes) ? request.body.scenes : persistedScenes;
       if (!requestedScenes.length) throw new Error('当前工程没有可生成的分镜场景');
@@ -1603,10 +1678,13 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           project,
           scene,
           requestedStyle: request.body?.keyframeStyle,
+          requestedModel: request.body?.imageModel,
+          allowFallback: request.body?.allowFallback !== false,
+          imageModelCooldowns,
           signal,
         }));
       }
-      return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
+      return { keyframes, generatedCount: keyframes.length, model: String(request.body?.imageModel || settings.image_model) };
     } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/scene-assets/:file', async (request, reply) => {
