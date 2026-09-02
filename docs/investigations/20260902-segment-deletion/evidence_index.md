@@ -9,5 +9,7 @@
 | `segment-delete-confirm.png` | 桌面删除确认层 | passed |
 | `segment-delete-saved.png` | 保存并刷新后的 2 条连续分句 | passed |
 | `segment-delete-mobile-confirm.png` | 390×844 删除确认层与工具栏 | passed |
+| `production-7864-delete-confirm-desktop.png` | 正式 7864 桌面删除确认层 | passed |
+| `production-7864-delete-confirm-mobile-390x844.png` | 正式 7864 窄屏确认层与工具栏 | passed |
 | `test_results.md` | 聚焦测试、完整测试、构建和浏览器结果 | passed |
 | `FINAL_ACCEPTANCE_CHECKLIST.md` | 初衷级逐项验收 | passed |
