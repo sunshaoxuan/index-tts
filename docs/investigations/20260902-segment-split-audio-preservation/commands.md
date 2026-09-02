@@ -16,3 +16,4 @@
 | 运行接口 | 临时同序号冲突工程的 `latest-render` 与两条 WAV | 当前序号 15、16 同时返回，两条音频 HTTP 200 |
 | 浏览器 | 分句导演 DOM、媒体状态、Console、截图 | 两个播放器同时保留，后一句可播放，无 Console 问题 |
 | 清理 | `DELETE /api/projects/codex-segment-split-acceptance` | 临时工程已删除，原有 4 个工程保持存在 |
+| 最终发布门禁 | 最终回执提交、增量镜像重建、容器替换、远程与运行 revision 核对 | 要求 HEAD、远程 `master`、容器 revision 三者等值后交付 |

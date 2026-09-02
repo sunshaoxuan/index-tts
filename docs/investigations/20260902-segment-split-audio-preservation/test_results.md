@@ -14,3 +14,4 @@
 | 浏览器 Console | warning 0、error 0 |
 | 截图 | `artifacts/segment-split-audio-preservation/runtime-acceptance.png` 视觉检查通过 |
 | 临时工程清理 | 产品删除接口返回 `deleted=true`，剩余 4 个原有工程，临时目录不存在 |
+| 最终发布门禁 | 最终回执提交后要求现行镜像 revision、当前 HEAD 和远程 `master` 三者等值，容器 healthy、RestartCount 0 |
