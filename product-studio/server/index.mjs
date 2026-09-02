@@ -720,12 +720,38 @@ function publicAiMediaSettings(settings) {
   };
 }
 
-async function callCompatibleJson(remoteFetch, url, settings, payload) {
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('操作已取消');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function requestAbortSignal(request, reply) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort(new DOMException('操作已取消', 'AbortError'));
+  };
+  if (request.raw.aborted) abort();
+  else request.raw.once('aborted', abort);
+  reply.raw.once('close', () => {
+    if (!reply.raw.writableEnded) abort();
+  });
+  return controller.signal;
+}
+
+function requestErrorStatus(error) {
+  return error?.name === 'AbortError' ? 499 : error?.statusCode || 400;
+}
+
+async function callCompatibleJson(remoteFetch, url, settings, payload, signal) {
   assertEndpointTransport(settings);
+  throwIfAborted(signal);
   const response = await remoteFetch(url, {
     method: 'POST',
     headers: compatibleHeaders(settings, true),
     body: JSON.stringify(payload),
+    signal,
   });
   const text = await response.text();
   let body;
@@ -734,10 +760,11 @@ async function callCompatibleJson(remoteFetch, url, settings, payload) {
   return body;
 }
 
-async function discoverCompatibleModels(remoteFetch, settings) {
+async function discoverCompatibleModels(remoteFetch, settings, signal) {
   assertEndpointTransport(settings);
   const response = await remoteFetch(aiRoute(settings.endpoint, '/models'), {
     headers: compatibleHeaders(settings),
+    signal,
   });
   const text = await response.text();
   let body;
@@ -749,8 +776,8 @@ async function discoverCompatibleModels(remoteFetch, settings) {
   return models;
 }
 
-async function discoverOllamaModels(remoteFetch, endpoint) {
-  const response = await remoteFetch(`${normalizeOllamaEndpoint(endpoint)}/api/tags`);
+async function discoverOllamaModels(remoteFetch, endpoint, signal) {
+  const response = await remoteFetch(`${normalizeOllamaEndpoint(endpoint)}/api/tags`, { signal });
   const text = await response.text();
   let body;
   try { body = JSON.parse(text); } catch { body = {}; }
@@ -804,7 +831,8 @@ function sceneKeyframePrompt(project, scene, requestedStyle, referenceCharacters
   const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
   const sceneId = safeProjectId(scene.id);
   const note = String(scene.storyboard_note || '').trim();
-  if (note.length < 20) throw new Error(`场景 ${sceneId} 的场景小记至少需要 20 个字符`);
+  const shotSource = String(scene.source_text || scene.source_excerpt || '').trim();
+  if (note.length < 20) throw new Error(`镜头 ${sceneId} 的画面小记至少需要 20 个字符`);
   const participants = new Set(Array.isArray(scene.participants) ? scene.participants.map(String) : []);
   const roleDetails = (project.roles || []).filter(role => participants.has(String(role[0]))).map(role => {
     const asset = project.character_assets?.[role[0]] || {};
@@ -816,7 +844,8 @@ function sceneKeyframePrompt(project, scene, requestedStyle, referenceCharacters
     `分镜标题：${String(scene.title || sceneId)}。内容主题：${String(scene.topic || '未说明')}。`,
     `地点：${String(scene.location || '未说明')}。空间方位或观察方向：${String(scene.spatial_direction || '未说明')}。故事内时间：${String(scene.time || '未说明')}。`,
     `场景基调：${String(scene.mood || '中性')}。叙事视角：${String(scene.narrative_perspective || '未说明')}。`,
-    `AI 场景小记：${note}`,
+    shotSource ? `镜头对应原文：${shotSource.slice(0, 2000)}` : '',
+    `AI 镜头画面小记：${note}`,
     roleDetails.length ? `需要保持连续一致的角色设定：\n${roleDetails.join('\n')}` : '本镜头没有需要明确展示的已登记角色。',
     referenceCharacters.length ? [
       '人物身份参考图映射：',
@@ -886,8 +915,9 @@ async function resolveSceneCharacterReferences(projectRoot, project, scene) {
   return references;
 }
 
-async function callCompatibleImageEdit(remoteFetch, settings, prompt, references) {
+async function callCompatibleImageEdit(remoteFetch, settings, prompt, references, signal) {
   assertEndpointTransport(settings);
+  throwIfAborted(signal);
   const form = new FormData();
   form.append('model', settings.image_model);
   form.append('prompt', prompt);
@@ -900,6 +930,7 @@ async function callCompatibleImageEdit(remoteFetch, settings, prompt, references
     method: 'POST',
     headers: compatibleHeaders(settings),
     body: form,
+    signal,
   });
   const text = await response.text();
   let body;
@@ -911,32 +942,34 @@ async function callCompatibleImageEdit(remoteFetch, settings, prompt, references
   return body;
 }
 
-async function decodeCompatibleImage(remoteFetch, item, settings) {
+async function decodeCompatibleImage(remoteFetch, item, settings, signal) {
   if (item?.b64_json) return Buffer.from(String(item.b64_json), 'base64');
   if (item?.inline_data?.data) return Buffer.from(String(item.inline_data.data), 'base64');
   if (item?.inlineData?.data) return Buffer.from(String(item.inlineData.data), 'base64');
   if (item?.url) {
     const imageUrl = String(item.url);
     const sameOrigin = new URL(imageUrl).origin === new URL(settings.endpoint).origin;
-    const response = await remoteFetch(imageUrl, { headers: sameOrigin ? compatibleHeaders(settings) : {} });
+    const response = await remoteFetch(imageUrl, { headers: sameOrigin ? compatibleHeaders(settings) : {}, signal });
     if (!response.ok) throw new Error(`兼容服务图像下载失败 ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
   }
   throw new Error('兼容服务没有返回图像数据');
 }
 
-async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle }) {
+async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId, project, scene, requestedStyle, signal }) {
+  throwIfAborted(signal);
   const style = normalizeStoryboardStyle(requestedStyle || scene.keyframe_style);
   const references = await resolveSceneCharacterReferences(projectRoot, project, scene);
   const publicReferences = references.map(({ bytes: _bytes, filename: _filename, mimeType: _mimeType, sourceProjectId: _sourceProjectId, ...reference }) => reference);
   const prompt = sceneKeyframePrompt(project, scene, style, publicReferences);
   const response = references.length
-    ? await callCompatibleImageEdit(remoteFetch, settings, prompt, references)
+    ? await callCompatibleImageEdit(remoteFetch, settings, prompt, references, signal)
     : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
       model: settings.image_model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
-    });
+    }, signal);
   const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
-  const bytes = await decodeCompatibleImage(remoteFetch, item, settings);
+  const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+  throwIfAborted(signal);
   if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的关键帧为空或超过 20 MB');
   const extension = imageExtension(bytes);
   const assetsDir = path.join(projectRoot, projectId, 'scene-assets');
@@ -970,7 +1003,7 @@ function launchMp3Encoder(file) {
   ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawnWorker = spawn, launchEncoder = launchMp3Encoder, remoteFetch = fetch } = {}) {
+export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawnWorker = spawn, launchEncoder = launchMp3Encoder, remoteFetch = fetch, killProcess = process.kill } = {}) {
   const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
@@ -1099,6 +1132,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   let pendingJobs = [];
   let lastModelKey = '';
   let scheduling = false;
+  let activeChild;
+  const cancelledJobIds = new Set();
+  const terminalJobPhases = new Set(['complete', 'error', 'cancelled']);
   await mkdir(jobRoot, { recursive: true });
   try {
     const storedQueue = JSON.parse(await readFile(queueFile, 'utf8'));
@@ -1137,7 +1173,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     const stored = JSON.parse(await readFile(activeJobFile, 'utf8'));
     const statusFile = path.join(jobRoot, safeProjectId(stored.jobId), 'status.json');
     const status = JSON.parse(await readFile(statusFile, 'utf8'));
-    if (['complete', 'error'].includes(status.phase)) await unlink(activeJobFile);
+    if (terminalJobPhases.has(status.phase)) await unlink(activeJobFile);
     else {
       let processAlive = false;
       if (Number.isSafeInteger(stored.pid) && stored.pid > 0) {
@@ -1166,7 +1202,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const expectedInput = path.join(jobDir, 'input.json');
       if (path.resolve(String(envelope.status || '')) !== expectedStatus || path.resolve(String(envelope.input || '')) !== expectedInput) throw new Error('渲染任务文件不匹配');
       const status = JSON.parse(await readFile(expectedStatus, 'utf8'));
-      if (['complete', 'error'].includes(status.phase)) throw new Error('渲染任务已经结束');
+      if (terminalJobPhases.has(status.phase)) throw new Error('渲染任务已经结束');
       const input = JSON.parse(await readFile(expectedInput, 'utf8'));
       const projectId = safeProjectId(input.project_id);
       await access(path.join(projectRoot, projectId, 'project.json'));
@@ -1178,7 +1214,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   for (const job of pendingJobs) {
     try {
       const status = JSON.parse(await readFile(path.join(jobRoot, job.jobId, 'status.json'), 'utf8'));
-      if (!['complete', 'error'].includes(status.phase)) recoveredPendingJobs.push(job);
+      if (!terminalJobPhases.has(status.phase)) recoveredPendingJobs.push(job);
     } catch {}
   }
   if (recoveredPendingJobs.length !== pendingJobs.length) {
@@ -1192,7 +1228,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     if (!activeJob) return { available: false };
     try {
       const status = JSON.parse(await readFile(path.join(jobRoot, activeJob.jobId, 'status.json'), 'utf8'));
-      if (['complete', 'error'].includes(status.phase)) {
+      if (terminalJobPhases.has(status.phase)) {
         lastModelKey = activeJob.modelKey || lastModelKey;
         await clearActiveJob(activeJob.jobId);
         await persistQueue();
@@ -1209,6 +1245,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   app.get('/api/presets', async () => presets);
   app.get('/api/settings/ai-media', async () => publicAiMediaSettings(await readAiMediaSettings(aiMediaSettingsFile)));
   app.post('/api/settings/ai-media/test', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const current = await readAiMediaSettings(aiMediaSettingsFile);
       const endpoint = normalizeAiEndpoint(request.body?.endpoint || current.endpoint);
@@ -1222,17 +1259,18 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         instance_id: String(request.body?.instanceId ?? current.instance_id ?? '').trim(),
         allow_insecure_http: Boolean(request.body?.allowInsecureHttp ?? current.allow_insecure_http),
       };
-      const models = await discoverCompatibleModels(remoteFetch, settings);
+      const models = await discoverCompatibleModels(remoteFetch, settings, signal);
       return { ok: true, endpoint, instanceId: settings.instance_id, models, modelCount: models.length };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.post('/api/settings/ai-media/director-test', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const current = await readAiMediaSettings(aiMediaSettingsFile);
       const provider = ['ollama', 'compatible'].includes(request.body?.directorProvider) ? request.body.directorProvider : current.director_provider;
       if (provider === 'ollama') {
         const endpoint = normalizeOllamaEndpoint(request.body?.ollamaEndpoint || current.ollama_endpoint);
-        const models = await discoverOllamaModels(remoteFetch, endpoint);
+        const models = await discoverOllamaModels(remoteFetch, endpoint, signal);
         return { ok: true, provider, endpoint, models, modelCount: models.length };
       }
       const endpoint = normalizeAiEndpoint(request.body?.endpoint || current.endpoint);
@@ -1245,9 +1283,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         instance_id: String(request.body?.instanceId ?? current.instance_id ?? '').trim(),
         allow_insecure_http: Boolean(request.body?.allowInsecureHttp ?? current.allow_insecure_http),
       };
-      const models = await discoverCompatibleModels(remoteFetch, settings);
+      const models = await discoverCompatibleModels(remoteFetch, settings, signal);
       return { ok: true, provider, endpoint, models, modelCount: models.length };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.put('/api/settings/ai-media', async (request, reply) => {
     try {
@@ -1388,6 +1426,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     }
   });
   app.post('/api/projects/:id/roles/:roleId/expand-profile', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const id = safeProjectId(request.params.id);
       const roleId = safeProjectId(request.params.roleId);
@@ -1406,14 +1445,15 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const systemPrompt = '你是长篇声音作品的人物设定导演。只使用稿件证据与用户已确认设定，写一篇具体、可复用、适合声音设计和视觉形象生成的人物小传。未知信息明确写“稿件未说明”，不得虚构关键事实。输出纯中文正文，不使用标题、列表或 Markdown。';
       const userPrompt = `角色：${name}\n年龄设定：约 ${age} 岁\n性别设定：${gender}\n当前小传：${currentProfile}\n稿件相关证据：\n${evidence}\n\n请在 300 至 600 个中文字符内覆盖身份与社会位置、外貌线索、年龄气质、人物关系、经历、欲望与矛盾、性格与行为习惯、说话方式、叙事作用，并区分稿件事实与未知信息。`;
       const response = settings.text_api === 'responses'
-        ? await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/responses'), settings, { model: settings.text_model, instructions: systemPrompt, input: userPrompt, stream: false })
-        : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/chat/completions'), settings, { model: settings.text_model, temperature: 0.35, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] });
+        ? await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/responses'), settings, { model: settings.text_model, instructions: systemPrompt, input: userPrompt, stream: false }, signal)
+        : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/chat/completions'), settings, { model: settings.text_model, temperature: 0.35, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] }, signal);
       const profile = extractCompatibleText(response);
       if (profile.length < 80) throw new Error('兼容服务返回的人物小传过短，请检查模型配置');
       return { profile, model: settings.text_model };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/roles/:roleId/portrait', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const id = safeProjectId(request.params.id);
       const roleId = safeProjectId(request.params.roleId);
@@ -1436,9 +1476,10 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const prompt = portraitPrompt(draft);
       const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
         model: settings.image_model, prompt, size: '1024x1024', n: 1, response_format: 'b64_json',
-      });
+      }, signal);
       const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
-      const bytes = await decodeCompatibleImage(remoteFetch, item, settings);
+      const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
+      throwIfAborted(signal);
       if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('兼容服务返回的图像为空或超过 20 MB');
       const extension = imageExtension(bytes);
       const assetsDir = path.join(projectRoot, id, 'role-assets');
@@ -1446,7 +1487,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const filename = `${safeSlug(roleId)}-${Date.now()}${extension}`;
       await writeFile(path.join(assetsDir, filename), bytes);
       return { portraitUrl: `/api/projects/${encodeURIComponent(id)}/role-assets/${encodeURIComponent(filename)}`, portraitPrompt: prompt, portraitStyle: draft.portraitStyle, model: settings.image_model };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/role-assets/:file', async (request, reply) => {
     try {
@@ -1460,6 +1501,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     } catch { return reply.code(404).send({ error: '角色形象不存在' }); }
   });
   app.post('/api/projects/:id/scenes/:sceneId/keyframe', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const id = safeProjectId(request.params.id);
       const sceneId = safeProjectId(request.params.sceneId);
@@ -1482,10 +1524,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         project,
         scene: draft,
         requestedStyle: request.body?.keyframeStyle,
+        signal,
       });
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const id = safeProjectId(request.params.id);
       const sceneId = safeProjectId(request.params.sceneId);
@@ -1501,11 +1545,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!persistedShot) throw new Error('分镜镜头不存在');
       const requestedShot = request.body?.shot && typeof request.body.shot === 'object' ? request.body.shot : {};
       const draft = { ...persistedScene, ...persistedShot, ...requestedShot, id: shotId, scene_id: sceneId, participants: requestedShot.participants || persistedShot.participants || persistedScene.participants };
-      const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: draft, requestedStyle: request.body?.keyframeStyle });
+      const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: draft, requestedStyle: request.body?.keyframeStyle, signal });
       return { ...generated, shotId };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.post('/api/projects/:id/storyboard/keyframes', async (request, reply) => {
+    const signal = requestAbortSignal(request, reply);
     try {
       const id = safeProjectId(request.params.id);
       const projectLock = projectJobLock(id);
@@ -1527,9 +1572,12 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           return { ...persisted.scene, ...persisted.shot, ...(shot && typeof shot === 'object' ? shot : {}), id: shotId, scene_id: String(persisted.scene.id), participants: shot.participants || persisted.shot.participants || persisted.scene.participants };
         });
         for (const shot of preparedShots) await resolveSceneCharacterReferences(projectRoot, project, shot);
+        if (request.body?.preflightOnly === true) {
+          return { validatedCount: preparedShots.length, shotIds: preparedShots.map(shot => String(shot.id)), model: settings.image_model };
+        }
         const keyframes = [];
         for (const shot of preparedShots) {
-          const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: shot, requestedStyle: request.body?.keyframeStyle });
+          const generated = await generateSceneKeyframe({ remoteFetch, settings, projectRoot, projectId: id, project, scene: shot, requestedStyle: request.body?.keyframeStyle, signal });
           keyframes.push({ ...generated, shotId: String(shot.id) });
         }
         return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
@@ -1555,10 +1603,11 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           project,
           scene,
           requestedStyle: request.body?.keyframeStyle,
+          signal,
         }));
       }
       return { keyframes, generatedCount: keyframes.length, model: settings.image_model };
-    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+    } catch (error) { return reply.code(requestErrorStatus(error)).send({ error: error.message }); }
   });
   app.get('/api/projects/:id/scene-assets/:file', async (request, reply) => {
     try {
@@ -1676,6 +1725,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       : spawnWorker(python, workerArgs, {
         cwd: repoRoot, detached: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' },
       });
+    activeChild = { jobId: job.jobId, child };
     const log = path.join(dir, 'worker.log');
     const chunks = [];
     let settled = false;
@@ -1687,16 +1737,20 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         await writeFile(log, logText, 'utf8');
         let prior = {};
         try { prior = JSON.parse(await readFile(status, 'utf8')); } catch {}
-        if (spawnError) {
+        if (cancelledJobIds.has(job.jobId)) {
+          await writeFile(status, JSON.stringify({ phase: 'cancelled', fraction: Number(prior.fraction) || 0, message: '任务已由用户取消', modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
+        } else if (spawnError) {
           await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: `Worker 启动失败：${spawnError.message}`, modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
         } else if (code && code !== 0) {
           const workerDetail = logText.trim().split(/\r?\n/u).at(-1);
           const detail = String(prior.phase === 'error' && prior.message ? prior.message : workerDetail || `Worker 退出码 ${code}`);
           await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: detail, modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
-        } else if (!['complete', 'error'].includes(prior.phase)) {
+        } else if (!terminalJobPhases.has(prior.phase)) {
           await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: 'Worker 已退出，但没有写入完成状态', modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
         }
       } finally {
+        if (activeChild?.jobId === job.jobId) activeChild = undefined;
+        cancelledJobIds.delete(job.jobId);
         lastModelKey = job.modelKey;
         await clearActiveJob(job.jobId);
         await persistQueue();
@@ -1795,6 +1849,59 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       throw error;
     }
   }
+
+  async function terminateOwnedRuntime(job, statusFile) {
+    if (!['voice', 'render'].includes(job.kind)) return false;
+    try {
+      const runtimeName = job.kind === 'voice' ? 'voice-design-runtime' : 'render-runtime';
+      const runtimeDir = path.join(repoRoot, 'runtime-output', runtimeName);
+      const state = JSON.parse(await readFile(path.join(runtimeDir, 'state.json'), 'utf8'));
+      const requestId = safeProjectId(state.request_id);
+      if (state.phase !== 'busy' || !Number.isSafeInteger(state.pid) || state.pid <= 0) return false;
+      const envelope = JSON.parse(await readFile(path.join(runtimeDir, 'requests', `${requestId}.processing`), 'utf8'));
+      if (path.resolve(String(envelope.status || '')) !== path.resolve(statusFile)) return false;
+      killProcess(state.pid);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function cancelJob(jobId) {
+    const id = safeProjectId(jobId);
+    const statusFile = path.join(jobRoot, id, 'status.json');
+    const queuedIndex = pendingJobs.findIndex(job => job.jobId === id);
+    if (queuedIndex >= 0) {
+      const [queued] = pendingJobs.splice(queuedIndex, 1);
+      await writeFile(statusFile, JSON.stringify({ phase: 'cancelled', fraction: 0, message: '等待中的任务已由用户取消', modelKey: queued.modelKey, dependencies: queued.dependencies }), 'utf8');
+      await persistQueue();
+      await refreshQueuedStatuses();
+      void scheduleQueue();
+      return { jobId: id, phase: 'cancelled', message: '等待中的任务已由用户取消', runtimeTerminated: false };
+    }
+    if (activeJob?.jobId !== id) {
+      const status = JSON.parse(await readFile(statusFile, 'utf8'));
+      if (terminalJobPhases.has(status.phase)) return { jobId: id, phase: status.phase, message: status.message, runtimeTerminated: false };
+      const error = new Error('任务当前不在可取消队列中');
+      error.statusCode = 409;
+      throw error;
+    }
+    let prior = {};
+    try { prior = JSON.parse(await readFile(statusFile, 'utf8')); } catch {}
+    cancelledJobIds.add(id);
+    await writeFile(statusFile, JSON.stringify({ ...prior, phase: 'cancelling', message: '正在取消任务并停止后台推理' }), 'utf8');
+    const runtimeTerminated = await terminateOwnedRuntime(activeJob, statusFile);
+    try {
+      if (activeChild?.jobId === id && typeof activeChild.child?.kill === 'function') activeChild.child.kill();
+      else if (Number.isSafeInteger(activeJob.pid) && activeJob.pid > 0) killProcess(activeJob.pid);
+    } catch {}
+    await writeFile(statusFile, JSON.stringify({ ...prior, phase: 'cancelled', message: '任务已由用户取消' }), 'utf8');
+    await clearActiveJob(id);
+    await persistQueue();
+    void scheduleQueue();
+    return { jobId: id, phase: 'cancelled', message: '任务已由用户取消', runtimeTerminated };
+  }
+
   app.post('/api/projects/:id/analyze', async (request, reply) => {
     try { return reply.code(202).send(await startJob(request.params.id, 'analyze')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
@@ -1865,6 +1972,13 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
     try { return reply.code(202).send(await startJob(request.params.id, 'voice')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.delete('/api/jobs/:id', async (request, reply) => {
+    try { return await cancelJob(request.params.id); }
+    catch (error) {
+      const statusCode = error.code === 'ENOENT' ? 404 : error.statusCode || 400;
+      return reply.code(statusCode).send({ error: error.code === 'ENOENT' ? '任务不存在' : error.message });
+    }
+  });
   app.get('/api/jobs/:id', async (request, reply) => {
     try {
       const id = safeProjectId(request.params.id);
@@ -1876,7 +1990,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       ]);
       let inputInfo = statusInfo;
       try { inputInfo = await stat(path.join(jobDir, 'input.json')); } catch {}
-      if (['complete', 'error'].includes(status.phase) && activeJob?.jobId === id) await clearActiveJob(id);
+      if (terminalJobPhases.has(status.phase) && activeJob?.jobId === id) await clearActiveJob(id);
       let result;
       try { result = JSON.parse(await readFile(path.join(jobDir, 'result.json'), 'utf8')); } catch {}
       const telemetry = {

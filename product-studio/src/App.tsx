@@ -4,10 +4,10 @@ import {
   Popconfirm, Progress, Select, Slider, Space, Switch, Table, Tabs, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LoadingOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, SwapOutlined, UserOutlined,
+  AudioOutlined, CaretDownOutlined, CaretLeftOutlined, CaretRightOutlined, CaretUpOutlined, CloseOutlined, DeleteOutlined, DragOutlined, EditOutlined, FolderOpenOutlined, LoadingOutlined, LockOutlined, PauseOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SoundOutlined, StopOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth } from './api';
+import { api, type JobTelemetry, type RenderCaption, type RenderInfo, type RuntimeHealth, type SceneKeyframeResult } from './api';
 import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMatchingFragment } from './fragmentState';
 import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, fragmentAudioSelectionUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
 import { deliveryAudioBufferedPercent, deliveryAudioErrorMessage, deliveryAudioRetryUrl, type DeliveryAudioStatus } from './deliveryAudioState';
@@ -18,6 +18,7 @@ import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerifi
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
 import { buildSceneAudioRanges, DEFAULT_STORYBOARD_STYLE, formatStoryboardTime, STORYBOARD_STYLE_PRESETS } from './storyboard';
 import { createManualStoryboardShot, mergeStoryboardShots, splitStoryboardShot, toggleStoryboardShotSelection, type ManualStoryboardSceneDraft } from './storyboardScenes';
+import { buildStoryboardKeyframeQueue, runStoryboardKeyframeBatch, storyboardKeyframeProgressPercent, storyboardKeyframeRemainingSeconds, type StoryboardKeyframeBatchProgress, type StoryboardKeyframeQueueItem } from './storyboardKeyframeBatch';
 import { clampProjectActionDockPlacement, nearestProjectActionDockEdge, normalizeProjectActionDockPlacement, projectActionDockOffset, type ProjectActionDockEdge, type ProjectActionDockPlacement } from './projectActionDock';
 import { nextProjectActionDisplay, projectActionAvailability, projectActionDisabledReason, projectActionTargetWorkspace } from './projectActionMode';
 import { beginProjectSwitch, failProjectSwitch, isCurrentProjectSwitch, type ProjectSwitchState } from './projectSwitchState';
@@ -36,6 +37,10 @@ const { Title, Text, Paragraph } = Typography;
 const PROJECT_ACTION_IDLE_COLLAPSE_MS = 10_000;
 const PROJECT_ACTION_DOCK_STORAGE_KEY = 'index-voice-project-action-dock-v1';
 type StudioJobKind = 'analyze' | 'storyboard' | 'voice' | 'render';
+
+function operationCancelled(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
 
 const EMPTY_MANUAL_STORYBOARD_DRAFT: ManualStoryboardSceneDraft = {
   startSegmentOrder: 0,
@@ -77,6 +82,14 @@ function formatJobDuration(startedAt?: string, observedAt?: string) {
   const seconds = Math.floor(Math.max(0, elapsed) / 1000);
   const minutes = Math.floor(seconds / 60);
   return minutes ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
+}
+
+function formatApproximateSeconds(value?: number) {
+  if (!Number.isFinite(value) || Number(value) <= 0) return '正在采样单张耗时';
+  const seconds = Math.round(Number(value));
+  if (seconds < 60) return `约 ${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `约 ${minutes} 分 ${seconds % 60} 秒`;
 }
 
 function formatJobBytes(value?: number) {
@@ -310,6 +323,7 @@ function Studio() {
   const [projectSwitch, setProjectSwitch] = useState<ProjectSwitchState>({ phase: 'idle' });
   const projectSwitchRef = useRef<ProjectSwitchState>({ phase: 'idle' });
   const projectSwitchSequenceRef = useRef(0);
+  const projectSwitchAbortRef = useRef<AbortController | undefined>(undefined);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -340,11 +354,16 @@ function Studio() {
   const [roleReplacementSaving, setRoleReplacementSaving] = useState(false);
   const roleReplacementSavingRef = useRef(false);
   const [profileGenerating, setProfileGenerating] = useState(false);
+  const profileAbortRef = useRef<AbortController | undefined>(undefined);
   const [portraitGenerating, setPortraitGenerating] = useState(false);
+  const portraitAbortRef = useRef<AbortController | undefined>(undefined);
   const [storyboardStyle, setStoryboardStyle] = useState(DEFAULT_STORYBOARD_STYLE);
   const [targetShotSeconds, setTargetShotSeconds] = useState(10);
   const [keyframeGeneratingSceneId, setKeyframeGeneratingSceneId] = useState<string>();
   const [allKeyframesGenerating, setAllKeyframesGenerating] = useState(false);
+  const [storyboardKeyframeProgress, setStoryboardKeyframeProgress] = useState<StoryboardKeyframeBatchProgress>();
+  const [storyboardKeyframeProgressNow, setStoryboardKeyframeProgressNow] = useState(Date.now());
+  const keyframeAbortRef = useRef<AbortController | undefined>(undefined);
   const [manualStoryboardOpen, setManualStoryboardOpen] = useState(false);
   const [manualStoryboardDraft, setManualStoryboardDraft] = useState<ManualStoryboardSceneDraft>(EMPTY_MANUAL_STORYBOARD_DRAFT);
   const [selectedStoryboardShotIds, setSelectedStoryboardShotIds] = useState<string[]>([]);
@@ -353,7 +372,9 @@ function Studio() {
   const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsTesting, setSettingsTesting] = useState(false);
+  const settingsTestAbortRef = useRef<AbortController | undefined>(undefined);
   const [directorTesting, setDirectorTesting] = useState(false);
+  const directorTestAbortRef = useRef<AbortController | undefined>(undefined);
   const [availableAiModels, setAvailableAiModels] = useState<string[]>([]);
   const [availableDirectorModels, setAvailableDirectorModels] = useState<string[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string>();
@@ -367,8 +388,17 @@ function Studio() {
   const [segmentCandidateSelection, setSegmentCandidateSelection] = useState<{ order: number; candidateId: string }>();
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
-  const jobRunning = Boolean(job && !['complete', 'error'].includes(job.phase));
+  const jobRunning = Boolean(job && !['complete', 'error', 'cancelled'].includes(job.phase));
+  const keyframeGenerationActive = allKeyframesGenerating || Boolean(keyframeGeneratingSceneId);
+  const projectLocked = jobRunning || keyframeGenerationActive || profileGenerating || portraitGenerating;
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
+
+  useEffect(() => {
+    if (!keyframeGenerationActive) return undefined;
+    setStoryboardKeyframeProgressNow(Date.now());
+    const timer = window.setInterval(() => setStoryboardKeyframeProgressNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [keyframeGenerationActive]);
   const jobLabels: Record<StudioJobKind, string> = { analyze: 'AI 文本导演', storyboard: 'AI 分镜重新生成', voice: '角色音色生成', render: '完整音频渲染' };
   const modelTelemetry = job?.telemetry?.modelRuntime ?? job?.telemetry?.voiceRuntime;
   const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (!modelTelemetry || modelTelemetry.processAlive));
@@ -377,7 +407,7 @@ function Studio() {
   const visibleSegments = useMemo(() => showMissingSegmentsOnly ? filterSegmentsWithoutMatchingFragments(render.fragments, project?.segments ?? []) : (project?.segments ?? []), [showMissingSegmentsOnly, render.fragments, project?.segments]);
   const segmentRegenerationActive = segmentRegeneration.phase !== 'idle';
   const projectActionInput = {
-    jobRunning,
+    jobRunning: projectLocked,
     dirty,
     hasSource: Boolean(project?.source_text.trim()),
     hasRoles: Boolean(project?.roles.length),
@@ -392,15 +422,18 @@ function Studio() {
   };
 
   const switchProject = async (targetId: string, availableProjects = projects, force = false) => {
-    if (!targetId || (!force && targetId === projectId) || projectSwitchRef.current.phase === 'loading') return;
+    if (projectLocked || !targetId || (!force && targetId === projectId) || projectSwitchRef.current.phase === 'loading') return;
     const sequence = ++projectSwitchSequenceRef.current;
+    const controller = new AbortController();
+    projectSwitchAbortRef.current = controller;
     const targetLabel = availableProjects.find(item => item.value === targetId)?.label || targetId;
     updateProjectSwitch(beginProjectSwitch(sequence, targetId, targetLabel));
     try {
-      const [data, latest] = await Promise.all([api.project(targetId), api.latestRender(targetId)]);
+      const [data, latest] = await Promise.all([api.project(targetId, controller.signal), api.latestRender(targetId, controller.signal)]);
       if (!isCurrentProjectSwitch(projectSwitchRef.current, sequence, targetId)) return;
       setProjectId(targetId);
       setProject(data);
+      setStoryboardKeyframeProgress(undefined);
       setRender(latest);
       setDirty(false);
       setSelectedSegmentOrders([]);
@@ -416,12 +449,22 @@ function Studio() {
       setSelectedStoryboardShotIds([]);
       updateProjectSwitch({ phase: 'idle' });
     } catch (error) {
+      if (operationCancelled(error)) return;
       const errorMessage = (error as Error).message;
       const failedState = failProjectSwitch(projectSwitchRef.current, sequence, targetId, errorMessage);
       if (failedState === projectSwitchRef.current) return;
       updateProjectSwitch(failedState);
       message.error(`工程“${targetLabel}”读取失败：${errorMessage}`);
+    } finally {
+      if (projectSwitchAbortRef.current === controller) projectSwitchAbortRef.current = undefined;
     }
+  };
+
+  const cancelProjectSwitch = () => {
+    projectSwitchAbortRef.current?.abort();
+    projectSwitchSequenceRef.current += 1;
+    updateProjectSwitch({ phase: 'idle' });
+    message.info('工程切换已取消，当前工程保持不变');
   };
 
   useEffect(() => {
@@ -500,7 +543,7 @@ function Studio() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (!job || ['complete', 'error'].includes(job.phase)) return;
+    if (!job || ['complete', 'error', 'cancelled'].includes(job.phase)) return;
     let cancelled = false;
     let timer: number | undefined;
     const stopPolling = () => {
@@ -512,7 +555,7 @@ function Studio() {
         const status = await api.job(job.id);
         if (cancelled) return;
         setJob(current => current?.id === job.id ? { ...current, ...status } : current);
-        if (status.phase === 'complete' || status.phase === 'error') {
+        if (['complete', 'error', 'cancelled'].includes(status.phase)) {
           stopPolling();
           if (status.phase === 'complete') {
             const [updated, latest, health] = await Promise.all([api.project(job.projectId), api.latestRender(job.projectId), api.health()]);
@@ -520,7 +563,8 @@ function Studio() {
               setProject(updated); setRender(latest); setRuntimeHealth(health); setDirty(false); message.success(status.message);
               setSelectedSegmentOrders([]); setSplitEditor(undefined);
             }
-          } else message.error(status.message);
+          } else if (status.phase === 'cancelled') message.info(status.message);
+          else message.error(status.message);
         }
       } catch (error) {
         if (!cancelled) {
@@ -534,6 +578,15 @@ function Studio() {
     timer = window.setInterval(poll, 1000);
     return () => { cancelled = true; stopPolling(); };
   }, [job?.id, message]);
+
+  useEffect(() => () => {
+    projectSwitchAbortRef.current?.abort();
+    profileAbortRef.current?.abort();
+    portraitAbortRef.current?.abort();
+    keyframeAbortRef.current?.abort();
+    settingsTestAbortRef.current?.abort();
+    directorTestAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     let frame = 0;
@@ -811,25 +864,35 @@ function Studio() {
 
   const expandCharacterProfile = async () => {
     if (!project || !roleDraft || !roleAssetDraft || jobRunning) return;
+    const controller = new AbortController();
+    profileAbortRef.current = controller;
     setProfileGenerating(true);
     try {
-      const result = await api.expandCharacterProfile(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age });
+      const result = await api.expandCharacterProfile(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age }, controller.signal);
       updateRoleDraft(3, result.profile);
       setRoleAssetDraft(current => current ? { ...current, profile_updated_by: result.model } : current);
       message.success(`人物小传已由 ${result.model} 扩写，请核对后应用角色设置`);
-    } catch (error) { message.error((error as Error).message); }
-    finally { setProfileGenerating(false); }
+    } catch (error) { operationCancelled(error) ? message.info('人物小传扩写已取消') : message.error((error as Error).message); }
+    finally {
+      if (profileAbortRef.current === controller) profileAbortRef.current = undefined;
+      setProfileGenerating(false);
+    }
   };
 
   const generateCharacterPortrait = async () => {
     if (!project || !roleDraft || !roleAssetDraft || jobRunning) return;
+    const controller = new AbortController();
+    portraitAbortRef.current = controller;
     setPortraitGenerating(true);
     try {
-      const result = await api.generateCharacterPortrait(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age, portraitStyle: roleAssetDraft.portrait_style, portraitPrompt: roleAssetDraft.portrait_notes });
+      const result = await api.generateCharacterPortrait(project.project_id, roleDraft[0], { name: roleDraft[1], profile: roleDraft[3], gender: roleAssetDraft.gender, age: roleAssetDraft.age, portraitStyle: roleAssetDraft.portrait_style, portraitPrompt: roleAssetDraft.portrait_notes }, controller.signal);
       setRoleAssetDraft(current => current ? { ...current, portrait_url: result.portraitUrl, portrait_prompt: result.portraitPrompt, portrait_style: result.portraitStyle } : current);
       message.success(`角色形象已由 ${result.model} 生成，请应用角色设置并保存工程`);
-    } catch (error) { message.error((error as Error).message); }
-    finally { setPortraitGenerating(false); }
+    } catch (error) { operationCancelled(error) ? message.info('角色形象生成已取消') : message.error((error as Error).message); }
+    finally {
+      if (portraitAbortRef.current === controller) portraitAbortRef.current = undefined;
+      setPortraitGenerating(false);
+    }
   };
 
   const saveAiMediaSettings = async () => {
@@ -845,26 +908,40 @@ function Studio() {
   };
 
   const testAiMediaSettings = async () => {
+    const controller = new AbortController();
+    settingsTestAbortRef.current = controller;
     setSettingsTesting(true);
     try {
-      const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp });
+      const result = await api.testAiMediaSettings({ endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp }, controller.signal);
       setAvailableAiModels(result.models);
       const missing = [settingsDraft.textModel, settingsDraft.imageModel].filter(model => model && !result.models.includes(model));
       if (missing.length) message.warning(`连接成功，已加载 ${result.modelCount} 个模型。当前选择不在可用列表：${missing.join('、')}`);
       else message.success(`连接成功，已加载 ${result.modelCount} 个可用模型`);
-    } catch (error) { setAvailableAiModels([]); message.error((error as Error).message); }
-    finally { setSettingsTesting(false); }
+    } catch (error) {
+      if (operationCancelled(error)) message.info('兼容 Endpoint 测试已取消');
+      else { setAvailableAiModels([]); message.error((error as Error).message); }
+    } finally {
+      if (settingsTestAbortRef.current === controller) settingsTestAbortRef.current = undefined;
+      setSettingsTesting(false);
+    }
   };
 
   const testDirectorSettings = async () => {
+    const controller = new AbortController();
+    directorTestAbortRef.current = controller;
     setDirectorTesting(true);
     try {
-      const result = await api.testDirectorSettings({ directorProvider: settingsDraft.directorProvider, ollamaEndpoint: settingsDraft.ollamaEndpoint, endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp });
+      const result = await api.testDirectorSettings({ directorProvider: settingsDraft.directorProvider, ollamaEndpoint: settingsDraft.ollamaEndpoint, endpoint: settingsDraft.endpoint, apiKey: settingsDraft.apiKey || undefined, instanceId: settingsDraft.instanceId, allowInsecureHttp: settingsDraft.allowInsecureHttp }, controller.signal);
       setAvailableDirectorModels(result.models);
       if (settingsDraft.directorModel && !result.models.includes(settingsDraft.directorModel)) message.warning(`全文分析服务已连接。当前模型 ${settingsDraft.directorModel} 不在可用列表中`);
       else message.success(`全文分析服务已连接，加载了 ${result.modelCount} 个模型`);
-    } catch (error) { setAvailableDirectorModels([]); message.error((error as Error).message); }
-    finally { setDirectorTesting(false); }
+    } catch (error) {
+      if (operationCancelled(error)) message.info('全文分析服务测试已取消');
+      else { setAvailableDirectorModels([]); message.error((error as Error).message); }
+    } finally {
+      if (directorTestAbortRef.current === controller) directorTestAbortRef.current = undefined;
+      setDirectorTesting(false);
+    }
   };
 
   const applyRoleDraft = () => {
@@ -911,7 +988,7 @@ function Studio() {
   };
 
   const updateSceneFields = (sceneId: string, values: Record<string, unknown>) => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     setProject(current => {
       if (!current) return current;
       const document = { ...(current.document ?? {}) };
@@ -927,7 +1004,7 @@ function Studio() {
   const updateScene = (sceneId: string, field: string, value: unknown) => updateSceneFields(sceneId, { [field]: value });
 
   const updateShotFields = (sceneId: string, shotId: string, values: Record<string, unknown>) => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     setProject(current => {
       if (!current) return current;
       const document = { ...(current.document ?? {}) };
@@ -945,51 +1022,100 @@ function Studio() {
     setDirty(true);
   };
 
+  const applyGeneratedKeyframe = (sceneId: string, shotId: string, result: SceneKeyframeResult) => {
+    setProject(current => {
+      if (!current) return current;
+      const document = { ...(current.document ?? {}) };
+      const scenes = (Array.isArray(document.scenes) ? document.scenes : []).map(item => {
+        const scene = item as Record<string, unknown>;
+        if (String(scene.id || '') !== sceneId) return item;
+        const shots = (Array.isArray(scene.shots) ? scene.shots : []).map(raw => {
+          const shot = raw as Record<string, unknown>;
+          if (String(shot.id || '') !== shotId) return raw;
+          return {
+            ...shot,
+            keyframe_url: result.keyframeUrl,
+            keyframe_prompt: result.keyframePrompt,
+            keyframe_style: result.keyframeStyle,
+            keyframe_generated_at: result.generatedAt,
+            keyframe_model: result.model,
+            identity_reference_mode: result.identityReferenceMode,
+            reference_characters: result.referenceCharacters,
+          };
+        });
+        return { ...scene, shots };
+      });
+      return { ...current, document: { ...document, scenes } };
+    });
+    setDirty(true);
+  };
+
+  const runKeyframeQueue = async (items: StoryboardKeyframeQueueItem[], mode: 'single' | 'all', keyframeStyle: string, signal: AbortSignal, onItemGenerated?: () => void) => {
+    if (!project) return [];
+    const shots = items.map(item => item.shot);
+    return runStoryboardKeyframeBatch<SceneKeyframeResult>({
+      items,
+      mode,
+      preflight: mode === 'all'
+        ? () => api.preflightStoryboardShotKeyframes(project.project_id, shots, keyframeStyle, signal)
+        : async () => undefined,
+      generate: item => api.generateStoryboardShotKeyframe(project.project_id, item.sceneId, item.shotId, item.shot, keyframeStyle, signal),
+      onGenerated: (item, result) => {
+        applyGeneratedKeyframe(item.sceneId, item.shotId, result);
+        onItemGenerated?.();
+      },
+      onProgress: progress => {
+        setStoryboardKeyframeProgress(progress);
+        if (progress.phase === 'generating' && progress.currentShotId) setKeyframeGeneratingSceneId(progress.currentShotId);
+      },
+      signal,
+    });
+  };
+
   const generateStoryboardShotKeyframe = async (sceneId: string, shot: Record<string, unknown>) => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     const shotId = String(shot.id || '');
     const keyframeStyle = String(shot.keyframe_style || storyboardStyle || DEFAULT_STORYBOARD_STYLE);
+    const controller = new AbortController();
+    keyframeAbortRef.current = controller;
     setKeyframeGeneratingSceneId(shotId);
     try {
-      const result = await api.generateStoryboardShotKeyframe(project.project_id, sceneId, shotId, shot, keyframeStyle);
-      updateShotFields(sceneId, shotId, {
-        keyframe_url: result.keyframeUrl, keyframe_prompt: result.keyframePrompt, keyframe_style: result.keyframeStyle,
-        keyframe_generated_at: result.generatedAt, keyframe_model: result.model,
-        identity_reference_mode: result.identityReferenceMode, reference_characters: result.referenceCharacters,
-      });
+      await runKeyframeQueue([{ sceneId, shotId, title: String(shot.title || shotId), shot }], 'single', keyframeStyle, controller.signal);
       message.success(`分镜镜头 ${shotId} 的关键帧已生成，请保存工程`);
-    } catch (error) { message.error((error as Error).message); }
-    finally { setKeyframeGeneratingSceneId(undefined); }
+    } catch (error) { operationCancelled(error) ? message.info(`分镜镜头 ${shotId} 的关键帧生成已取消`) : message.error(`关键帧生成失败：${(error as Error).message}`); }
+    finally {
+      if (keyframeAbortRef.current === controller) keyframeAbortRef.current = undefined;
+      setKeyframeGeneratingSceneId(undefined);
+    }
   };
 
   const generateAllSceneKeyframes = async () => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     const scenes = (Array.isArray(project.document?.scenes) ? project.document.scenes : []) as Array<Record<string, unknown>>;
-    const shots = scenes.flatMap(scene => (Array.isArray(scene.shots) ? scene.shots : []) as Array<Record<string, unknown>>);
-    if (!shots.length) return;
+    const items = buildStoryboardKeyframeQueue(scenes);
+    if (!items.length) return;
+    let completedCount = 0;
+    const controller = new AbortController();
+    keyframeAbortRef.current = controller;
     setAllKeyframesGenerating(true);
     try {
-      const result = await api.generateStoryboardShotKeyframes(project.project_id, shots, storyboardStyle);
-      const generatedById = new Map(result.keyframes.map(item => [String(item.shotId || item.sceneId), item]));
-      setProject(current => {
-        if (!current) return current;
-        const document = { ...(current.document ?? {}) };
-        const currentScenes = (Array.isArray(document.scenes) ? document.scenes : []) as Array<Record<string, unknown>>;
-        const updatedScenes = currentScenes.map(scene => ({ ...scene, shots: (Array.isArray(scene.shots) ? scene.shots : []).map(raw => {
-          const shot = raw as Record<string, unknown>;
-          const generated = generatedById.get(String(shot.id || ''));
-          return generated ? { ...shot, keyframe_url: generated.keyframeUrl, keyframe_prompt: generated.keyframePrompt, keyframe_style: generated.keyframeStyle, keyframe_generated_at: generated.generatedAt, keyframe_model: generated.model, identity_reference_mode: generated.identityReferenceMode, reference_characters: generated.referenceCharacters } : shot;
-        }) }));
-        return { ...current, document: { ...document, scenes: updatedScenes } };
-      });
-      setDirty(true);
-      message.success(`${result.generatedCount} 个分镜镜头关键帧已全量生成，请保存工程`);
-    } catch (error) { message.error((error as Error).message); }
-    finally { setAllKeyframesGenerating(false); }
+      const results = await runKeyframeQueue(items, 'all', storyboardStyle, controller.signal, () => { completedCount += 1; });
+      completedCount = results.length;
+      message.success(`${results.length} 个分镜镜头关键帧已全量生成，请保存工程`);
+    } catch (error) {
+      if (operationCancelled(error)) message.info(`全量关键帧生成已取消，已完成的 ${completedCount} 张图片继续保留，请按需保存工程`);
+      else message.error(`全量关键帧生成已停止，已完成 ${completedCount} / ${items.length} 张：${(error as Error).message}`);
+    } finally {
+      if (keyframeAbortRef.current === controller) keyframeAbortRef.current = undefined;
+      setKeyframeGeneratingSceneId(undefined);
+      setAllKeyframesGenerating(false);
+    }
   };
 
+  const cancelKeyframeGeneration = () => keyframeAbortRef.current?.abort();
+
   const regenerateAllStoryboard = async () => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     if (dirty && !(await save())) return;
     try {
       const started = await api.regenerateStoryboard(project.project_id, targetShotSeconds);
@@ -1011,14 +1137,14 @@ function Studio() {
   };
 
   const openManualStoryboard = () => {
-    if (!documentSegments.length || jobRunning) return;
+    if (!documentSegments.length || projectLocked) return;
     const firstOrder = Number(documentSegments[0].order || 0);
     setManualStoryboardDraft({ ...EMPTY_MANUAL_STORYBOARD_DRAFT, startSegmentOrder: firstOrder, endSegmentOrder: firstOrder });
     setManualStoryboardOpen(true);
   };
 
   const createManualStoryboard = () => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     try {
       const result = createManualStoryboardShot(project.document || {}, manualStoryboardDraft);
       setProject({ ...project, document: result.document });
@@ -1029,7 +1155,7 @@ function Studio() {
   };
 
   const splitShot = (sceneId: string, shotId: string) => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     try {
       const result = splitStoryboardShot(project.document || {}, sceneId, shotId);
       setProject({ ...project, document: result.document });
@@ -1040,7 +1166,7 @@ function Studio() {
   };
 
   const mergeShots = (sceneId: string) => {
-    if (!project || jobRunning) return;
+    if (!project || projectLocked) return;
     try {
       const result = mergeStoryboardShots(project.document || {}, sceneId, selectedStoryboardShotIds);
       setProject({ ...project, document: result.document });
@@ -1051,7 +1177,7 @@ function Studio() {
   };
 
   const save = async (): Promise<boolean> => {
-    if (!project || jobRunning) return false;
+    if (!project || projectLocked) return false;
     setSaving(true);
     try { setProject(await api.save(project)); setDirty(false); message.success('全部修改已保存到工程文件'); return true; }
     catch (error) { message.error((error as Error).message); return false; }
@@ -1059,7 +1185,7 @@ function Studio() {
   };
 
   const runJob = async (kind: 'analyze' | 'voice' | 'render') => {
-    if (!project) return;
+    if (!project || projectLocked) return;
     if (dirty && !(await save())) return;
     let started: { jobId: string };
     try { started = await api[kind](project.project_id); }
@@ -1067,6 +1193,24 @@ function Studio() {
     setJob({ id: started.jobId, kind, projectId: project.project_id, phase: 'queued', fraction: 0, message: '任务已进入队列' });
     setActiveTab(projectActionTargetWorkspace(kind));
     window.requestAnimationFrame(() => document.getElementById('project')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+
+  const cancelActiveJob = async () => {
+    if (!job || !jobRunning || job.phase === 'cancelling') return;
+    const current = job;
+    setJob(value => value?.id === current.id ? { ...value, phase: 'cancelling', message: '正在取消任务并停止后台推理' } : value);
+    try {
+      const cancelled = await api.cancelJob(current.id);
+      setJob(value => value?.id === current.id ? { ...value, phase: 'cancelled', message: cancelled.message } : value);
+      const [updated, latest, health] = await Promise.all([api.project(current.projectId), api.latestRender(current.projectId), api.health()]);
+      setProject(updated);
+      setRender(latest);
+      setRuntimeHealth(health);
+      message.info(cancelled.runtimeTerminated ? '任务已取消，对应后台推理进程已经停止' : cancelled.message);
+    } catch (error) {
+      setJob(value => value?.id === current.id ? { ...value, phase: 'error', message: `取消失败：${(error as Error).message}` } : value);
+      message.error(`任务取消失败：${(error as Error).message}`);
+    }
   };
 
   const runSpecialRender = async (request: () => Promise<{ jobId: string }>, queuedMessage: string) => {
@@ -1173,6 +1317,12 @@ function Studio() {
     });
   }) : [];
   const uniqueStoryboardIdentityIssues = [...new Set(storyboardIdentityIssues)];
+  const storyboardKeyframePercent = storyboardKeyframeProgressPercent(storyboardKeyframeProgress);
+  const liveStoryboardKeyframeProgress = storyboardKeyframeProgress && keyframeGenerationActive
+    ? { ...storyboardKeyframeProgress, updatedAt: Math.max(storyboardKeyframeProgress.updatedAt, storyboardKeyframeProgressNow) }
+    : storyboardKeyframeProgress;
+  const storyboardKeyframeRemaining = storyboardKeyframeRemainingSeconds(liveStoryboardKeyframeProgress);
+  const storyboardKeyframeElapsed = liveStoryboardKeyframeProgress ? Math.max(0, Math.round((liveStoryboardKeyframeProgress.updatedAt - liveStoryboardKeyframeProgress.startedAt) / 1000)) : 0;
   const lowConfidenceSegments = (Array.isArray(project?.document?.segments) ? project.document.segments : []).filter(item => Number((item as Record<string, unknown>).speaker_confidence ?? 1) < 0.7) as Array<Record<string, unknown>>;
   const kindOptions = [
     { value: 'narrator', label: '旁白' }, { value: 'character', label: '人物' }, { value: 'anchor', label: '主播' },
@@ -1353,7 +1503,7 @@ function Studio() {
           </div>
           <small className="project-actions-hint">手工展开 · 拖动停靠 · 10 秒闲置隐藏</small>
           <small className="project-actions-context">当前工作区：{workspaceLabels[activeTab] || activeTab}</small>
-          <Button icon={<SettingOutlined />} disabled={!projectActions.settings} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
+          <Button icon={<SettingOutlined />} disabled={keyframeGenerationActive || !projectActions.settings} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
           <Button icon={<SaveOutlined />} loading={saving} disabled={!projectActions.save} onClick={save}>保存当前工程</Button>
           <Tooltip title={projectActionDisabledReason('analyze', projectActionInput)}><span className="project-action-button-wrapper"><Button disabled={!projectActions.analyze} onClick={() => runJob('analyze')}>AI 重新分析全文</Button></span></Tooltip>
           <Tooltip title={projectActionDisabledReason('voice', projectActionInput)}><span className="project-action-button-wrapper"><Button disabled={!projectActions.voice} icon={<SoundOutlined />} onClick={() => runJob('voice')}>生成角色音色</Button></span></Tooltip>
@@ -1364,17 +1514,17 @@ function Studio() {
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
-          <div className="project-select"><Text strong>打开声音工程</Text><Select aria-label="打开声音工程" disabled={jobRunning || projectSwitch.phase === 'loading'} showSearch value={projectSwitch.phase === 'loading' ? projectSwitch.targetId : projectId} options={projects} onChange={value => void switchProject(value)} suffixIcon={projectSwitch.phase === 'loading' ? <LoadingOutlined className="project-switch-spinner" /> : <FolderOpenOutlined />} /></div>
-          <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
-          <Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
-          <Popconfirm disabled={jobRunning || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>
-            <Button disabled={jobRunning || !project} loading={deletingProject} danger icon={<DeleteOutlined />}>删除工程</Button>
+          <div className="project-select"><Text strong>打开声音工程</Text><Select aria-label="打开声音工程" disabled={projectLocked || projectSwitch.phase === 'loading'} showSearch value={projectSwitch.phase === 'loading' ? projectSwitch.targetId : projectId} options={projects} onChange={value => void switchProject(value)} suffixIcon={projectSwitch.phase === 'loading' ? <LoadingOutlined className="project-switch-spinner" /> : <FolderOpenOutlined />} /></div>
+          <Button disabled={projectLocked} icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
+          <Button disabled={projectLocked} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
+          <Popconfirm disabled={projectLocked || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>
+            <Button disabled={projectLocked || !project} loading={deletingProject} danger icon={<DeleteOutlined />}>删除工程</Button>
           </Popconfirm>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={jobRunning || !dirty} onClick={save}>保存当前工程</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={projectLocked || !dirty} onClick={save}>保存当前工程</Button>
           {dirty ? <span className="project-state">有未保存修改，请点击保存</span> : <span className="project-state">所有修改已保存</span>}
           <span className={`model-state${runtimeHealth?.voiceModel.modelLoaded ? ' model-state-hot' : ''}`} title={runtimeHealth?.voiceModel.pid ? `VoiceDesign Runtime PID ${runtimeHealth.voiceModel.pid}` : '首次生成音色时按需加载'}>{runtimeHealth?.voiceModel.modelLoaded ? 'Voice Model Hot / 音色模型已驻留' : 'Voice Model Cold / 首次使用时加载'}</span>
         </Flex>
-        {projectSwitch.phase === 'loading' && <div className="project-switch-status" role="status" aria-live="polite"><LoadingOutlined className="project-switch-spinner" /><div><Text strong>正在切换到“{projectSwitch.targetLabel}”</Text><Text>正在读取远程工程和最近交付，当前工程会保留到读取成功。</Text></div></div>}
+        {projectSwitch.phase === 'loading' && <div className="project-switch-status" role="status" aria-live="polite"><LoadingOutlined className="project-switch-spinner" /><div><Text strong>正在切换到“{projectSwitch.targetLabel}”</Text><Text>正在读取远程工程和最近交付，当前工程会保留到读取成功。</Text></div><Button danger icon={<StopOutlined />} onClick={cancelProjectSwitch}>取消切换</Button></div>}
         {projectSwitch.phase === 'error' && <Alert className="project-switch-error" type="error" showIcon message={`工程“${projectSwitch.targetLabel}”读取失败，当前工程保持不变`} description={projectSwitch.message} action={<Button size="small" onClick={() => void switchProject(projectSwitch.targetId)}>重新读取</Button>} />}
         {job && !jobRunning && <div className={`job-result job-result-${job.phase}`}><Text>{job.message}</Text></div>}
       </div>
@@ -1386,19 +1536,34 @@ function Studio() {
           <Text>{jobRuntimeResponsive ? '后台进程响应中' : '正在等待后台进程确认'} · 已运行 {formatJobDuration(job.telemetry?.startedAt, job.telemetry?.observedAt)}</Text>
           {modelTelemetry && <Text>{modelTelemetry.engine === 'render' ? 'IndexTTS' : 'VoiceDesign'} 模型 {modelTelemetry.modelLoaded ? '已加载' : '加载中'} · 内存 {formatJobBytes(modelTelemetry.rssBytes)} · 累计读取 {formatJobBytes(modelTelemetry.readBytes)} / 权重 {formatJobBytes(modelTelemetry.modelBytes)}</Text>}
         </div>
+        <Button className="job-cancel-button" danger icon={<StopOutlined />} loading={job.phase === 'cancelling'} disabled={job.phase === 'cancelling'} onClick={() => void cancelActiveJob()}>{job.phase === 'cancelling' ? '正在取消' : '取消当前任务'}</Button>
       </aside>}
       {!project || !presets ? <Card><Progress percent={60} status="active" /><Text>正在载入工程与导演预设</Text></Card> : <>
-        <div><Tabs className="workspace-tabs" size="large" activeKey={activeTab} onChange={setActiveTab} items={[
+        <div><Tabs className={`workspace-tabs${keyframeGenerationActive ? ' is-keyframe-locked' : ''}`} size="large" activeKey={activeTab} onChange={value => { if (!projectLocked) setActiveTab(value); }} items={[
           { key: 'source', label: '全文与体裁', children: <Card title="作品原文与 AI 导演条件"><div className="source-grid"><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={project.content_type} options={[{ value: 'auto', label: '自动识别' }, { value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'commentary', label: '一般评论' }, { value: 'story', label: '故事体' }]} onChange={value => patchProject('content_type', value)} /></div><div><Text strong>导演补充</Text><Input disabled={jobRunning} value={project.guidance} placeholder="例如：冷峻悬疑，旁白克制，人物对白保留地域差异" onChange={event => patchProject('guidance', event.target.value)} /></div></div><Text type="secondary">自动识别会先判断稿件类型。新闻与一般评论固定使用一个主播，不把稿件中出现的人物拆成声音角色；主播特征在角色资产中人工设置。</Text><Text strong>完整原文</Text><Input.TextArea disabled={jobRunning} className="source-text" value={project.source_text} rows={18} placeholder="在这里粘贴整篇小说、新闻、评论或故事。AI 会先按体裁选择单主播或多角色分析管线。" onChange={event => patchProject('source_text', event.target.value)} /><Text type="secondary">{project.source_text.length.toLocaleString()} 字符，{project.chapters?.length ?? 0} 个已保存章节索引</Text></Card> },
-          { key: 'scenes', label: `视频分镜 ${storyboardShotRows.length}`, children: <Card className="storyboard-workspace-card" title="视频分镜与关键帧" extra={<Space wrap>
-            <Select aria-label="目标镜头时长" disabled={jobRunning} value={targetShotSeconds} options={[5, 8, 10, 12, 15, 20].map(value => ({ value, label: `约 ${value} 秒/镜头` }))} onChange={setTargetShotSeconds} />
+          { key: 'scenes', label: `视频分镜 ${storyboardShotRows.length}`, children: <Card aria-busy={keyframeGenerationActive} className={`storyboard-workspace-card${keyframeGenerationActive ? ' is-keyframe-locked' : ''}`} title="视频分镜与关键帧" extra={<Space wrap>
+            <Select aria-label="目标镜头时长" disabled={projectLocked} value={targetShotSeconds} options={[5, 8, 10, 12, 15, 20].map(value => ({ value, label: `约 ${value} 秒/镜头` }))} onChange={setTargetShotSeconds} />
             <Popconfirm title="AI 重新生成全部分镜" description="将重新划分场景与场景小记，并清除旧场景关键帧。角色、当前分句、人工朗读文字、音频、纠音和导演记忆会保留。" okText="开始重新生成" cancelText="取消" onConfirm={() => void regenerateAllStoryboard()}>
-              <Button icon={<ReloadOutlined />} disabled={jobRunning || !project.source_text.trim() || !documentSegments.length}>AI 重新生成全部分镜</Button>
+              <Button icon={<ReloadOutlined />} disabled={projectLocked || !project.source_text.trim() || !documentSegments.length}>AI 重新生成全部分镜</Button>
             </Popconfirm>
-            <Button icon={<PlusOutlined />} disabled={jobRunning || !documentSegments.length} onClick={openManualStoryboard}>手工创建分镜镜头</Button>
-            <Select aria-label="全量关键帧风格" disabled={jobRunning || allKeyframesGenerating} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} />
-            <Button type="primary" icon={<PictureOutlined />} loading={allKeyframesGenerating} disabled={jobRunning || !allSceneNotesReady || Boolean(keyframeGeneratingSceneId) || uniqueStoryboardIdentityIssues.length > 0} onClick={() => void generateAllSceneKeyframes()}>{storyboardShotRows.some(shot => shot.keyframe_url) ? `重新生成全部 ${storyboardShotRows.length} 张关键帧` : `生成全部 ${storyboardShotRows.length} 张关键帧`}</Button>
+            <Button icon={<PlusOutlined />} disabled={projectLocked || !documentSegments.length} onClick={openManualStoryboard}>手工创建分镜镜头</Button>
+            <Select aria-label="全量关键帧风格" disabled={projectLocked} value={storyboardStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={setStoryboardStyle} />
+            {allKeyframesGenerating
+              ? <Button danger icon={<StopOutlined />} onClick={cancelKeyframeGeneration}>取消全量关键帧</Button>
+              : <Button type="primary" icon={<PictureOutlined />} disabled={projectLocked || !allSceneNotesReady || uniqueStoryboardIdentityIssues.length > 0} onClick={() => void generateAllSceneKeyframes()}>{storyboardShotRows.some(shot => shot.keyframe_url) ? `重新生成全部 ${storyboardShotRows.length} 张关键帧` : `生成全部 ${storyboardShotRows.length} 张关键帧`}</Button>}
           </Space>}>
+            {storyboardKeyframeProgress && <section className={`storyboard-keyframe-progress storyboard-keyframe-progress-${storyboardKeyframeProgress.phase}`} role="status" aria-live="polite" aria-label="关键帧生成进度">
+              <header>
+                <div><span>{storyboardKeyframeProgress.mode === 'all' ? 'BATCH KEYFRAMES / 全量关键帧' : 'SINGLE KEYFRAME / 单张关键帧'}</span><strong>{storyboardKeyframeProgress.phase === 'preflight' ? storyboardKeyframeProgress.mode === 'all' ? '正在检查全部镜头' : '正在准备单张关键帧' : storyboardKeyframeProgress.phase === 'generating' ? storyboardKeyframeProgress.mode === 'all' ? `正在生成第 ${storyboardKeyframeProgress.currentIndex || 1} 张` : '等待图像服务响应' : storyboardKeyframeProgress.phase === 'complete' ? '关键帧生成完成' : storyboardKeyframeProgress.phase === 'cancelled' ? '关键帧生成已取消' : '关键帧生成已停止'}</strong></div>
+                <div className="storyboard-keyframe-progress-count"><b>{storyboardKeyframeProgress.completed} / {storyboardKeyframeProgress.total}</b><Tag color={storyboardKeyframeProgress.phase === 'complete' ? 'green' : storyboardKeyframeProgress.phase === 'error' ? 'red' : storyboardKeyframeProgress.phase === 'cancelled' ? 'blue' : 'gold'}>{storyboardKeyframePercent}%</Tag>{!keyframeGenerationActive && <Tooltip title="关闭进度"><Button type="text" icon={<CloseOutlined />} aria-label="关闭关键帧进度" onClick={() => setStoryboardKeyframeProgress(undefined)} /></Tooltip>}</div>
+              </header>
+              <Progress percent={keyframeGenerationActive ? Math.max(2, storyboardKeyframePercent) : storyboardKeyframePercent} showInfo={false} status={storyboardKeyframeProgress.phase === 'error' ? 'exception' : storyboardKeyframeProgress.phase === 'complete' ? 'success' : storyboardKeyframeProgress.phase === 'cancelled' ? 'normal' : 'active'} strokeLinecap="butt" />
+              <div className="storyboard-keyframe-progress-detail">
+                <Text>{storyboardKeyframeProgress.phase === 'preflight' ? `正在校验 ${storyboardKeyframeProgress.total} 个镜头的画面小记、参与人物和角色参考图` : storyboardKeyframeProgress.phase === 'generating' ? `当前镜头：${storyboardKeyframeProgress.currentTitle || storyboardKeyframeProgress.currentShotId} · ${storyboardKeyframeProgress.currentShotId}` : storyboardKeyframeProgress.phase === 'complete' ? `${storyboardKeyframeProgress.completed} 张关键帧已经逐张回写，请保存当前工程` : storyboardKeyframeProgress.phase === 'cancelled' ? `生成已取消，已完成 ${storyboardKeyframeProgress.completed} / ${storyboardKeyframeProgress.total} 张` : `失败镜头：${storyboardKeyframeProgress.currentTitle || storyboardKeyframeProgress.currentShotId || '全量预检'} · ${storyboardKeyframeProgress.errorMessage}`}</Text>
+                <Text><LockOutlined /> {keyframeGenerationActive ? '分镜编辑、工程切换、保存和其他生成操作已锁定' : ['error', 'cancelled'].includes(storyboardKeyframeProgress.phase) ? `已完成的 ${storyboardKeyframeProgress.completed} 张图片已保留，可以保存后继续` : '编辑锁定已经解除'}</Text>
+                <Text>已用时 {storyboardKeyframeElapsed > 0 ? formatApproximateSeconds(storyboardKeyframeElapsed) : '0 秒'}{storyboardKeyframeProgress.phase === 'generating' && storyboardKeyframeProgress.mode === 'all' ? ` · 预计剩余 ${formatApproximateSeconds(storyboardKeyframeRemaining)}` : ''}</Text>
+              </div>
+            </section>}
             <Alert type={lowConfidenceSegments.length ? 'warning' : 'success'} showIcon message={`${sceneRows.length} 个场景 · ${storyboardShotRows.length} 个分镜镜头${lowConfidenceSegments.length ? ` · ${lowConfidenceSegments.length} 条说话人归属需要复核` : ''}`} description="场景按主题、地点和方位变化组织。每个场景包含多个短镜头，每个镜头对应一张关键帧；已有音频时按真实时长以目标秒数自动拆分。" />
             {sceneRows.length > 0 && !allSceneNotesReady && <Alert className="storyboard-note-warning" type="warning" showIcon message="部分分镜镜头缺少可生成关键帧的画面小记" description="可点击“AI 重新生成全部分镜”，也可以逐镜头人工补充至少 20 个字符的主体位置、镜头方向、光线和关键物件描述。" />}
             {uniqueStoryboardIdentityIssues.length > 0 && <Alert className="storyboard-note-warning" type="warning" showIcon message="部分分镜镜头缺少人物一致性资料" description={`${uniqueStoryboardIdentityIssues.join('；')}。请先到角色资产补齐并保存，再生成单张或全部关键帧。`} />}
@@ -1416,13 +1581,15 @@ function Studio() {
               return <Card key={sceneId} size="small" className="storyboard-scene-card" title={<div className="storyboard-card-title"><span>{String(index + 1).padStart(2, '0')} / SCENE</span><strong>{String(scene.title || sceneId)}</strong><Text>{sceneId}</Text></div>} extra={<Space wrap><Tag>{shots.length} 个镜头</Tag><Tag>{String(scene.topic || '主题待补充')}</Tag>{startOrder > 0 && <Tag>第 {startOrder}{endOrder > startOrder ? ` 至 ${endOrder}` : ''} 句</Tag>}</Space>}>
                 <div className="storyboard-scene-layout">
                   <section className="storyboard-shot-workbench" aria-label={`${sceneId} 分镜镜头`}>
-                    <div className="storyboard-shot-toolbar"><Text strong>本场景镜头清单</Text><Space wrap><Text>{selectedSceneShotIds.length ? `已选择 ${selectedSceneShotIds.length} 个相邻镜头` : '勾选相邻镜头可合并'}</Text><Button disabled={jobRunning || selectedSceneShotIds.length < 2} onClick={() => mergeShots(sceneId)}>合并所选镜头</Button></Space></div>
+                    <div className="storyboard-shot-toolbar"><Text strong>本场景镜头清单</Text><Space wrap><Text>{selectedSceneShotIds.length ? `已选择 ${selectedSceneShotIds.length} 个相邻镜头` : '勾选相邻镜头可合并'}</Text><Button disabled={projectLocked || selectedSceneShotIds.length < 2} onClick={() => mergeShots(sceneId)}>合并所选镜头</Button></Space></div>
                     {shots.length ? shots.map((shot, shotIndex) => {
                       const shotId = String(shot.id || `${sceneId}_shot_${shotIndex + 1}`);
                       const shotStyle = String(shot.keyframe_style || storyboardStyle || DEFAULT_STORYBOARD_STYLE);
                       const shotNoteReady = String(shot.storyboard_note || '').trim().length >= 20;
                       const shotStart = Number(shot.start_segment_order || 0);
                       const shotEnd = Number(shot.end_segment_order || shotStart);
+                      const shotSource = String(shot.source_text || shot.source_excerpt || documentSegments.filter(segment => Number(segment.order) >= shotStart && Number(segment.order) <= shotEnd).map(segment => String(segment.source_text || segment.text || '')).join('')).trim();
+                      const shotEvidence = String(shot.source_evidence || '').trim();
                       const hasShotTime = Number.isFinite(Number(shot.start_seconds)) && Number.isFinite(Number(shot.end_seconds));
                       const shotParticipantIds = (Array.isArray(shot.participants) ? shot.participants : participantIds).map(String);
                       const shotParticipantSet = new Set(shotParticipantIds);
@@ -1431,24 +1598,25 @@ function Studio() {
                       const unknownParticipantIds = shotParticipantIds.filter(id => !project.roles.some(role => role[0] === id));
                       const savedReferences = (Array.isArray(shot.reference_characters) ? shot.reference_characters : []) as Array<{ roleId?: string; name?: string; portraitUrl?: string; portraitSha256?: string }>;
                       return <article className="storyboard-shot-card" key={shotId}>
-                        <header><Checkbox disabled={jobRunning} checked={selectedStoryboardShotIds.includes(shotId)} onChange={event => setSelectedStoryboardShotIds(current => toggleStoryboardShotSelection(current, sceneShotIds, shotId, event.target.checked))} /><div><strong>{String(shot.title || `镜头 ${shotIndex + 1}`)}</strong><Text>{shotId}</Text></div><Tag>第 {shotStart}{shotEnd > shotStart ? ` 至 ${shotEnd}` : ''} 句</Tag></header>
+                        <header><Checkbox disabled={projectLocked} checked={selectedStoryboardShotIds.includes(shotId)} onChange={event => setSelectedStoryboardShotIds(current => toggleStoryboardShotSelection(current, sceneShotIds, shotId, event.target.checked))} /><div><strong>{String(shot.title || `镜头 ${shotIndex + 1}`)}</strong><Text>{shotId}</Text></div><Tag>第 {shotStart}{shotEnd > shotStart ? ` 至 ${shotEnd}` : ''} 句</Tag></header>
                         {hasShotTime && <div className="storyboard-shot-time"><span>{formatStoryboardTime(Number(shot.start_seconds))}</span><span>至</span><span>{formatStoryboardTime(Number(shot.end_seconds))}</span><Tag>{(Number(shot.end_seconds) - Number(shot.start_seconds)).toFixed(1)} 秒</Tag></div>}
+                        <div className="storyboard-shot-source"><strong>镜头对应原文</strong><span>{shotSource || '当前镜头没有可核对的原文范围，请重新生成全部分镜。'}</span>{shotEvidence && <Text type="secondary">AI 取景证据：{shotEvidence}</Text>}</div>
                         <div className="storyboard-keyframe-preview">{shot.keyframe_url ? <img src={String(shot.keyframe_url)} alt={`${String(shot.title || shotId)}关键帧`} /> : <div className="storyboard-keyframe-placeholder"><PictureOutlined /><strong>KEYFRAME {String(shotIndex + 1).padStart(3, '0')}</strong><span>一个分镜镜头对应一张 16:9 画面</span></div>}</div>
                         {savedReferences.length > 0 ? <div className="storyboard-identity-reference storyboard-identity-reference-used"><strong>最近生成已使用 {savedReferences.length} 张角色参考图</strong><span>{savedReferences.map(reference => reference.name || reference.roleId).join('、')}。每次重新生成都会继续使用这些角色的原始角色图。</span></div> : visualParticipantRoles.length > 0 && missingIdentityRoles.length === 0 && unknownParticipantIds.length === 0 ? <div className="storyboard-identity-reference"><strong>人物一致性已就绪</strong><span>生成时将使用 {visualParticipantRoles.map(role => role[1]).join('、')} 的原始角色图约束容貌。</span></div> : missingIdentityRoles.length > 0 || unknownParticipantIds.length > 0 ? <div className="storyboard-identity-reference storyboard-identity-reference-warning"><strong>人物一致性资料未完成</strong><span>{missingIdentityRoles.length ? `${missingIdentityRoles.map(role => role[1]).join('、')}缺少角色形象。` : ''}{unknownParticipantIds.length ? `${unknownParticipantIds.join('、')}尚未登记为稳定角色。` : ''}生成前请先补齐角色资产。</span></div> : <div className="storyboard-identity-reference"><strong>本镜头没有画面角色</strong><span>旁白不会作为人物图片发送，关键帧按场景小记生成。</span></div>}
-                        <label><Text strong>镜头画面小记</Text><Input.TextArea disabled={jobRunning} rows={4} value={String(shot.storyboard_note || '')} onChange={event => updateShotFields(sceneId, shotId, { storyboard_note: event.target.value })} /></label>
-                        <label><Text strong>关键帧风格</Text><Select disabled={jobRunning || allKeyframesGenerating || keyframeGeneratingSceneId === shotId} value={shotStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={value => updateShotFields(sceneId, shotId, { keyframe_style: value })} /></label>
-                        <Space wrap><Button disabled={jobRunning || shotEnd <= shotStart} onClick={() => splitShot(sceneId, shotId)}>从中间分句拆分镜头</Button><Button type="primary" icon={<ReloadOutlined />} loading={keyframeGeneratingSceneId === shotId} disabled={jobRunning || allKeyframesGenerating || Boolean(keyframeGeneratingSceneId && keyframeGeneratingSceneId !== shotId) || !shotNoteReady || missingIdentityRoles.length > 0 || unknownParticipantIds.length > 0} onClick={() => void generateStoryboardShotKeyframe(sceneId, shot)}>{shot.keyframe_url ? '重新生成这一张' : '生成这一张关键帧'}</Button></Space>
+                        <label><Text strong>镜头画面小记</Text><Input.TextArea disabled={projectLocked} rows={4} value={String(shot.storyboard_note || '')} onChange={event => updateShotFields(sceneId, shotId, { storyboard_note: event.target.value })} /></label>
+                        <label><Text strong>关键帧风格</Text><Select disabled={projectLocked} value={shotStyle} options={STORYBOARD_STYLE_PRESETS.map(item => ({ value: item.id, label: item.label }))} onChange={value => updateShotFields(sceneId, shotId, { keyframe_style: value })} /></label>
+                        <Space wrap><Button disabled={projectLocked || shotEnd <= shotStart} onClick={() => splitShot(sceneId, shotId)}>从中间分句拆分镜头</Button>{keyframeGeneratingSceneId === shotId && !allKeyframesGenerating ? <Button danger icon={<StopOutlined />} onClick={cancelKeyframeGeneration}>取消这一张</Button> : <Button type="primary" icon={<ReloadOutlined />} disabled={projectLocked || !shotNoteReady || missingIdentityRoles.length > 0 || unknownParticipantIds.length > 0} onClick={() => void generateStoryboardShotKeyframe(sceneId, shot)}>{shot.keyframe_url ? '重新生成这一张' : '生成这一张关键帧'}</Button>}</Space>
                       </article>;
                     }) : <Empty description="当前场景还没有镜头。点击 AI 重新生成全部分镜，或手工创建分镜镜头。" />}
                   </section>
                   <Space direction="vertical" size="middle" className="scene-fields storyboard-scene-fields">
                     {audioRange && <div className="storyboard-audio-range" aria-label={`${sceneId} 音频时间范围`}><span>音频开始 <strong>{formatStoryboardTime(audioRange.startSeconds)}</strong></span><span>音频结束 <strong>{formatStoryboardTime(audioRange.endSeconds)}</strong></span><span>时长 <strong>{formatStoryboardTime(audioRange.endSeconds - audioRange.startSeconds)}</strong></span></div>}
-                    <div className="editor-two-column"><label><Text strong>内容主题</Text><Input disabled={jobRunning} value={String(scene.topic || '')} onChange={event => updateScene(sceneId, 'topic', event.target.value)} /></label><label><Text strong>分镜标题</Text><Input disabled={jobRunning} value={String(scene.title || '')} onChange={event => updateScene(sceneId, 'title', event.target.value)} /></label></div>
-                    <div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={jobRunning} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>空间方位与观察方向</Text><Input disabled={jobRunning} value={String(scene.spatial_direction || '')} onChange={event => updateScene(sceneId, 'spatial_direction', event.target.value)} /></label></div>
-                    <div className="editor-two-column"><label><Text strong>故事内时间</Text><Input disabled={jobRunning} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label><label><Text strong>叙事视角</Text><Input disabled={jobRunning} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label></div>
-                    <div className="editor-two-column"><label><Text strong>参与人物</Text><Input disabled={jobRunning} value={participantNames.join('、')} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean).map(value => project.roles.find(role => role[1] === value)?.[0] || value))} /></label><label><Text strong>场景基调</Text><Input disabled={jobRunning} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div>
-                    <label><Flex justify="space-between" align="center"><Text strong>AI 场景小记</Text><Text type={noteReady ? 'secondary' : 'warning'}>{String(scene.storyboard_note || '').length} 字符</Text></Flex><Input.TextArea disabled={jobRunning} rows={6} value={String(scene.storyboard_note || '')} onChange={event => updateScene(sceneId, 'storyboard_note', event.target.value)} placeholder="描述环境、人物位置与动作、前后景、镜头方向、光线、色彩和关键物件。" /></label>
-                    <label><Text strong>场景切换依据</Text><Input disabled={jobRunning} value={String(scene.boundary_reason || '')} onChange={event => updateScene(sceneId, 'boundary_reason', event.target.value)} /></label>
+                    <div className="editor-two-column"><label><Text strong>内容主题</Text><Input disabled={projectLocked} value={String(scene.topic || '')} onChange={event => updateScene(sceneId, 'topic', event.target.value)} /></label><label><Text strong>分镜标题</Text><Input disabled={projectLocked} value={String(scene.title || '')} onChange={event => updateScene(sceneId, 'title', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>地点</Text><Input disabled={projectLocked} value={String(scene.location || '')} onChange={event => updateScene(sceneId, 'location', event.target.value)} /></label><label><Text strong>空间方位与观察方向</Text><Input disabled={projectLocked} value={String(scene.spatial_direction || '')} onChange={event => updateScene(sceneId, 'spatial_direction', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>故事内时间</Text><Input disabled={projectLocked} value={String(scene.time || '')} onChange={event => updateScene(sceneId, 'time', event.target.value)} /></label><label><Text strong>叙事视角</Text><Input disabled={projectLocked} value={String(scene.narrative_perspective || '')} onChange={event => updateScene(sceneId, 'narrative_perspective', event.target.value)} /></label></div>
+                    <div className="editor-two-column"><label><Text strong>参与人物</Text><Input disabled={projectLocked} value={participantNames.join('、')} onChange={event => updateScene(sceneId, 'participants', event.target.value.split(/[、,，]/u).map(value => value.trim()).filter(Boolean).map(value => project.roles.find(role => role[1] === value)?.[0] || value))} /></label><label><Text strong>场景基调</Text><Input disabled={projectLocked} value={String(scene.mood || '')} onChange={event => updateScene(sceneId, 'mood', event.target.value)} /></label></div>
+                    <label><Flex justify="space-between" align="center"><Text strong>AI 场景小记</Text><Text type={noteReady ? 'secondary' : 'warning'}>{String(scene.storyboard_note || '').length} 字符</Text></Flex><Input.TextArea disabled={projectLocked} rows={6} value={String(scene.storyboard_note || '')} onChange={event => updateScene(sceneId, 'storyboard_note', event.target.value)} placeholder="描述环境、人物位置与动作、前后景、镜头方向、光线、色彩和关键物件。" /></label>
+                    <label><Text strong>场景切换依据</Text><Input disabled={projectLocked} value={String(scene.boundary_reason || '')} onChange={event => updateScene(sceneId, 'boundary_reason', event.target.value)} /></label>
                     <Text type="secondary">原文判断证据：{String(scene.evidence || '未记录')}</Text>
                   </Space>
                 </div>
@@ -1494,13 +1662,13 @@ function Studio() {
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} captions={render.captions} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>
       </>}
-      <Modal width={760} title="全局 AI 设置" open={settingsOpen} okText="保存全局设置" cancelText="取消" confirmLoading={settingsSaving} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
+      <Modal width={760} title="全局 AI 设置" open={settingsOpen} okText="保存全局设置" cancelText="取消" confirmLoading={settingsSaving} closable={!settingsTesting && !directorTesting} maskClosable={!settingsTesting && !directorTesting} keyboard={!settingsTesting && !directorTesting} okButtonProps={{ disabled: settingsTesting || directorTesting }} cancelButtonProps={{ disabled: settingsTesting || directorTesting }} onOk={saveAiMediaSettings} onCancel={() => setSettingsOpen(false)}>
         <Space direction="vertical" size="large" className="modal-fields ai-media-settings">
           <Alert type="warning" showIcon message="全局作用范围与外部传输" description="这里统一控制全文分析、人物小传和角色图像。全文分析选择兼容 Endpoint 时会发送当前工程原文；人物小传只发送角色附近证据；角色图像只发送人物设定。API Key 只保存在本机 runtime-output，不写入工程、Git 或浏览器回读内容。" />
           <div className="editor-section-heading"><span>01 / Director</span><strong>全文分句导演</strong><Text>选择本地 Ollama 或已配置的兼容 Endpoint。所有工程共用该选择。</Text></div>
           <div className="editor-two-column"><label><Text strong>全文分析 Provider</Text><Select value={settingsDraft.directorProvider} options={[{ value: 'ollama', label: '本地 Ollama' }, { value: 'compatible', label: 'OpenAI 兼容 Endpoint' }]} onChange={value => { setSettingsDraft(current => ({ ...current, directorProvider: value })); setAvailableDirectorModels([]); }} /></label><label><Text strong>Ollama Endpoint</Text><Input disabled={settingsDraft.directorProvider !== 'ollama'} value={settingsDraft.ollamaEndpoint} onChange={event => setSettingsDraft(current => ({ ...current, ollamaEndpoint: event.target.value }))} /></label></div>
           <div className="editor-two-column"><label><Text strong>全文分析模型</Text><AutoComplete status={directorModelUnavailable ? 'warning' : undefined} value={settingsDraft.directorModel} options={directorModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, directorModel: value }))} placeholder="测试服务后选择模型" /></label><label><Text strong>分析块长度</Text><InputNumber min={320} max={12000} step={100} value={settingsDraft.directorMaxChunkChars} onChange={value => setSettingsDraft(current => ({ ...current, directorMaxChunkChars: value ?? 1400 }))} addonAfter="字符" /></label></div>
-          <Button icon={<ReloadOutlined />} loading={directorTesting} onClick={testDirectorSettings}>测试全文分析服务并加载模型</Button>
+          {directorTesting ? <Button danger icon={<StopOutlined />} onClick={() => directorTestAbortRef.current?.abort()}>取消全文分析服务测试</Button> : <Button icon={<ReloadOutlined />} onClick={testDirectorSettings}>测试全文分析服务并加载模型</Button>}
           {availableDirectorModels.length > 0 && <Alert type={directorModelUnavailable ? 'warning' : 'success'} showIcon message={`全文分析服务返回 ${availableDirectorModels.length} 个模型`} description={directorModelUnavailable ? '当前全文分析模型不在服务返回列表中，请重新选择。' : `当前使用 ${settingsDraft.directorModel}`} />}
           <div className="editor-section-heading"><span>02 / Compatible Endpoint</span><strong>人物小传与角色图像</strong><Text>兼容 Endpoint 也可供全文分析使用。模型列表与调用能力来自当前服务。</Text></div>
           <label><Text strong>OpenAI 兼容 Endpoint</Text><Input value={settingsDraft.endpoint} onChange={event => setSettingsDraft(current => ({ ...current, endpoint: event.target.value, allowInsecureHttp: isPublicHttpEndpoint(event.target.value) ? current.allowInsecureHttp : false }))} placeholder="例如：http://127.0.0.1:39452/v1" /></label>
@@ -1510,21 +1678,21 @@ function Studio() {
           {insecurePublicEndpoint && <label className="clear-key-control"><Switch checked={settingsDraft.allowInsecureHttp} onChange={checked => setSettingsDraft(current => ({ ...current, allowInsecureHttp: checked }))} /><Text>我了解风险，允许通过公网 HTTP 发送当前 API Key</Text></label>}
           <div className="editor-two-column"><label><Text strong>Cockpit Instance ID（可选）</Text><Input value={settingsDraft.instanceId} onChange={event => setSettingsDraft(current => ({ ...current, instanceId: event.target.value }))} placeholder="例如：.codex-gemini-agent" /></label><label><Text strong>兼容文本接口</Text><Select value={settingsDraft.textApi} onChange={value => setSettingsDraft(current => ({ ...current, textApi: value }))} options={[{ value: 'responses', label: 'Responses API · /v1/responses' }, { value: 'chat_completions', label: 'Chat Completions · /v1/chat/completions' }]} /></label></div>
           <Text type="secondary">全文分析选择兼容 Endpoint 时与人物小传共用该文本接口；本地 Ollama 全文分析不受此项影响。</Text>
-          <Button icon={<ReloadOutlined />} loading={settingsTesting} onClick={testAiMediaSettings}>测试兼容 Endpoint 并加载模型</Button>
+          {settingsTesting ? <Button danger icon={<StopOutlined />} onClick={() => settingsTestAbortRef.current?.abort()}>取消兼容 Endpoint 测试</Button> : <Button icon={<ReloadOutlined />} onClick={testAiMediaSettings}>测试兼容 Endpoint 并加载模型</Button>}
           {availableAiModels.length > 0 && <Alert type={textModelUnavailable || imageModelUnavailable ? 'warning' : 'success'} showIcon message={`已从兼容服务加载 ${availableAiModels.length} 个模型`} description={textModelUnavailable || imageModelUnavailable ? '带警告的当前模型不在服务返回的列表中，请从下拉列表重新选择。' : '人物小传模型和角色图像模型都在当前可用列表中。'} />}
           <div className="editor-two-column"><label><Text strong>人物小传模型</Text><AutoComplete status={textModelUnavailable ? 'warning' : undefined} value={settingsDraft.textModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, textModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label><label><Text strong>角色图像模型</Text><AutoComplete status={imageModelUnavailable ? 'warning' : undefined} value={settingsDraft.imageModel} options={aiModelOptions} filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} onChange={value => setSettingsDraft(current => ({ ...current, imageModel: value }))} placeholder="先测试连接，再选择或输入模型" /></label></div>
         </Space>
       </Modal>
       <Modal title="新建声音工程" open={createOpen} okText="建立工程" cancelText="取消" okButtonProps={{ disabled: jobRunning || !newTitle.trim() }} onOk={createProject} onCancel={() => { setCreateOpen(false); setNewSourceProjectIds([]); }}><Space direction="vertical" size="large" className="modal-fields"><div><Text strong>工程名称</Text><Input disabled={jobRunning} value={newTitle} onChange={event => setNewTitle(event.target.value)} placeholder="例如：白夜行有声小说" /></div><div><Text strong>作品体裁</Text><Select disabled={jobRunning} value={newContentType} onChange={setNewContentType} options={[{ value: 'auto', label: '自动识别' }, { value: 'novel', label: '小说' }, { value: 'news', label: '新闻' }, { value: 'commentary', label: '一般评论' }, { value: 'story', label: '故事体' }]} /><Text type="secondary">新闻与一般评论使用唯一主播，小说和故事体保留多角色分析。</Text></div><div><Text strong>关联已有工程并导入角色、音色与纠音</Text><Select disabled={jobRunning} mode="multiple" allowClear showSearch value={newSourceProjectIds} onChange={setNewSourceProjectIds} options={projects.map(item => ({ value: item.value, label: `${item.label} · ${item.roleCount} 个角色` }))} placeholder="可多选，留空则建立空工程" /><Text type="secondary">建立时导入角色资料、当前音色、全部候选音色和全篇纠音规则，并保存来源、角色映射及纠音重复与冲突回执。后续修改彼此独立。</Text></div></Space></Modal>
-      <Modal width={900} title="手工创建分镜镜头" open={manualStoryboardOpen} okText="创建镜头" cancelText="取消" onOk={createManualStoryboard} onCancel={() => setManualStoryboardOpen(false)}>
+      <Modal width={900} title="手工创建分镜镜头" open={manualStoryboardOpen} okText="创建镜头" cancelText="取消" okButtonProps={{ disabled: projectLocked }} cancelButtonProps={{ disabled: projectLocked }} closable={!projectLocked} keyboard={!projectLocked} maskClosable={!projectLocked} onOk={createManualStoryboard} onCancel={() => { if (!projectLocked) setManualStoryboardOpen(false); }}>
         <Space direction="vertical" size="middle" className="modal-fields">
           <Alert type="info" showIcon message="一个场景可以包含多个短镜头" description="选择同一场景内的连续起止分句。新镜头会占用这段范围，原镜头剩余部分会自动保持为连续镜头。" />
-          <div className="editor-two-column"><label><Text strong>起始分句</Text><Select showSearch optionFilterProp="label" value={manualStoryboardDraft.startSegmentOrder || undefined} options={manualSegmentOptions} onChange={value => setManualStoryboardDraft(current => ({ ...current, startSegmentOrder: value, endSegmentOrder: value }))} /></label><label><Text strong>结束分句</Text><Select showSearch optionFilterProp="label" value={manualStoryboardDraft.endSegmentOrder || undefined} options={manualEndSegmentOptions} onChange={value => setManualStoryboardDraft(current => ({ ...current, endSegmentOrder: value }))} /></label></div>
-          <div className="editor-two-column"><label><Text strong>镜头标题</Text><Input value={manualStoryboardDraft.title} onChange={event => setManualStoryboardDraft(current => ({ ...current, title: event.target.value }))} /></label><label><Text strong>镜头切换依据</Text><Input value={manualStoryboardDraft.boundaryReason} onChange={event => setManualStoryboardDraft(current => ({ ...current, boundaryReason: event.target.value }))} placeholder="例如：动作重心、视线方向或构图变化" /></label></div>
-          <label><Text strong>镜头画面小记</Text><Input.TextArea rows={5} value={manualStoryboardDraft.storyboardNote} onChange={event => setManualStoryboardDraft(current => ({ ...current, storyboardNote: event.target.value }))} placeholder="描述这一张关键帧中的主体位置、动作、前后景、镜头方向、光线、色彩和关键物件，至少 20 个字符。" /></label>
-          <div className="editor-two-column"><label><Text strong>内容主题</Text><Input value={manualStoryboardDraft.topic} onChange={event => setManualStoryboardDraft(current => ({ ...current, topic: event.target.value }))} /></label><label><Text strong>地点</Text><Input value={manualStoryboardDraft.location} onChange={event => setManualStoryboardDraft(current => ({ ...current, location: event.target.value }))} /></label></div>
-          <div className="editor-two-column"><label><Text strong>空间方位与观察方向</Text><Input value={manualStoryboardDraft.spatialDirection} onChange={event => setManualStoryboardDraft(current => ({ ...current, spatialDirection: event.target.value }))} /></label><label><Text strong>故事内时间</Text><Input value={manualStoryboardDraft.time} onChange={event => setManualStoryboardDraft(current => ({ ...current, time: event.target.value }))} /></label></div>
-          <div className="editor-two-column"><label><Text strong>叙事视角</Text><Input value={manualStoryboardDraft.narrativePerspective} onChange={event => setManualStoryboardDraft(current => ({ ...current, narrativePerspective: event.target.value }))} /></label><label><Text strong>画面基调</Text><Input value={manualStoryboardDraft.mood} onChange={event => setManualStoryboardDraft(current => ({ ...current, mood: event.target.value }))} /></label></div>
+          <div className="editor-two-column"><label><Text strong>起始分句</Text><Select disabled={projectLocked} showSearch optionFilterProp="label" value={manualStoryboardDraft.startSegmentOrder || undefined} options={manualSegmentOptions} onChange={value => setManualStoryboardDraft(current => ({ ...current, startSegmentOrder: value, endSegmentOrder: value }))} /></label><label><Text strong>结束分句</Text><Select disabled={projectLocked} showSearch optionFilterProp="label" value={manualStoryboardDraft.endSegmentOrder || undefined} options={manualEndSegmentOptions} onChange={value => setManualStoryboardDraft(current => ({ ...current, endSegmentOrder: value }))} /></label></div>
+          <div className="editor-two-column"><label><Text strong>镜头标题</Text><Input disabled={projectLocked} value={manualStoryboardDraft.title} onChange={event => setManualStoryboardDraft(current => ({ ...current, title: event.target.value }))} /></label><label><Text strong>镜头切换依据</Text><Input disabled={projectLocked} value={manualStoryboardDraft.boundaryReason} onChange={event => setManualStoryboardDraft(current => ({ ...current, boundaryReason: event.target.value }))} placeholder="例如：动作重心、视线方向或构图变化" /></label></div>
+          <label><Text strong>镜头画面小记</Text><Input.TextArea disabled={projectLocked} rows={5} value={manualStoryboardDraft.storyboardNote} onChange={event => setManualStoryboardDraft(current => ({ ...current, storyboardNote: event.target.value }))} placeholder="描述这一张关键帧中的主体位置、动作、前后景、镜头方向、光线、色彩和关键物件，至少 20 个字符。" /></label>
+          <div className="editor-two-column"><label><Text strong>内容主题</Text><Input disabled={projectLocked} value={manualStoryboardDraft.topic} onChange={event => setManualStoryboardDraft(current => ({ ...current, topic: event.target.value }))} /></label><label><Text strong>地点</Text><Input disabled={projectLocked} value={manualStoryboardDraft.location} onChange={event => setManualStoryboardDraft(current => ({ ...current, location: event.target.value }))} /></label></div>
+          <div className="editor-two-column"><label><Text strong>空间方位与观察方向</Text><Input disabled={projectLocked} value={manualStoryboardDraft.spatialDirection} onChange={event => setManualStoryboardDraft(current => ({ ...current, spatialDirection: event.target.value }))} /></label><label><Text strong>故事内时间</Text><Input disabled={projectLocked} value={manualStoryboardDraft.time} onChange={event => setManualStoryboardDraft(current => ({ ...current, time: event.target.value }))} /></label></div>
+          <div className="editor-two-column"><label><Text strong>叙事视角</Text><Input disabled={projectLocked} value={manualStoryboardDraft.narrativePerspective} onChange={event => setManualStoryboardDraft(current => ({ ...current, narrativePerspective: event.target.value }))} /></label><label><Text strong>画面基调</Text><Input disabled={projectLocked} value={manualStoryboardDraft.mood} onChange={event => setManualStoryboardDraft(current => ({ ...current, mood: event.target.value }))} /></label></div>
         </Space>
       </Modal>
       <Modal className="split-segment-modal" width={760} title={splitRow ? `拆分第 ${splitRow[0]} 条分句` : '拆分分句'} open={Boolean(splitEditor && splitRow)} okText="在光标处拆分" cancelText="取消" okButtonProps={{ disabled: jobRunning || !splitValid }} onOk={applySplit} onCancel={() => setSplitEditor(undefined)}>
@@ -1541,16 +1709,16 @@ function Studio() {
           {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="替换窗口和背景操作已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭窗口。" />}
         </Space>}
       </Modal>
-      <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" okButtonProps={{ disabled: jobRunning }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
+      <Modal className="role-editor-modal" width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" closable={!profileGenerating && !portraitGenerating} maskClosable={!profileGenerating && !portraitGenerating} keyboard={!profileGenerating && !portraitGenerating} okButtonProps={{ disabled: projectLocked }} cancelButtonProps={{ disabled: profileGenerating || portraitGenerating }} onOk={applyRoleDraft} onCancel={() => { setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
         {roleDraft && roleAssetDraft && presets && project && <div className="role-editor-grid">
           <section className="role-editor-fields">
             <div className="editor-section-heading"><span>01 / Character</span><strong>人物身份与小传</strong><Text>人物小传来自 AI 全文分析，也是音色选择的主要人物依据。信息必须来自原文，未知内容可以明确标注。</Text></div>
             <div className="editor-two-column"><label><Text strong>角色名称</Text><Input disabled={jobRunning} value={roleDraft[1]} onChange={event => updateRoleDraft(1, event.target.value)} /></label><label><Text strong>角色类型</Text><Select disabled={jobRunning} value={roleDraft[2]} options={kindOptions.filter(item => presets.roleKinds.includes(item.value))} onChange={value => updateRoleDraft(2, value)} /></label></div>
             <div className="editor-two-column"><label><Text strong>性别</Text><Select disabled={jobRunning} value={roleAssetDraft.gender} options={[{ value: 'female', label: '女性' }, { value: 'male', label: '男性' }, { value: 'unspecified', label: '未指定' }]} onChange={(value: CharacterGender) => updateRoleDemographics(value, roleAssetDraft.age)} /><small>{roleAssetDraft.gender_evidence ? `AI 依据：${roleAssetDraft.gender_evidence}` : '保存人工修改后以当前设置为准。'}</small></label><label><Text strong>年龄</Text><InputNumber disabled={jobRunning} min={5} max={100} value={roleAssetDraft.age} addonAfter="岁" onChange={value => updateRoleDemographics(roleAssetDraft.gender, value ?? roleAssetDraft.age)} /><small>{roleAssetDraft.age_evidence ? `AI 依据：${roleAssetDraft.age_evidence}` : '保存人工修改后以当前设置为准。'}</small></label></div>
-            <label><Flex justify="space-between" align="center"><Text strong>详细人物小传</Text><Button disabled={jobRunning} loading={profileGenerating} icon={<UserOutlined />} onClick={expandCharacterProfile}>AI 扩写详细小传</Button></Flex><Input.TextArea disabled={jobRunning} rows={9} value={roleDraft[3]} onChange={event => updateRoleDraft(3, event.target.value)} placeholder="建议覆盖身份、人物关系、外貌线索、经历、欲望与矛盾、性格、行为习惯、说话方式和叙事作用。未知信息应明确标注。" /><small>{roleDraft[3].length} 字符。调用外部模型前会发送该角色附近的稿件证据，请先确认系统配置和数据边界。</small></label>
+            <label><Flex justify="space-between" align="center"><Text strong>详细人物小传</Text>{profileGenerating ? <Button danger icon={<StopOutlined />} onClick={() => profileAbortRef.current?.abort()}>取消扩写</Button> : <Button disabled={jobRunning} icon={<UserOutlined />} onClick={expandCharacterProfile}>AI 扩写详细小传</Button>}</Flex><Input.TextArea disabled={jobRunning || profileGenerating} rows={9} value={roleDraft[3]} onChange={event => updateRoleDraft(3, event.target.value)} placeholder="建议覆盖身份、人物关系、外貌线索、经历、欲望与矛盾、性格、行为习惯、说话方式和叙事作用。未知信息应明确标注。" /><small>{roleDraft[3].length} 字符。调用外部模型前会发送该角色附近的稿件证据，请先确认系统配置和数据边界。</small></label>
 
             <div className="editor-section-heading"><span>02 / Portrait</span><strong>角色形象</strong><Text>角色形象以详细人物小传为主要依据，用于后续插图和视频关键帧中的稳定人物设计。</Text></div>
-            <div className="portrait-editor"><div className="portrait-editor-preview">{roleAssetDraft.portrait_url ? <img src={roleAssetDraft.portrait_url} alt={`${roleDraft[1]}角色形象预览`} /> : <div className="character-portrait-placeholder"><PictureOutlined /><span>尚未生成角色形象</span></div>}</div><div className="portrait-editor-controls"><label><Text strong>形象风格</Text><Select disabled={jobRunning} value={roleAssetDraft.portrait_style} options={[{ label: '漫画风格', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'comic').map(item => ({ value: item.id, label: item.label })) }, { label: '真人效果', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'realistic').map(item => ({ value: item.id, label: item.label })) }]} onChange={value => setRoleAssetDraft(current => current ? { ...current, portrait_style: value } : current)} /><small>{portraitStylePreset(roleAssetDraft.portrait_style).description} 默认使用漫画风格，选择“真人写实摄影”时才生成真人效果。</small></label><label><Text strong>补充视觉要求（可选）</Text><Input.TextArea disabled={jobRunning} rows={3} value={roleAssetDraft.portrait_notes || ''} onChange={event => setRoleAssetDraft(current => current ? { ...current, portrait_notes: event.target.value } : current)} placeholder="例如：保留旧式礼帽，深灰风衣，眼神克制，背景不要出现建筑。" /></label><Button type="primary" disabled={jobRunning || roleDraft[3].trim().length < 20} loading={portraitGenerating} icon={<PictureOutlined />} onClick={generateCharacterPortrait}>{roleAssetDraft.portrait_url ? '按当前风格重新生成' : '按当前风格生成形象'}</Button><Text>图像请求会使用当前名称、性别、年龄、人物小传、风格特征和补充视觉要求。生成结果先进入当前卡片，应用设置并保存工程后完成关联。</Text>{roleAssetDraft.portrait_prompt && <Paragraph ellipsis={{ rows: 4 }} title={roleAssetDraft.portrait_prompt}>最近图像提示：{roleAssetDraft.portrait_prompt}</Paragraph>}</div></div>
+            <div className="portrait-editor"><div className="portrait-editor-preview">{roleAssetDraft.portrait_url ? <img src={roleAssetDraft.portrait_url} alt={`${roleDraft[1]}角色形象预览`} /> : <div className="character-portrait-placeholder"><PictureOutlined /><span>尚未生成角色形象</span></div>}</div><div className="portrait-editor-controls"><label><Text strong>形象风格</Text><Select disabled={jobRunning || portraitGenerating} value={roleAssetDraft.portrait_style} options={[{ label: '漫画风格', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'comic').map(item => ({ value: item.id, label: item.label })) }, { label: '真人效果', options: PORTRAIT_STYLE_PRESETS.filter(item => item.kind === 'realistic').map(item => ({ value: item.id, label: item.label })) }]} onChange={value => setRoleAssetDraft(current => current ? { ...current, portrait_style: value } : current)} /><small>{portraitStylePreset(roleAssetDraft.portrait_style).description} 默认使用漫画风格，选择“真人写实摄影”时才生成真人效果。</small></label><label><Text strong>补充视觉要求（可选）</Text><Input.TextArea disabled={jobRunning || portraitGenerating} rows={3} value={roleAssetDraft.portrait_notes || ''} onChange={event => setRoleAssetDraft(current => current ? { ...current, portrait_notes: event.target.value } : current)} placeholder="例如：保留旧式礼帽，深灰风衣，眼神克制，背景不要出现建筑。" /></label>{portraitGenerating ? <Button danger icon={<StopOutlined />} onClick={() => portraitAbortRef.current?.abort()}>取消形象生成</Button> : <Button type="primary" disabled={jobRunning || roleDraft[3].trim().length < 20} icon={<PictureOutlined />} onClick={generateCharacterPortrait}>{roleAssetDraft.portrait_url ? '按当前风格重新生成' : '按当前风格生成形象'}</Button>}<Text>图像请求会使用当前名称、性别、年龄、人物小传、风格特征和补充视觉要求。生成结果先进入当前卡片，应用设置并保存工程后完成关联。</Text>{roleAssetDraft.portrait_prompt && <Paragraph ellipsis={{ rows: 4 }} title={roleAssetDraft.portrait_prompt}>最近图像提示：{roleAssetDraft.portrait_prompt}</Paragraph>}</div></div>
 
             <div className="editor-section-heading"><span>03 / Voice</span><strong>声音特征与频率目标</strong><Text>性别和年龄会产生建议基频区间。滑块设置候选必须达到的目标基频中位数；系统会自然生成并落盘复测一至六个通过年龄、性别和目标频率校验的候选，默认生成三个。候选由使用者试听后定稿。年龄约束同时控制共鸣、声带厚度和明亮度。</Text></div>
             <label><Text strong>音色生成方式</Text><Select disabled={jobRunning} value={roleVoiceMode} options={[{ value: 'preset', label: '使用可靠音色预设' }, { value: 'custom', label: '高级自定义声音导演' }]} onChange={value => updateRoleDraft(4, value === 'preset' ? '中性清晰' : '')} /></label>

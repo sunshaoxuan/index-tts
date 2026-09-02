@@ -67,6 +67,10 @@ Node 服务恢复时还会检查 Render Runtime 的 `busy` 状态和 `.processin
 
 任务启动时，Node 在写入 Worker 输入前登记 `activeJob`，其中包含 `jobId`、任务类型和 `projectId`，并持久写入 `runtime-output/product-jobs/active-job.json`。Worker 启动后追加 PID。`GET /api/active-job` 合并活动标记与实时 `status.json`，供刷新后的 React 页面自动选择所属工程、恢复相同进度面板和继续轮询。同一工程在任务存续期间的 PUT 保存返回 409。前端同步禁用工程选择、全文、角色、分句、纠音、新建和保存操作。任务完成或失败后删除活动标记、释放锁并重新载入工程结果。
 
+统一取消入口为 `DELETE /api/jobs/:id`。等待任务从持久队列移除并写入 `cancelled`；运行任务先写入 `cancelling`，再终止当前 Worker，最终持久化 `cancelled` 并释放工程锁。取消的依赖任务视为失败终态，依赖它的后续任务不得继续运行。音频渲染和角色音色任务还会读取对应 Runtime 的 `state.json` 与 `.processing` 请求信封，只有 Runtime 的请求 ID 合法且信封状态路径精确指向当前任务时才终止 Runtime PID，避免影响其他任务。React 的统一任务进度浮层在等待、模型加载、音频生成和串接阶段持续提供取消按钮。
+
+人物小传扩写、角色形象、单张关键帧、全量关键帧、兼容 Endpoint 测试、全文分析服务测试和工程读取使用浏览器 `AbortController`。Node 在客户端断开时中止兼容服务或 Ollama 的上游 `fetch`，取消后的响应不再写入人物、图片或工程状态。批量关键帧状态机在每张开始前检查信号，当前请求中止后不再启动下一张，已经完成并回写的图片继续保留。
+
 Node 服务恢复时读取持久活动标记并探测 Worker PID。进程仍存活时恢复活动锁和查询接口。进程不存在时把任务状态写成 error，说明原 Worker 已终止，随后删除活动标记并释放工程锁。该设计避免浏览器刷新丢失等待状态，也避免服务重启后展示无法继续推进的僵尸任务。
 
 角色字段中的 `profile` 定义为基于原文证据的人物小传，`voice_hint` 定义为声音导演建议。AI Schema 保持两字段稳定，提示词要求分别覆盖人物身份关系和可听声音特征。跨文本块合并时，信息更丰富且不是姓名占位的字段可以更新先前结果。安全回退使用可审计的“信息不足”小传和中性声音建议，不伪装成充分的人物理解。
@@ -134,6 +138,8 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。逐块分句请求复用全文注册表，每条分句保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
 
 分镜数据采用 `document.scenes[].shots[]` 两层结构。场景边界由主题、地点、空间和叙事焦点决定；镜头边界在场景内部依据 `target_shot_seconds` 继续切分。`storyboard_captions` 来自最近交付清单中每条 WAV 的实际时长和句后停顿，Worker 先建立累计时间线，再按连续分句和目标时长形成镜头；没有完整音频时以去空白文字长度估算分组且不写 `start_seconds`、`end_seconds`。镜头保存稳定 ID、标题、画面小记、参与人物、起止分句、来源摘要、创作方式和可选真实时间。关键帧生成以镜头作为最小单位，服务端把镜头字段覆盖到所属场景视觉上下文后生成图像。服务端按照工程角色表顺序解析 `participants`，排除 `narrator`，从角色资产 URL 安全定位当前工程或关联工程图片，校验 20 MB 上限和 PNG、JPEG、WebP 签名，并计算 SHA256。有画面人物时，提示逐张映射参考图序号、稳定角色 ID 和名称，要求保持面部结构、五官比例、发型、年龄感和标志特征；每次从原始角色图生成，避免关键帧递推的累积漂移。单张与全量路由复用该解析器，全量路由先对全部镜头完成预检。结果保存 `identity_reference_mode` 与 `reference_characters`。手工创建会占用同场景连续分句范围，原镜头剩余部分自动分成连续镜头；拆分和合并会清除范围已经变化的关键帧元数据。
+
+全量关键帧由前端 `storyboardKeyframeBatch` 状态机编排。前端先调用 `POST /api/projects/:id/storyboard/keyframes` 并设置 `preflightOnly: true`，服务端完成全部镜头与身份参考解析后只返回校验数量、镜头 ID 和模型，不请求外部图像。预检通过后，前端按稳定队列逐张调用 `POST /api/projects/:id/scenes/:sceneId/shots/:shotId/keyframe`，每张成功即写入 React 工程状态并更新完成计数。状态机公开 `preflight`、`generating`、`complete`、`cancelled` 和 `error`，携带总数、完成数、当前序号、镜头 ID、标题、起止时间与错误信息；剩余时间由已用时间和已完成数量估算。React 以 `projectLocked` 统一控制工程切换、保存、工作区标签、分镜字段和冲突操作，任务终态解除锁定。单张与全量请求各自持有 `AbortController`，取消会中止当前 HTTP 请求，Node 把断开的请求传递为兼容服务 `AbortSignal`。批处理中已经回写的图片不会因后续取消或失败回滚。
 
 分句数组第 15 至 18 列保存重音文字、出现序号、重音强度和生成方式。渲染器把重音目标追加到 `emo_text`，并将这些字段、生成方式和验收算法版本加入缓存签名。高级生成最多尝试九次；设置重音目标时，只有三个基础质量与重音代理同时达标的候选才能提前结束抽取，预算耗尽后从基础质量合格项中按文本比例声学代理评分保留三版。代理验收比较目标估计区间与相邻区间的 RMS 能量，保存 `stress_db`、质量指标、排序和算法版本。该指标用于受约束抽卡排序，产品界面始终披露其概率性质。分句草稿索引存在同一序号的多个历史缓存时，最新写入项覆盖旧项进入页面，避免重复显示同一分句。
 

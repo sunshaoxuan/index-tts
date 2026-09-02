@@ -6,7 +6,7 @@ const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
 test('all product tabs share the workspace partition root', () => {
-  assert.match(app, /<Tabs className="workspace-tabs"/);
+  assert.match(app, /<Tabs className=\{`workspace-tabs/);
   for (const key of ['source', 'scenes', 'roles', 'segments', 'pronunciation', 'delivery']) {
     assert.match(app, new RegExp(`key: '${key}'`));
   }

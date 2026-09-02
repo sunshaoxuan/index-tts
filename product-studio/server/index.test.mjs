@@ -223,7 +223,7 @@ test('tests the compatible service and returns selectable model ids without expo
   const { root } = await fixture();
   const calls = [];
   const remoteFetch = async (url, options) => {
-    calls.push({ url: String(url), authorization: options?.headers?.Authorization });
+    calls.push({ url: String(url), authorization: options?.headers?.Authorization, abortable: options?.signal instanceof AbortSignal });
     return new Response(JSON.stringify({ data: [{ id: 'gemini-2.5-flash' }, { id: 'gpt-image-1' }, { id: 'gemini-2.5-flash' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   const app = await buildApp({ repoRoot: root, remoteFetch });
@@ -231,7 +231,7 @@ test('tests the compatible service and returns selectable model ids without expo
   const tested = await app.inject({ method: 'POST', url: '/api/settings/ai-media/test', payload: { endpoint: 'http://ai.example/v1' } });
   assert.equal(tested.statusCode, 200);
   assert.deepEqual(tested.json(), { ok: true, endpoint: 'http://ai.example/v1', instanceId: '', models: ['gemini-2.5-flash', 'gpt-image-1'], modelCount: 2 });
-  assert.deepEqual(calls, [{ url: 'http://ai.example/v1/models', authorization: 'Bearer secret-key' }]);
+  assert.deepEqual(calls, [{ url: 'http://ai.example/v1/models', authorization: 'Bearer secret-key', abortable: true }]);
   assert.equal(JSON.stringify(tested.json()).includes('secret-key'), false);
   await app.close();
 });
@@ -402,8 +402,8 @@ test('generates one storyboard keyframe and a full set from AI scene notes with 
   const projectPath = path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json');
   const stored = JSON.parse(await readFile(projectPath, 'utf8'));
   stored.document = { scenes: [
-    { id: 'scene_001', title: '雨夜抵达', topic: '访客抵达', location: '旧宅门廊', spatial_direction: '室外朝向门内', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '悬疑', storyboard_note: '雨幕覆盖旧宅门廊，访客站在画面左侧收起黑伞，门内暖光从右后方切入，前景积水映出人物剪影，中景木门半开，远景保持在暗色庭院。镜头采用中远景并从室外朝向门内。', boundary_reason: '地点从街道切换到旧宅门廊', evidence: '访客在雨夜抵达旧宅', shots: [{ id: 'scene_001_shot_001', title: '收伞', storyboard_note: '访客站在门廊左侧收起黑伞，前景积水映出剪影，镜头低位朝向门内暖光。', participants: ['narrator'], start_segment_order: 1, end_segment_order: 1 }] },
-    { id: 'scene_002', title: '进入客厅', topic: '室内会面', location: '旧宅客厅', spatial_direction: '室内面向壁炉', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '克制', storyboard_note: '客厅以壁炉为视觉中心，人物停在画面右侧入口处，前景旧木桌压住信封，中景空椅形成等待感，壁炉微光照亮织物和灰尘，背景楼梯隐入阴影。镜头使用平视广角并面向壁炉。', boundary_reason: '人物由门廊进入室内', evidence: '木门关闭后人物进入客厅', shots: [{ id: 'scene_002_shot_001', title: '望向壁炉', storyboard_note: '人物停在客厅右侧入口，前景木桌压着信封，平视广角朝向壁炉和空椅。', participants: ['narrator'], start_segment_order: 2, end_segment_order: 2 }] },
+    { id: 'scene_001', title: '雨夜抵达', topic: '访客抵达', location: '旧宅门廊', spatial_direction: '室外朝向门内', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '悬疑', storyboard_note: '雨幕覆盖旧宅门廊，访客站在画面左侧收起黑伞，门内暖光从右后方切入，前景积水映出人物剪影，中景木门半开，远景保持在暗色庭院。镜头采用中远景并从室外朝向门内。', boundary_reason: '地点从街道切换到旧宅门廊', evidence: '访客在雨夜抵达旧宅', shots: [{ id: 'scene_001_shot_001', title: '收伞', storyboard_note: '访客站在门廊左侧收起黑伞，前景积水映出剪影，镜头低位朝向门内暖光。', source_text: '访客走上门廊，在雨幕中收起黑伞。', source_evidence: '收起黑伞', participants: ['narrator'], start_segment_order: 1, end_segment_order: 1 }] },
+    { id: 'scene_002', title: '进入客厅', topic: '室内会面', location: '旧宅客厅', spatial_direction: '室内面向壁炉', time: '深夜', participants: ['narrator'], narrative_perspective: '第三人称', mood: '克制', storyboard_note: '客厅以壁炉为视觉中心，人物停在画面右侧入口处，前景旧木桌压住信封，中景空椅形成等待感，壁炉微光照亮织物和灰尘，背景楼梯隐入阴影。镜头使用平视广角并面向壁炉。', boundary_reason: '人物由门廊进入室内', evidence: '木门关闭后人物进入客厅', shots: [{ id: 'scene_002_shot_001', title: '望向壁炉', storyboard_note: '人物停在客厅右侧入口，前景木桌压着信封，平视广角朝向壁炉和空椅。', source_text: '木门关闭后，他走进客厅望向壁炉。', source_evidence: '望向壁炉', participants: ['narrator'], start_segment_order: 2, end_segment_order: 2 }] },
   ] };
   await writeFile(projectPath, JSON.stringify(stored));
   const calls = [];
@@ -422,13 +422,14 @@ test('generates one storyboard keyframe and a full set from AI scene notes with 
   assert.equal(single.json().keyframeStyle, 'noir_ink');
   assert.equal((await app.inject(single.json().keyframeUrl)).statusCode, 200);
   assert.equal(calls[0].body.size, '1536x1024');
-  assert.match(calls[0].body.prompt, /AI 场景小记/);
+  assert.match(calls[0].body.prompt, /AI 镜头画面小记/);
   assert.match(calls[0].body.prompt, /黑白悬疑墨线分镜/);
   assert.match(calls[0].body.prompt, /16:9/);
 
   const shot = await app.inject({ method: 'POST', url: '/api/projects/demo/scenes/scene_001/shots/scene_001_shot_001/keyframe', payload: { shot: project.document.scenes[0].shots[0], keyframeStyle: 'clean_cel' } });
   assert.equal(shot.statusCode, 200);
   assert.equal(shot.json().shotId, 'scene_001_shot_001');
+  assert.match(calls[1].body.prompt, /镜头对应原文：访客走上门廊，在雨幕中收起黑伞/);
 
   const allShots = project.document.scenes.flatMap(scene => scene.shots);
   const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: allShots, keyframeStyle: 'cinematic_realistic' } });
@@ -486,6 +487,12 @@ test('uses stable local and linked role portraits as ordered identity references
     ['role_b', '乙', '/api/projects/linked-source/role-assets/role-b.png'],
   ]);
   assert.ok(single.json().referenceCharacters.every(reference => /^[a-f0-9]{64}$/.test(reference.portraitSha256)));
+
+  const requestCountBeforePreflight = requests.length;
+  const preflight = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: [shot], keyframeStyle: 'cinematic_realistic', preflightOnly: true } });
+  assert.equal(preflight.statusCode, 200);
+  assert.deepEqual(preflight.json(), { validatedCount: 1, shotIds: ['scene_identity_shot_001'], model: 'gpt-image-2' });
+  assert.equal(requests.length, requestCountBeforePreflight);
 
   const full = await app.inject({ method: 'POST', url: '/api/projects/demo/storyboard/keyframes', payload: { shots: [shot], keyframeStyle: 'cinematic_realistic' } });
   assert.equal(full.statusCode, 200);
@@ -1584,6 +1591,96 @@ test('aligns inserted draft audio without clearing the following delivered fragm
     { order: 1, audio: '/draft-inserted.wav' },
     { order: 2, audio: '/delivered-next.wav' },
   ]);
+});
+
+test('cancels an active worker, unlocks the project, and terminates dependent work', async () => {
+  const { root, project } = await fixture();
+  const children = [];
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 4101 + children.length;
+    child.kill = () => {
+      child.killed = true;
+      queueMicrotask(() => child.emit('close', null));
+      return true;
+    };
+    children.push(child);
+    return child;
+  } });
+
+  const active = (await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} })).json();
+  const dependent = (await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} })).json();
+  const cancelled = await app.inject({ method: 'DELETE', url: `/api/jobs/${active.jobId}` });
+  assert.equal(cancelled.statusCode, 200);
+  assert.equal(cancelled.json().phase, 'cancelled');
+  assert.equal(children[0].killed, true);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal((await app.inject(`/api/jobs/${active.jobId}`)).json().phase, 'cancelled');
+  const dependentStatus = (await app.inject(`/api/jobs/${dependent.jobId}`)).json();
+  assert.equal(dependentStatus.phase, 'error');
+  assert.match(dependentStatus.message, /依赖任务.*未成功/);
+  assert.deepEqual((await app.inject('/api/active-job')).json(), { available: false });
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project })).statusCode, 200);
+  await app.close();
+});
+
+test('cancels a waiting job without disturbing the active worker', async () => {
+  const { root, project } = await fixture();
+  const otherDir = path.join(root, 'outputs', 'novel-projects', 'other');
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(path.join(otherDir, 'project.json'), JSON.stringify({ ...project, project_id: 'other' }));
+  const children = [];
+  const app = await buildApp({ repoRoot: root, launchWorker: () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => { queueMicrotask(() => child.emit('close', null)); return true; };
+    children.push(child);
+    return child;
+  } });
+  const active = (await app.inject({ method: 'POST', url: '/api/projects/demo/analyze', payload: {} })).json();
+  const waiting = (await app.inject({ method: 'POST', url: '/api/projects/other/render', payload: {} })).json();
+  assert.equal(children.length, 1);
+  const cancelled = await app.inject({ method: 'DELETE', url: `/api/jobs/${waiting.jobId}` });
+  assert.equal(cancelled.json().phase, 'cancelled');
+  assert.equal((await app.inject(`/api/jobs/${waiting.jobId}`)).json().phase, 'cancelled');
+  assert.equal((await app.inject('/api/active-job')).json().jobId, active.jobId);
+  await app.inject({ method: 'DELETE', url: `/api/jobs/${active.jobId}` });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await app.close();
+});
+
+test('terminates only the runtime request owned by the cancelled audio job', async () => {
+  const { root } = await fixture();
+  const killedPids = [];
+  let child;
+  const app = await buildApp({
+    repoRoot: root,
+    killProcess: pid => { killedPids.push(pid); },
+    launchWorker: () => {
+      child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => { queueMicrotask(() => child.emit('close', null)); return true; };
+      return child;
+    },
+  });
+  const active = (await app.inject({ method: 'POST', url: '/api/projects/demo/render', payload: {} })).json();
+  const runtimeDir = path.join(root, 'runtime-output', 'render-runtime');
+  const requestsDir = path.join(runtimeDir, 'requests');
+  await mkdir(requestsDir, { recursive: true });
+  const requestId = 'a'.repeat(32);
+  const statusPath = path.join(root, 'runtime-output', 'product-jobs', active.jobId, 'status.json');
+  await writeFile(path.join(runtimeDir, 'state.json'), JSON.stringify({ phase: 'busy', pid: 9876, request_id: requestId }));
+  await writeFile(path.join(requestsDir, `${requestId}.processing`), JSON.stringify({ status: statusPath }));
+
+  const cancelled = await app.inject({ method: 'DELETE', url: `/api/jobs/${active.jobId}` });
+  assert.equal(cancelled.json().runtimeTerminated, true);
+  assert.deepEqual(killedPids, [9876]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await app.close();
 });
 
 test('latest render keeps a shifted next fragment when a split fragment reuses its historical order', async () => {

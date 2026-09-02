@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseApiResponse, projectSavePayload } from './api.ts';
+import { api, parseApiResponse, projectSavePayload } from './api.ts';
 
 test('reports an actionable service error for an HTML API response', async () => {
   const response = new Response('<!DOCTYPE html><title>Bad Gateway</title>', {
@@ -39,4 +39,20 @@ test('omits server-owned director snapshots from project save payloads', () => {
   assert.equal(payload.project_id, 'large-project');
   assert.equal(project.director_history?.length, 1);
   assert.ok(Buffer.byteLength(JSON.stringify(payload), 'utf8') < 1024);
+});
+
+test('forwards an abort signal to long-running AI requests', async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let observedSignal: AbortSignal | null | undefined;
+  globalThis.fetch = async (_input, init) => {
+    observedSignal = init?.signal;
+    return new Response(JSON.stringify({ profile: '扩写结果', model: 'fixture' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await api.expandCharacterProfile('demo', 'narrator', { name: '旁白', profile: '现有小传', gender: 'unspecified', age: 35 }, controller.signal);
+    assert.equal(observedSignal, controller.signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -28,6 +28,13 @@ test('reports a failed dependency instead of releasing its dependent job', () =>
   assert.equal(classified.failed[0].failedDependency, 'voice');
 });
 
+test('treats a cancelled dependency as terminal failure', () => {
+  const dependent = { jobId: 'dependent', modelKey: 'indextts:index-tts-2.5', dependencies: ['analysis'], createdAt: '2026-08-30T00:00:00.000Z' };
+  const classified = classifyPendingJobs([dependent], { analysis: 'cancelled' });
+  assert.equal(classified.next, undefined);
+  assert.equal(classified.failed[0].dependencyStatus, 'cancelled');
+});
+
 test('reports a missing dependency record instead of waiting forever', () => {
   const dependent = { jobId: 'dependent', modelKey: 'indextts:index-tts-2.5', dependencies: ['missing-job'], createdAt: '2026-08-30T00:00:00.000Z' };
   const classified = classifyPendingJobs([dependent], { 'missing-job': 'missing' });

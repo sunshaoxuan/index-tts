@@ -24,7 +24,7 @@ export function classifyPendingJobs(jobs, statusById, preferredModelKey = '') {
   const ready = [];
   for (const job of jobs) {
     const dependencies = Array.isArray(job.dependencies) ? job.dependencies : [];
-    const failedDependency = dependencies.find(jobId => ['error', 'missing'].includes(statusById[jobId]));
+    const failedDependency = dependencies.find(jobId => ['error', 'cancelled', 'missing'].includes(statusById[jobId]));
     if (failedDependency) {
       failed.push({ job, failedDependency, dependencyStatus: statusById[failedDependency] });
       continue;
