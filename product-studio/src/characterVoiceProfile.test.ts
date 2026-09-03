@@ -51,3 +51,21 @@ test('changing demographics resets the recommendation and target', () => {
   assert.ok(updated.voice_traits.weight > current.voice_traits.weight);
   assert.ok(updated.voice_traits.roughness > current.voice_traits.roughness);
 });
+
+test('preserves uploaded reference audio metadata during character normalization', () => {
+  const asset = normalizeCharacterAsset(role, { reference_audio: {
+    voice_id: 'voice-upload-0123456789abcdef',
+    original_name: 'reference.mp3',
+    uploaded_at: '2026-09-03T00:00:00.000Z',
+    source_format: 'mp3',
+    size_bytes: 12345,
+  } });
+
+  assert.deepEqual(asset.reference_audio, {
+    voice_id: 'voice-upload-0123456789abcdef',
+    original_name: 'reference.mp3',
+    uploaded_at: '2026-09-03T00:00:00.000Z',
+    source_format: 'mp3',
+    size_bytes: 12345,
+  });
+});

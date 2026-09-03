@@ -205,6 +205,13 @@ function normalizeCharacterAsset(role, source = {}) {
     voice_traits: normalizeVoiceTraits(source.voice_traits, age),
     voice_generation: normalizeVoiceGeneration(source.voice_generation),
     ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id && item?.gender_verified !== false && item?.pitch_target_matched !== false).slice(0, 6).map(normalizeVoiceCandidate) } : {}),
+    ...(source.reference_audio?.voice_id ? { reference_audio: {
+      voice_id: String(source.reference_audio.voice_id),
+      original_name: String(source.reference_audio.original_name || ''),
+      uploaded_at: String(source.reference_audio.uploaded_at || ''),
+      source_format: String(source.reference_audio.source_format || ''),
+      size_bytes: Math.max(0, Math.round(Number(source.reference_audio.size_bytes) || 0)),
+    } } : {}),
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
     portrait_style: normalizePortraitStyle(source.portrait_style),
@@ -1017,6 +1024,36 @@ function imageExtension(bytes) {
   throw new Error('兼容服务返回了无法识别的图像格式');
 }
 
+const REFERENCE_AUDIO_TYPES = Object.freeze([
+  'audio/wav', 'audio/x-wav', 'audio/mpeg', 'audio/mp3', 'audio/flac', 'audio/x-flac',
+  'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'application/ogg', 'application/octet-stream',
+]);
+
+function referenceAudioFormat(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 12) throw new Error('参考音频为空或内容不完整');
+  if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WAVE') return 'wav';
+  if (bytes.subarray(0, 3).toString('ascii') === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return 'mp3';
+  if (bytes.subarray(0, 4).toString('ascii') === 'fLaC') return 'flac';
+  if (bytes.subarray(0, 4).toString('ascii') === 'OggS') return 'ogg';
+  if (bytes.subarray(4, 8).toString('ascii') === 'ftyp') return 'm4a';
+  if (bytes[0] === 0xff && (bytes[1] === 0xf1 || bytes[1] === 0xf9)) return 'aac';
+  throw new Error('无法识别参考音频格式，请上传 WAV、MP3、FLAC、M4A、AAC 或 OGG');
+}
+
+function normalizeReferenceAudio(input, output) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-t', '60', '-vn',
+      '-map_metadata', '-1', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', '-f', 'wav', output,
+    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-4000); });
+    child.once('error', reject);
+    child.once('close', code => code === 0 ? resolve() : reject(new Error('参考音频转换失败，请确认文件未损坏且包含有效音轨')));
+  });
+}
+
 function launchMp3Encoder(file) {
   return spawn('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-i', file, '-vn',
@@ -1024,8 +1061,9 @@ function launchMp3Encoder(file) {
   ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawnWorker = spawn, launchEncoder = launchMp3Encoder, remoteFetch = fetch, killProcess = process.kill } = {}) {
+export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawnWorker = spawn, launchEncoder = launchMp3Encoder, convertReferenceAudio = normalizeReferenceAudio, remoteFetch = fetch, killProcess = process.kill } = {}) {
   const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
+  app.addContentTypeParser(REFERENCE_AUDIO_TYPES, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
   const projectRoot = path.join(repoRoot, 'outputs', 'novel-projects');
   const distRoot = path.join(repoRoot, 'product-studio', 'dist');
   const jobRoot = path.join(repoRoot, 'runtime-output', 'product-jobs');
@@ -1430,6 +1468,68 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       await rename(temporary, currentPath);
       return projectForClient(payload);
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+  app.put('/api/projects/:id/roles/:roleId/reference-audio', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+    const temporaryFiles = [];
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      const projectLock = projectJobLock(id);
+      if (projectLock) return reply.code(409).send({ error: `工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成` });
+      const projectDir = path.join(projectRoot, id);
+      await access(path.join(projectDir, 'project.json'));
+      const bytes = request.body;
+      if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new Error('请选择参考音频文件');
+      if (bytes.length > 25 * 1024 * 1024) throw new Error('参考音频不能超过 25 MB');
+      const sourceFormat = referenceAudioFormat(bytes);
+      const encodedName = String(request.headers['x-audio-filename'] || '');
+      let decodedName = encodedName;
+      try { decodedName = decodeURIComponent(encodedName); } catch {}
+      const originalName = path.basename(decodedName.replaceAll('\\', '/')).slice(0, 255) || `reference.${sourceFormat}`;
+      const voiceId = `voice-upload-${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}`;
+      const processDir = path.join(projectDir, 'process');
+      const voiceDir = path.join(repoRoot, 'outputs', 'voice-library');
+      await Promise.all([mkdir(processDir, { recursive: true }), mkdir(voiceDir, { recursive: true })]);
+      const nonce = randomUUID();
+      const sourcePath = path.join(processDir, `reference-${nonce}.${sourceFormat}`);
+      const convertedPath = path.join(processDir, `reference-${nonce}.normalized.wav`);
+      temporaryFiles.push(sourcePath, convertedPath);
+      await writeFile(sourcePath, bytes);
+      await convertReferenceAudio(sourcePath, convertedPath);
+      const convertedInfo = await stat(convertedPath);
+      if (!convertedInfo.isFile() || convertedInfo.size <= 44) throw new Error('参考音频转换后没有有效声音数据');
+      const permanentAudio = path.join(voiceDir, `${voiceId}.wav`);
+      try { await access(permanentAudio); }
+      catch { await rename(convertedPath, permanentAudio); }
+      const uploadedAt = new Date().toISOString();
+      const metadata = {
+        voice_id: voiceId,
+        source: 'uploaded_reference_audio',
+        original_name: originalName,
+        uploaded_at: uploadedAt,
+        source_format: sourceFormat,
+        source_size_bytes: bytes.length,
+        sample_rate_hz: 24000,
+        channels: 1,
+        maximum_source_seconds: 60,
+      };
+      await writeFile(path.join(voiceDir, `${voiceId}.json`), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+      return {
+        voiceId,
+        originalName,
+        uploadedAt,
+        sourceFormat,
+        sizeBytes: bytes.length,
+        sampleRateHz: 24000,
+        channels: 1,
+        maximumSourceSeconds: 60,
+      };
+    } catch (error) {
+      request.log.error({ err: error }, 'reference audio upload failed');
+      return reply.code(error.code === 'ENOENT' ? 404 : (error.statusCode || 400)).send({ error: error.code === 'ENOENT' ? '工程不存在' : error.message });
+    } finally {
+      await Promise.all(temporaryFiles.map(file => rm(file, { force: true }).catch(() => {})));
+    }
   });
   app.delete('/api/projects/:id', async (request, reply) => {
     try {

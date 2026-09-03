@@ -135,6 +135,14 @@ export const api = {
   preflightStoryboardShotKeyframes: (id: string, shots: Array<Record<string, unknown>>, keyframeStyle: string, imageModel: string, allowFallback: boolean, signal?: AbortSignal) => request<{ validatedCount: number; shotIds: string[]; model: string; candidateModels: string[] }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ shots, keyframeStyle, imageModel, allowFallback, preflightOnly: true }), signal }),
   generateStoryboardKeyframes: (id: string, scenes: Array<Record<string, unknown>>, keyframeStyle: string, imageModel: string, allowFallback: boolean, signal?: AbortSignal) => request<{ keyframes: SceneKeyframeResult[]; generatedCount: number; model: string; candidateModels?: string[] }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ scenes, keyframeStyle, imageModel, allowFallback }), signal }),
   generateStoryboardShotKeyframes: (id: string, shots: Array<Record<string, unknown>>, keyframeStyle: string, imageModel: string, allowFallback: boolean, signal?: AbortSignal) => request<{ keyframes: SceneKeyframeResult[]; generatedCount: number; model: string; candidateModels: string[] }>(`/api/projects/${encodeURIComponent(id)}/storyboard/keyframes`, { method: 'POST', body: JSON.stringify({ shots, keyframeStyle, imageModel, allowFallback }), signal }),
+  uploadRoleReferenceAudio: async (id: string, roleId: string, file: File) => parseApiResponse<{
+    voiceId: string; originalName: string; uploadedAt: string; sourceFormat: string; sizeBytes: number;
+    sampleRateHz: number; channels: number; maximumSourceSeconds: number;
+  }>(await fetch(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/reference-audio`, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Audio-Filename': encodeURIComponent(file.name) },
+    body: file,
+  })),
   job: (id: string) => request<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
   cancelJob: (id: string) => request<JobCancellation>(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({}) }),
 };

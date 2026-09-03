@@ -751,7 +751,7 @@ body * { box-shadow: none !important; }
 .editor-two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .editor-voice-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .editor-voice-controls > label { min-width: 0; display: grid; gap: 8px; }
-.voice-trait-panel, .voice-generation-panel, .voice-candidate-panel { display: grid; gap: 14px; padding: 16px; border: 1px dashed rgba(255, 237, 215, .34); border-radius: 10px; background: rgba(16, 9, 4, .2); }
+.voice-trait-panel, .voice-generation-panel, .voice-candidate-panel, .reference-audio-panel { display: grid; gap: 14px; padding: 16px; border: 1px dashed rgba(255, 237, 215, .34); border-radius: 10px; background: rgba(16, 9, 4, .2); }
 .voice-trait-panel > .ant-typography, .voice-candidate-panel > .ant-typography { color: var(--cream); font-size: 11px; line-height: 1.55; }
 .voice-trait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
 .voice-trait-grid label { gap: 2px; }
@@ -764,6 +764,14 @@ body * { box-shadow: none !important; }
 .switch-field { justify-items: start; }
 .voice-candidate-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding-top: 12px; border-top: 1px dashed rgba(255, 237, 215, .22); }
 .voice-candidate-row > div { min-width: 0; display: grid; gap: 7px; }
+.reference-audio-panel > .ant-flex > div, .reference-audio-current > div { min-width: 0; display: grid; gap: 5px; }
+.reference-audio-panel > .ant-flex > div > .ant-typography { color: var(--cream); font-size: 11px; line-height: 1.55; }
+.reference-audio-input { display: none; }
+.reference-audio-current { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(250px, 1.2fr); gap: 16px; align-items: center; padding-top: 12px; border-top: 1px dashed rgba(255, 237, 215, .22); }
+.reference-audio-current .voice-preview { min-width: 0; }
+.role-editor-uploading .ant-modal-body { position: relative; }
+.role-editor-uploading .role-editor-grid { pointer-events: none; opacity: .55; }
+.role-editor-uploading .ant-modal-body::after { position: absolute; inset: 0; content: ''; cursor: wait; }
 .voice-selection-review { display: grid; gap: 16px; margin-top: 18px; }
 .voice-selection-role { display: grid; gap: 14px; padding: 18px; border: 1px solid rgba(239, 144, 65, .58); border-radius: 12px; background: rgba(115, 52, 18, .18); }
 .voice-selection-role > header { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
@@ -992,6 +1000,7 @@ body * { box-shadow: none !important; }
   .role-editor-modal { top: 12px; max-width: calc(100vw - 24px); margin: 0 auto; padding-bottom: 12px; }
   .role-editor-modal .ant-modal-body { max-height: calc(100svh - 154px); padding: 18px; }
   .role-editor-grid, .editor-two-column { grid-template-columns: minmax(0, 1fr); }
+  .reference-audio-current { grid-template-columns: minmax(0, 1fr); }
   .role-editor-fields > *, .role-editor-fields label > *, .editor-two-column > *, .editor-voice-controls > * { min-width: 0 !important; max-width: 100% !important; }
   .role-editor-fields .ant-select, .role-editor-fields .ant-input, .role-editor-fields textarea { width: 100% !important; min-width: 0 !important; max-width: 100% !important; }
   .role-editor-fields .ant-typography { width: auto !important; white-space: normal !important; }

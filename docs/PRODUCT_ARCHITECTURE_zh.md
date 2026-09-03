@@ -207,3 +207,5 @@ React 分句编辑事件在调用工程状态更新前同步登记 dirty 状态�
 桌面分句表保留 Ant Design 的 560px 初始纵向滚动值作为安全回退。进入分句导演页签后，前端读取视口高度和表格顶部坐标，扣除 132px 的表头、分页及底部安全空间，把结果写入 `--segment-table-body-height`。结果下限为 560px。ResizeObserver、窗口 resize 事件和被动 scroll 事件负责在容器尺寸、窗口尺寸或表格可视位置变化后重新计算，连续事件通过动画帧合并。800px 及以下由后置响应式规则把正文最大高度恢复为无上限，继续使用页面自然滚动。
 
 全局 Ant Design message 容器使用左右 12px 的视口安全边界，并显式清除组件默认的水平半宽位移，避免 `left: 12px` 与 `translateX(-50%)` 叠加后把提示推到视口外。每条 notice wrapper 使用 Flex 水平居中，内容最大宽度为 520px，并允许长错误文字换行。提示顶部至少为 64px，使其位于顶部工程操作浮条下方；安全区域更高时按 `safe-area-inset-top` 增加距离。
+
+角色参考音频通过 `PUT /api/projects/:id/roles/:roleId/reference-audio` 以原始二进制上传。服务端按文件头识别 WAV、MP3、FLAC、M4A、AAC 或 OGG，限制 25 MB，使用 FFmpeg 截取最长 60 秒并转换为 24 kHz 单声道 PCM WAV。原始字节的 SHA-256 摘要生成稳定的 `voice-upload-*` 标识，标准化音频和来源元数据写入 `outputs/voice-library`。接口只验证工程并注册永久音色，因此尚未保存的手工新角色也能使用；前端将返回标识写入角色草稿，用户应用角色设置并保存工程后，现有角色音色解析和分句渲染链路自动使用该参考音频。上传过程中角色卡片禁止关闭和其他交互。

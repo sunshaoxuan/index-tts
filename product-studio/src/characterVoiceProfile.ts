@@ -79,6 +79,13 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     voice_traits: normalizeVoiceTraits(input?.voice_traits ?? recommendedVoiceTraits(age)),
     voice_generation: normalizeVoiceGeneration(input?.voice_generation),
     voice_candidates: Array.isArray(input?.voice_candidates) ? input.voice_candidates.filter(item => item?.voice_id).slice(0, 6) : undefined,
+    reference_audio: input?.reference_audio?.voice_id ? {
+      voice_id: String(input.reference_audio.voice_id),
+      original_name: String(input.reference_audio.original_name || ''),
+      uploaded_at: String(input.reference_audio.uploaded_at || ''),
+      source_format: String(input.reference_audio.source_format || ''),
+      size_bytes: Math.max(0, Math.round(Number(input.reference_audio.size_bytes) || 0)),
+    } : undefined,
     portrait_url: input?.portrait_url,
     portrait_prompt: input?.portrait_prompt,
     portrait_style: PORTRAIT_STYLE_IDS.has(requestedPortraitStyle) ? requestedPortraitStyle : DEFAULT_PORTRAIT_STYLE,

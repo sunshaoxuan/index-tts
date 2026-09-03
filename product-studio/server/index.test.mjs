@@ -884,6 +884,75 @@ test('creates a versioned project and saves chapter and pronunciation data', asy
   await app.close();
 });
 
+test('registers uploaded WAV as a permanent role reference voice and preserves its metadata on save', async () => {
+  const { root } = await fixture();
+  const conversions = [];
+  const app = await buildApp({
+    repoRoot: root,
+    convertReferenceAudio: async (input, output) => {
+      conversions.push({ input, output });
+      await writeFile(output, await readFile(input));
+    },
+  });
+  const source = pcmWav(1);
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/projects/demo/roles/narrator/reference-audio',
+    headers: { 'content-type': 'audio/wav', 'x-audio-filename': encodeURIComponent('旁白 参考.wav') },
+    payload: source,
+  });
+
+  assert.equal(response.statusCode, 200);
+  const uploaded = response.json();
+  assert.match(uploaded.voiceId, /^voice-upload-[0-9a-f]{16}$/);
+  assert.equal(uploaded.originalName, '旁白 参考.wav');
+  assert.equal(uploaded.sourceFormat, 'wav');
+  assert.equal(uploaded.sizeBytes, source.length);
+  assert.equal(uploaded.sampleRateHz, 24000);
+  assert.equal(conversions.length, 1);
+  const permanentWav = path.join(root, 'outputs', 'voice-library', `${uploaded.voiceId}.wav`);
+  assert.deepEqual(await readFile(permanentWav), source);
+  const metadata = JSON.parse(await readFile(path.join(root, 'outputs', 'voice-library', `${uploaded.voiceId}.json`), 'utf8'));
+  assert.equal(metadata.original_name, '旁白 参考.wav');
+  assert.equal(metadata.source, 'uploaded_reference_audio');
+  const audio = await app.inject(`/api/voices/${uploaded.voiceId}/audio`);
+  assert.equal(audio.statusCode, 200);
+  assert.equal(audio.headers['content-type'], 'audio/wav');
+
+  const project = (await app.inject('/api/projects/demo')).json();
+  project.roles[0][5] = uploaded.voiceId;
+  project.character_assets.narrator.reference_audio = {
+    voice_id: uploaded.voiceId,
+    original_name: uploaded.originalName,
+    uploaded_at: uploaded.uploadedAt,
+    source_format: uploaded.sourceFormat,
+    size_bytes: uploaded.sizeBytes,
+  };
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().roles[0][5], uploaded.voiceId);
+  assert.equal(saved.json().character_assets.narrator.reference_audio.original_name, '旁白 参考.wav');
+  assert.ok(saved.json().voice_files.includes(permanentWav));
+  await app.close();
+});
+
+test('rejects content that only claims to be an MP3 reference audio file', async () => {
+  const { root } = await fixture();
+  let converted = false;
+  const app = await buildApp({ repoRoot: root, convertReferenceAudio: async () => { converted = true; } });
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/projects/demo/roles/narrator/reference-audio',
+    headers: { 'content-type': 'audio/mpeg', 'x-audio-filename': 'fake.mp3' },
+    payload: Buffer.from('this is not an mp3 file'),
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /无法识别参考音频格式/);
+  assert.equal(converted, false);
+  await app.close();
+});
+
 test('accepts one legacy large save and returns compact director history summaries', async () => {
   const { root, project } = await fixture();
   project.director_history = [{

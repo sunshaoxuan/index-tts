@@ -65,6 +65,13 @@ export interface CharacterAsset {
   voice_traits: VoiceTraits;
   voice_generation: VoiceGenerationSettings;
   voice_candidates?: VoiceCandidate[];
+  reference_audio?: {
+    voice_id: string;
+    original_name: string;
+    uploaded_at: string;
+    source_format: string;
+    size_bytes: number;
+  };
   portrait_url?: string;
   portrait_prompt?: string;
   portrait_style: string;
