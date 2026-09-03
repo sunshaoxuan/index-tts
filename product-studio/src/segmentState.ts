@@ -20,6 +20,35 @@ export function updateSegmentByOrder(
   return found ? updatedSegments : segments;
 }
 
+export function updateSegmentPaceInBulk(
+  segments: SegmentRow[],
+  pace: string,
+  selectedOrders?: number[],
+): { segments: SegmentRow[]; targetedCount: number; changedCount: number } {
+  const normalizedPace = String(pace || '').trim();
+  if (!normalizedPace) throw new Error('请选择要批量应用的分句节奏');
+
+  const selected = selectedOrders === undefined ? undefined : new Set(selectedOrders);
+  if (selected && !selected.size) throw new Error('请至少选择一条分句');
+  if (selected) {
+    const existing = new Set(segments.map(row => row[0]));
+    if ([...selected].some(order => !existing.has(order))) throw new Error('所选分句已变化，请重新选择');
+  }
+
+  let targetedCount = 0;
+  let changedCount = 0;
+  const updated = segments.map(row => {
+    if (selected && !selected.has(row[0])) return row;
+    targetedCount += 1;
+    if (row[10] === normalizedPace) return row;
+    changedCount += 1;
+    const next = [...row] as SegmentRow;
+    next[10] = normalizedPace;
+    return next;
+  });
+  return { segments: changedCount ? updated : segments, targetedCount, changedCount };
+}
+
 function resequenceSegments(segments: SegmentRow[]): SegmentRow[] {
   return segments.map((row, index) => [index + 1, ...row.slice(1)] as SegmentRow);
 }

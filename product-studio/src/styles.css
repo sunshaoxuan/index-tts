@@ -535,6 +535,10 @@ body * { box-shadow: none !important; }
 .studio-table .ant-table-tbody > tr:nth-child(even) > .ant-table-cell { background: rgba(80, 45, 24, .5) !important; }
 .studio-table .ant-table-row:hover > td { background: rgba(112, 61, 30, .58) !important; }
 .studio-table .ant-select, .studio-table .ant-input-number, .cell-control { width: 100%; }
+.segment-bulk-pace { margin-top: 18px; padding: 14px 0; border-top: 1px dashed var(--cork); display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.segment-bulk-pace > div { min-width: min(100%, 260px); margin-right: auto; display: grid; gap: 3px; }
+.segment-bulk-pace > div > .ant-typography:last-child { color: rgba(255, 237, 215, .68); font-size: 11px; }
+.segment-bulk-pace > .ant-select { width: 190px; }
 .segment-editor-toolbar { margin-top: 18px; padding: 14px 0; border-top: 1px dashed var(--cork); border-bottom: 1px dashed var(--cork); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .segment-editor-toolbar > .ant-typography { margin: 0; color: var(--cream); font-size: 14px; }
 .segment-save-state { margin-top: 12px; }
@@ -1006,6 +1010,8 @@ body * { box-shadow: none !important; }
   .role-editor-fields .ant-typography { width: auto !important; white-space: normal !important; }
   .segment-editor-toolbar { align-items: stretch; }
   .segment-editor-toolbar > .ant-space { width: 100%; }
+  .segment-bulk-pace { align-items: stretch; }
+  .segment-bulk-pace > div, .segment-bulk-pace > .ant-select, .segment-bulk-pace > .ant-btn, .segment-bulk-pace > .ant-popconfirm, .segment-bulk-pace > .ant-popconfirm > .ant-btn { width: 100%; }
   .segment-row-primary { grid-template-columns: 56px minmax(0, 1fr); }
   .segment-source-field, .segment-synthesis-field { grid-column: 1 / -1; }
   .segment-row-voice {

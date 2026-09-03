@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RoleRow, SegmentRow } from './types.ts';
-import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder } from './segmentState.ts';
+import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentPaceInBulk } from './segmentState.ts';
 
 const roles: RoleRow[] = [
   ['narrator', '旁白', 'narrator', '', '', '', '', '否'],
@@ -42,6 +42,33 @@ test('keeps an edited synthesis text in the project segment state', () => {
   assert.equal(updated[0][5], '原文 21');
   assert.equal(updated[0][6], edited);
   assert.equal(updated[1], segments[1]);
+});
+
+test('updates the pace of every segment in one bulk operation', () => {
+  const rows = [segment(1), segment(2), segment(3)];
+  rows[1][10] = '舒缓';
+
+  const result = updateSegmentPaceInBulk(rows, '舒缓');
+
+  assert.equal(result.targetedCount, 3);
+  assert.equal(result.changedCount, 2);
+  assert.deepEqual(result.segments.map(row => row[10]), ['舒缓', '舒缓', '舒缓']);
+  assert.equal(result.segments[1], rows[1]);
+  assert.equal(rows[0][10], '自然');
+});
+
+test('updates only selected segment paces across pages and rejects stale selections', () => {
+  const rows = Array.from({ length: 103 }, (_, index) => segment(index + 1));
+
+  const result = updateSegmentPaceInBulk(rows, '紧凑', [2, 103]);
+
+  assert.equal(result.targetedCount, 2);
+  assert.equal(result.changedCount, 2);
+  assert.equal(result.segments[1][10], '紧凑');
+  assert.equal(result.segments[102][10], '紧凑');
+  assert.equal(result.segments[0], rows[0]);
+  assert.throws(() => updateSegmentPaceInBulk(rows, '舒缓', []), /至少选择一条/);
+  assert.throws(() => updateSegmentPaceInBulk(rows, '舒缓', [104]), /已变化/);
 });
 
 test('deletes one or more selected segments and resequences the remaining rows', () => {
