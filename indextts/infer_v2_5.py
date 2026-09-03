@@ -407,7 +407,7 @@ class IndexTTS2:
             audio = audio[:, :max_audio_samples]
         return audio, sr
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def speaker_similarity(self, reference_audio_path, candidate_audio_path):
         """Return CAMPPlus cosine similarity for a reference and generated WAV."""
         def embedding(audio_path):

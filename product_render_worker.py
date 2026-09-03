@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -13,6 +15,17 @@ from voice_design_daemon_client import release_voice_design_model
 from render_daemon_client import enqueue_render_request, ensure_render_daemon, read_render_state
 from voice_design_daemon_client import process_alive
 from runtime_python import main_python
+from standard_reference import (
+    ECHO_SIMILARITY_THRESHOLD,
+    SPEAKER_SIMILARITY_THRESHOLD,
+    STANDARD_REFERENCE_CANDIDATE_COUNT,
+    STANDARD_REFERENCE_MAX_ATTEMPTS,
+    STANDARD_REFERENCE_PACES,
+    cleanup_unreferenced_standard_voices,
+    delayed_echo_similarity,
+    register_standard_voice,
+    standard_reference_score,
+)
 
 
 MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024**3
@@ -136,7 +149,178 @@ class RenderRuntime:
         return torch, IndexTTS2, NovelProjectStore, pronunciation_rows, render_directed_audio, self.model, False
 
 
+def execute_standard_reference_request(
+    request: dict[str, Any],
+    result_path: Path,
+    status_path: Path,
+    runtime: RenderRuntime,
+) -> dict[str, Any]:
+    root = Path(request["root"]).resolve()
+    options = request.get("standard_reference") or {}
+    role_id = str(options.get("role_id") or "").strip()
+    pace_preset = str(options.get("pace_preset") or "舒缓")
+    if pace_preset not in STANDARD_REFERENCE_PACES:
+        raise ValueError("标准参考样本节奏无效")
+    audition_text = str(options.get("audition_text") or "").strip()
+    if not 10 <= len(audition_text) <= 500:
+        raise ValueError("标准参考样本试听文本必须在 10 至 500 字符之间")
+
+    _, _, NovelProjectStore, _, _, model, model_reused = runtime.get_model(root, status_path)
+    from text_director import analyze_segment_candidate
+
+    store = NovelProjectStore(root / "outputs" / "novel-projects", root / "outputs" / "voice-library")
+    project = store.load(request["project_id"])
+    role = next((row for row in project.get("roles") or [] if str(row[0]) == role_id), None)
+    if role is None:
+        raise ValueError("角色不存在")
+    asset = (project.get("character_assets") or {}).get(role_id) or {}
+    source_voice_id = str((asset.get("reference_audio") or {}).get("voice_id") or "").strip()
+    if not source_voice_id:
+        raise ValueError("请先上传并保存原始参考音频")
+    source_path = (root / "outputs" / "voice-library" / f"{Path(source_voice_id).stem}.wav").resolve()
+    if not source_path.is_file():
+        raise ValueError("原始参考音频文件不存在，请重新上传")
+
+    pace = STANDARD_REFERENCE_PACES[pace_preset]
+    run_id = hashlib.sha256(f"{request['project_id']}:{role_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:16]
+    staging = store.project_dir(project["project_id"]) / "process" / "standard-reference-staging" / run_id
+    staging.mkdir(parents=True, exist_ok=False)
+    generated: list[tuple[Path, dict[str, Any]]] = []
+    try:
+        with runtime.model_lock:
+            for attempt in range(STANDARD_REFERENCE_MAX_ATTEMPTS):
+                write_json(status_path, {
+                    "phase": "standardizing",
+                    "fraction": 0.05 + attempt / STANDARD_REFERENCE_MAX_ATTEMPTS * 0.82,
+                    "message": f"正在生成并检查标准参考样本 {attempt + 1}/{STANDARD_REFERENCE_MAX_ATTEMPTS}",
+                })
+                candidate_path = staging / f"candidate-{attempt + 1}.wav"
+                result = model.infer(
+                    spk_audio_prompt=str(source_path),
+                    text=audition_text,
+                    lang=str(options.get("language") or "ZH"),
+                    output_path=str(candidate_path),
+                    emo_audio_prompt=None,
+                    emo_alpha=0.45,
+                    emo_vector=None,
+                    use_emo_text=True,
+                    emo_text=f"{pace['prompt']}保持原始说话人的音色身份，单人干声，避免回音、重叠人声和夸张变声。",
+                    use_random=True,
+                    duration_factor=float(pace["duration_factor"]),
+                    max_text_tokens_per_segment=120,
+                    verbose=False,
+                )
+                if not result or not candidate_path.is_file():
+                    continue
+                metrics = analyze_segment_candidate(candidate_path, audition_text)
+                metrics["audio_quality_passed"] = bool(metrics["quality_passed"])
+                similarity = float(model.speaker_similarity(str(source_path), str(candidate_path)))
+                metrics["speaker_similarity"] = round(similarity, 6)
+                metrics["speaker_similarity_threshold"] = SPEAKER_SIMILARITY_THRESHOLD
+                metrics["speaker_verified"] = similarity >= SPEAKER_SIMILARITY_THRESHOLD
+                echo_similarity = delayed_echo_similarity(candidate_path)
+                metrics["echo_similarity"] = echo_similarity
+                metrics["echo_threshold"] = ECHO_SIMILARITY_THRESHOLD
+                metrics["echo_verified"] = echo_similarity <= ECHO_SIMILARITY_THRESHOLD
+                metrics["quality_passed"] = bool(
+                    metrics["audio_quality_passed"]
+                    and metrics["speaker_verified"]
+                    and metrics["echo_verified"]
+                )
+                metrics["score"] = standard_reference_score(metrics)
+                generated.append((candidate_path, metrics))
+                base_safe = [item for item in generated if item[1]["audio_quality_passed"] and item[1]["echo_verified"]]
+                passing = [item for item in base_safe if item[1]["quality_passed"]]
+                if len(base_safe) >= STANDARD_REFERENCE_CANDIDATE_COUNT and passing:
+                    break
+
+        base_safe = [item for item in generated if item[1]["audio_quality_passed"] and item[1]["echo_verified"]]
+        if len(base_safe) < STANDARD_REFERENCE_CANDIDATE_COUNT:
+            raise RuntimeError(f"仅生成 {len(base_safe)} 个通过基础音频和回声门禁的候选，需要 {STANDARD_REFERENCE_CANDIDATE_COUNT} 个")
+        selected = sorted(base_safe, key=lambda item: float(item[1]["score"]), reverse=True)[:STANDARD_REFERENCE_CANDIDATE_COUNT]
+        if not any(item[1]["quality_passed"] for item in selected):
+            raise RuntimeError("标准参考样本均未通过音色相似度门禁，请重新生成或更换原始样本")
+
+        generated_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        candidates = []
+        for rank, (candidate_path, metrics) in enumerate(selected, start=1):
+            voice_id = register_standard_voice(root / "outputs" / "voice-library", candidate_path, {
+                "project_id": project["project_id"],
+                "role_id": role_id,
+                "role_name": str(role[1]),
+                "source_voice_id": source_voice_id,
+                "audition_text": audition_text,
+                "pace_preset": pace_preset,
+                "duration_factor": float(pace["duration_factor"]),
+                "rank": rank,
+                "metrics": metrics,
+            })
+            candidates.append({
+                "voice_id": voice_id,
+                "rank": rank,
+                "duration_seconds": float(metrics.get("duration_seconds") or 0),
+                "audio_quality_passed": bool(metrics["audio_quality_passed"]),
+                "speaker_similarity": float(metrics["speaker_similarity"]),
+                "speaker_similarity_threshold": SPEAKER_SIMILARITY_THRESHOLD,
+                "speaker_verified": bool(metrics["speaker_verified"]),
+                "echo_similarity": float(metrics["echo_similarity"]),
+                "echo_threshold": ECHO_SIMILARITY_THRESHOLD,
+                "echo_verified": bool(metrics["echo_verified"]),
+                "quality_passed": bool(metrics["quality_passed"]),
+                "score": float(metrics["score"]),
+                "selected": False,
+                "generated_at": generated_at,
+            })
+
+        previous = asset.get("standard_reference") or {}
+        old_unselected = [
+            str(item.get("voice_id") or "")
+            for item in previous.get("candidates") or []
+            if not item.get("selected")
+        ]
+        asset["standard_reference"] = {
+            "source_voice_id": source_voice_id,
+            "audition_text": audition_text,
+            "pace_preset": pace_preset,
+            "duration_factor": float(pace["duration_factor"]),
+            "generated_at": generated_at,
+            "candidates": candidates,
+            **({"adopted_voice_id": previous["adopted_voice_id"]} if previous.get("adopted_voice_id") else {}),
+            **({"adopted_at": previous["adopted_at"]} if previous.get("adopted_at") else {}),
+            **({"restored_at": previous["restored_at"]} if previous.get("restored_at") else {}),
+        }
+        project.setdefault("character_assets", {})[role_id] = asset
+        saved = store.save(
+            project["project_id"], title=project.get("title", ""), content_type=project.get("content_type", "novel"),
+            source_text=project.get("source_text", ""), guidance=project.get("guidance", ""), document=project.get("document") or {},
+            roles=project.get("roles") or [], segments=project.get("segments") or [], pronunciations=project.get("pronunciations") or [],
+            voice_files=project.get("voice_files") or [], character_assets=project.get("character_assets") or {},
+            director_history=project.get("director_history") or [], director_memory=project.get("director_memory") or {},
+        )
+        removed = cleanup_unreferenced_standard_voices(store.root, store.voice_library_root, old_unselected)
+        payload = {
+            "role_id": role_id,
+            "source_voice_id": source_voice_id,
+            "candidate_count": len(candidates),
+            "passing_count": sum(1 for item in candidates if item["quality_passed"]),
+            "removed_unreferenced_candidates": removed,
+            "render_runtime": {"model_reused": model_reused, "resident": True, "pid": os.getpid()},
+            "updated_at": saved.get("updated_at"),
+        }
+        write_json(result_path, payload)
+        write_json(status_path, {
+            "phase": "complete",
+            "fraction": 1.0,
+            "message": f"已生成 {len(candidates)} 个标准参考候选，其中 {payload['passing_count']} 个通过全部自动门禁，请 A/B 试听后采用",
+        })
+        return payload
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def execute_render_request(request: dict[str, Any], result_path: Path, status_path: Path, runtime: RenderRuntime | None = None) -> dict[str, Any]:
+    if request.get("standard_reference"):
+        return execute_standard_reference_request(request, result_path, status_path, runtime or RenderRuntime())
     root = Path(request["root"]).resolve()
     cache_only = bool(request.get("cache_only"))
     if cache_only:

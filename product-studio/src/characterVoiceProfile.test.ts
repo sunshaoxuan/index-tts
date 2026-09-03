@@ -69,3 +69,25 @@ test('preserves uploaded reference audio metadata during character normalization
     size_bytes: 12345,
   });
 });
+
+test('normalizes standardized reference candidates without changing the original source id', () => {
+  const asset = normalizeCharacterAsset(role, {
+    standard_reference: {
+      source_voice_id: 'voice-upload-original',
+      audition_text: '固定试听文本',
+      pace_preset: '舒缓',
+      duration_factor: 1.18,
+      generated_at: '2026-09-04T00:00:00Z',
+      candidates: [{
+        voice_id: 'voice-standard-a', rank: 1, duration_seconds: 4.2, audio_quality_passed: true,
+        speaker_similarity: 0.84, speaker_similarity_threshold: 0.72, speaker_verified: true,
+        echo_similarity: 0.12, echo_threshold: 0.72, echo_verified: true, quality_passed: true,
+        score: 102.5, selected: false, generated_at: '2026-09-04T00:00:00Z',
+      }],
+    },
+  });
+
+  assert.equal(asset.standard_reference?.source_voice_id, 'voice-upload-original');
+  assert.equal(asset.standard_reference?.candidates[0].voice_id, 'voice-standard-a');
+  assert.equal(asset.standard_reference?.candidates[0].selected, false);
+});

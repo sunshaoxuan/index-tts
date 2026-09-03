@@ -199,6 +199,32 @@ function normalizeCharacterAsset(role, source = {}) {
   const max = Number.isFinite(Number(source.pitch_max_hz)) ? Number(source.pitch_max_hz) : suggested.max;
   const requested = Number(source.pitch_target_hz);
   const target = Number.isFinite(requested) ? Math.max(min, Math.min(max, Math.round(requested))) : suggested.target;
+  const standardReference = source.standard_reference?.source_voice_id ? {
+    source_voice_id: String(source.standard_reference.source_voice_id),
+    audition_text: String(source.standard_reference.audition_text || source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
+    pace_preset: source.standard_reference.pace_preset === '自然' ? '自然' : '舒缓',
+    duration_factor: Number(source.standard_reference.duration_factor) || (source.standard_reference.pace_preset === '自然' ? 1.05 : 1.18),
+    generated_at: String(source.standard_reference.generated_at || ''),
+    candidates: (Array.isArray(source.standard_reference.candidates) ? source.standard_reference.candidates : []).filter(item => item?.voice_id).slice(0, 3).map((item, index) => ({
+      voice_id: String(item.voice_id),
+      rank: Math.max(1, Math.round(Number(item.rank) || index + 1)),
+      duration_seconds: Math.max(0, Number(item.duration_seconds) || 0),
+      audio_quality_passed: Boolean(item.audio_quality_passed),
+      speaker_similarity: Number(item.speaker_similarity) || 0,
+      speaker_similarity_threshold: Number(item.speaker_similarity_threshold) || 0.72,
+      speaker_verified: Boolean(item.speaker_verified),
+      echo_similarity: Math.max(0, Number(item.echo_similarity) || 0),
+      echo_threshold: Number(item.echo_threshold) || 0.72,
+      echo_verified: Boolean(item.echo_verified),
+      quality_passed: Boolean(item.quality_passed),
+      score: Number(item.score) || 0,
+      selected: Boolean(item.selected),
+      generated_at: String(item.generated_at || source.standard_reference.generated_at || ''),
+    })),
+    ...(source.standard_reference.adopted_voice_id ? { adopted_voice_id: String(source.standard_reference.adopted_voice_id) } : {}),
+    ...(source.standard_reference.adopted_at ? { adopted_at: String(source.standard_reference.adopted_at) } : {}),
+    ...(source.standard_reference.restored_at ? { restored_at: String(source.standard_reference.restored_at) } : {}),
+  } : undefined;
   return {
     gender, age, pitch_min_hz: min, pitch_max_hz: max, pitch_target_hz: target,
     audition_text: String(source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
@@ -212,6 +238,7 @@ function normalizeCharacterAsset(role, source = {}) {
       source_format: String(source.reference_audio.source_format || ''),
       size_bytes: Math.max(0, Math.round(Number(source.reference_audio.size_bytes) || 0)),
     } } : {}),
+    ...(standardReference ? { standard_reference: standardReference } : {}),
     ...(source.portrait_url ? { portrait_url: String(source.portrait_url) } : {}),
     ...(source.portrait_prompt ? { portrait_prompt: String(source.portrait_prompt) } : {}),
     portrait_style: normalizePortraitStyle(source.portrait_style),
@@ -1203,6 +1230,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       jobId: safeProjectId(item.jobId),
       kind: String(item.kind),
       projectId: safeProjectId(item.projectId),
+      ...(item.roleId ? { roleId: safeProjectId(item.roleId) } : {}),
       modelKey: String(item.modelKey),
       dependencies: (Array.isArray(item.dependencies) ? item.dependencies : []).map(value => safeProjectId(value)),
       createdAt: String(item.createdAt),
@@ -1266,7 +1294,13 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const input = JSON.parse(await readFile(expectedInput, 'utf8'));
       const projectId = safeProjectId(input.project_id);
       await access(path.join(projectRoot, projectId, 'project.json'));
-      activeJob = { jobId, kind: 'render', projectId, pid: runtimeState.pid };
+      activeJob = {
+        jobId,
+        kind: input.standard_reference ? 'standardize' : 'render',
+        projectId,
+        ...(input.standard_reference?.role_id ? { roleId: safeProjectId(input.standard_reference.role_id) } : {}),
+        pid: runtimeState.pid,
+      };
       await writeFile(activeJobFile, JSON.stringify(activeJob), 'utf8');
     } catch {}
   }
@@ -1927,6 +1961,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           await writeFile(status, JSON.stringify({ phase: 'error', fraction: 1, message: 'Worker 已退出，但没有写入完成状态', modelKey: job.modelKey, dependencies: job.dependencies }), 'utf8');
         }
       } finally {
+        if (job.kind === 'standardize') {
+          await rm(path.join(projectRoot, job.projectId, 'process', 'standard-reference-staging'), { recursive: true, force: true }).catch(() => {});
+        }
         if (activeChild?.jobId === job.jobId) activeChild = undefined;
         cancelledJobIds.delete(job.jobId);
         lastModelKey = job.modelKey;
@@ -2015,13 +2052,21 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       }
       const dependencies = [activeJob, ...pendingJobs].filter(job => job?.projectId === id).map(job => job.jobId);
       const modelKey = jobModelKey(kind, payload.config);
-      const queuedJob = { jobId, kind, projectId: id, modelKey, dependencies, createdAt: new Date().toISOString() };
+      const queuedJob = {
+        jobId,
+        kind,
+        projectId: id,
+        ...(options.standard_reference?.role_id ? { roleId: safeProjectId(options.standard_reference.role_id) } : {}),
+        modelKey,
+        dependencies,
+        createdAt: new Date().toISOString(),
+      };
       await writeFile(path.join(dir, 'input.json'), JSON.stringify(payload), 'utf8');
       await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入模型队列', modelKey, dependencies, queuePosition: pendingJobs.length + 1 }), 'utf8');
       pendingJobs.push(queuedJob);
       await persistQueue();
       await scheduleQueue();
-      return { jobId, kind, modelKey, dependencies };
+      return { jobId, kind, modelKey, dependencies, ...(queuedJob.roleId ? { roleId: queuedJob.roleId } : {}) };
     } catch (error) {
       try { await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'error', fraction: 1, message: `任务入队失败：${error.message}` }), 'utf8'); } catch {}
       throw error;
@@ -2029,7 +2074,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
   }
 
   async function terminateOwnedRuntime(job, statusFile) {
-    if (!['voice', 'render'].includes(job.kind)) return false;
+    if (!['voice', 'render', 'standardize'].includes(job.kind)) return false;
     try {
       const runtimeName = job.kind === 'voice' ? 'voice-design-runtime' : 'render-runtime';
       const runtimeDir = path.join(repoRoot, 'runtime-output', runtimeName);
@@ -2146,6 +2191,88 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       return { selected: true, order, candidateId, manualOverride };
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });
+  app.post('/api/projects/:id/roles/:roleId/standard-reference', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const role = project.roles.find(row => String(row[0]) === roleId);
+      if (!role) throw new Error('角色不存在');
+      const asset = project.character_assets?.[roleId];
+      if (!asset?.reference_audio?.voice_id) throw new Error('请先上传、应用并保存原始参考音频');
+      const pacePreset = request.body?.pacePreset === '自然' ? '自然' : request.body?.pacePreset === '舒缓' ? '舒缓' : '';
+      if (!pacePreset) throw new Error('标准参考样本节奏无效');
+      const auditionText = String(request.body?.auditionText || asset.audition_text || '').trim();
+      if (auditionText.length < 10 || auditionText.length > 500) throw new Error('标准参考样本试听文本必须在 10 至 500 字符之间');
+      return reply.code(202).send(await startJob(id, 'standardize', {
+        standard_reference: { role_id: roleId, pace_preset: pacePreset, audition_text: auditionText, language: 'ZH' },
+      }));
+    } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
+  });
+
+  async function saveStandardReferenceSelection(id, roleId, requestedVoiceId) {
+    const projectLock = projectJobLock(id);
+    if (projectLock) {
+      const error = new Error(`工程版本已被任务 ${projectLock.jobId} 锁定，请等待任务完成`);
+      error.statusCode = 409;
+      throw error;
+    }
+    const projectPath = path.join(projectRoot, id, 'project.json');
+    const current = normalizeProject(JSON.parse(await readFile(projectPath, 'utf8')));
+    const payload = structuredClone(current);
+    const role = payload.roles.find(row => String(row[0]) === roleId);
+    if (!role) throw new Error('角色不存在');
+    const asset = payload.character_assets?.[roleId];
+    const standardized = asset?.standard_reference;
+    if (!asset?.reference_audio?.voice_id || !standardized) throw new Error('当前角色没有标准参考样本候选');
+    const restoring = requestedVoiceId === asset.reference_audio.voice_id;
+    const candidate = restoring ? undefined : standardized.candidates.find(item => item.voice_id === requestedVoiceId);
+    if (!restoring && !candidate) throw new Error('标准参考样本候选不存在或已经过期');
+    if (candidate && !candidate.quality_passed) throw new Error('该候选未通过全部自动门禁，不能采用');
+    const voiceId = restoring ? asset.reference_audio.voice_id : candidate.voice_id;
+    const voiceFile = path.join(repoRoot, 'outputs', 'voice-library', `${safeProjectId(voiceId)}.wav`);
+    await access(voiceFile);
+    role[5] = voiceId;
+    role[7] = '否';
+    const changedAt = new Date().toISOString();
+    standardized.candidates = standardized.candidates.map(item => ({ ...item, selected: item.voice_id === voiceId }));
+    if (restoring) {
+      standardized.restored_at = changedAt;
+    } else {
+      standardized.adopted_voice_id = voiceId;
+      standardized.adopted_at = changedAt;
+      delete standardized.restored_at;
+    }
+    await reconcileRoleVoiceFiles(payload);
+    const changes = directorChangeKinds(directorSnapshot(current), directorSnapshot(payload));
+    preserveDirectorOperations(current, payload);
+    payload.artifact_invalidation = await invalidateDirectorArtifacts(path.join(projectRoot, id), current, payload, changes);
+    payload.updated_at = changedAt;
+    const temporary = `${projectPath}.${randomUUID()}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    await rename(temporary, projectPath);
+    return projectForClient(payload);
+  }
+
+  app.post('/api/projects/:id/roles/:roleId/standard-reference/candidates/:voiceId/adopt', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      const voiceId = safeProjectId(request.params.voiceId);
+      return await saveStandardReferenceSelection(id, roleId, voiceId);
+    } catch (error) { return reply.code(error.code === 'ENOENT' ? 404 : (error.statusCode || 400)).send({ error: error.code === 'ENOENT' ? '标准参考音频不存在' : error.message }); }
+  });
+
+  app.post('/api/projects/:id/roles/:roleId/standard-reference/restore', async (request, reply) => {
+    try {
+      const id = safeProjectId(request.params.id);
+      const roleId = safeProjectId(request.params.roleId);
+      const project = normalizeProject(JSON.parse(await readFile(path.join(projectRoot, id, 'project.json'), 'utf8')));
+      const sourceVoiceId = project.character_assets?.[roleId]?.reference_audio?.voice_id;
+      if (!sourceVoiceId) throw new Error('当前角色没有可恢复的原始上传样本');
+      return await saveStandardReferenceSelection(id, roleId, sourceVoiceId);
+    } catch (error) { return reply.code(error.code === 'ENOENT' ? 404 : (error.statusCode || 400)).send({ error: error.code === 'ENOENT' ? '原始参考音频不存在' : error.message }); }
+  });
   app.post('/api/projects/:id/voices', async (request, reply) => {
     try { return reply.code(202).send(await startJob(request.params.id, 'voice')); }
     catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
@@ -2180,9 +2307,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (activeJob?.jobId === id && Number.isSafeInteger(activeJob.pid) && activeJob.pid > 0) {
         try { process.kill(activeJob.pid, 0); telemetry.workerAlive = true; } catch {}
       }
-      if (activeJob?.jobId === id && ['voice', 'render'].includes(activeJob.kind)) {
+      if (activeJob?.jobId === id && ['voice', 'render', 'standardize'].includes(activeJob.kind)) {
         try {
-          const engine = activeJob.kind;
+          const engine = activeJob.kind === 'voice' ? 'voice' : 'render';
           const runtimeDir = engine === 'voice' ? 'voice-design-runtime' : 'render-runtime';
           const runtimeState = JSON.parse(await readFile(path.join(repoRoot, 'runtime-output', runtimeDir, 'state.json'), 'utf8'));
           const runtimePid = Number(runtimeState.pid);

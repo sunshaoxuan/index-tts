@@ -3,7 +3,7 @@ function normalizedPart(value, fallback) {
 }
 
 export function jobModelKey(kind, config = {}) {
-  if (kind === 'render') return 'indextts:index-tts-2.5';
+  if (kind === 'render' || kind === 'standardize') return 'indextts:index-tts-2.5';
   if (kind === 'voice') return 'voice-design:qwen3-tts-1.7b';
   if (kind === 'analyze' || kind === 'storyboard') {
     const provider = normalizedPart(config.provider, 'ollama');

@@ -36,7 +36,7 @@ const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 const PROJECT_ACTION_IDLE_COLLAPSE_MS = 10_000;
 const PROJECT_ACTION_DOCK_STORAGE_KEY = 'index-voice-project-action-dock-v1';
-type StudioJobKind = 'analyze' | 'storyboard' | 'voice' | 'render';
+type StudioJobKind = 'analyze' | 'storyboard' | 'voice' | 'render' | 'standardize';
 
 function operationCancelled(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -371,6 +371,10 @@ function Studio() {
   const [selectedStoryboardShotIds, setSelectedStoryboardShotIds] = useState<string[]>([]);
   const [referenceAudioUploading, setReferenceAudioUploading] = useState(false);
   const referenceAudioInputRef = useRef<HTMLInputElement>(null);
+  const [standardReferencePace, setStandardReferencePace] = useState<'自然' | '舒缓'>('舒缓');
+  const [standardReferenceSaving, setStandardReferenceSaving] = useState<string>();
+  const standardReferenceSavingRef = useRef(false);
+  const standardizingRoleIdRef = useRef<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiMediaSettings, setAiMediaSettings] = useState<AiMediaSettings>();
   const [settingsDraft, setSettingsDraft] = useState({ endpoint: '', apiKey: '', textModel: 'gemini-2.5-pro', directorProvider: 'ollama' as 'ollama' | 'compatible', directorModel: 'qwen3:14b', ollamaEndpoint: 'http://127.0.0.1:11434', directorMaxChunkChars: 1400, imageModel: 'gpt-image-1', imageFallbackModel: '', imageFallbackEnabled: false, instanceId: '', textApi: 'chat_completions' as 'responses' | 'chat_completions', allowInsecureHttp: false, clearApiKey: false });
@@ -395,7 +399,7 @@ function Studio() {
   const splitSourceRef = useRef<HTMLTextAreaElement>(null);
   const jobRunning = Boolean(job && !['complete', 'error', 'cancelled'].includes(job.phase));
   const keyframeGenerationActive = allKeyframesGenerating || Boolean(keyframeGeneratingSceneId);
-  const projectLocked = jobRunning || keyframeGenerationActive || profileGenerating || portraitGenerating;
+  const projectLocked = jobRunning || keyframeGenerationActive || profileGenerating || portraitGenerating || referenceAudioUploading || Boolean(standardReferenceSaving);
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
 
   useEffect(() => {
@@ -404,7 +408,7 @@ function Studio() {
     const timer = window.setInterval(() => setStoryboardKeyframeProgressNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [keyframeGenerationActive]);
-  const jobLabels: Record<StudioJobKind, string> = { analyze: 'AI 文本导演', storyboard: 'AI 分镜重新生成', voice: '角色音色生成', render: '完整音频渲染' };
+  const jobLabels: Record<StudioJobKind, string> = { analyze: 'AI 文本导演', storyboard: 'AI 分镜重新生成', voice: '角色音色生成', render: '完整音频渲染', standardize: '标准参考样本生成' };
   const modelTelemetry = job?.telemetry?.modelRuntime ?? job?.telemetry?.voiceRuntime;
   const jobRuntimeResponsive = Boolean(job?.telemetry?.workerAlive && (!modelTelemetry || modelTelemetry.processAlive));
   const matchingFragmentCount = useMemo(() => countMatchingFragments(render.fragments, project?.segments ?? []), [render.fragments, project?.segments]);
@@ -479,6 +483,7 @@ function Studio() {
       setStoryboardImageModel(mediaSettings.imageModel);
       setStoryboardAllowImageFallback(mediaSettings.imageFallbackEnabled);
       if (active.available && active.jobId && active.kind && active.projectId) {
+        if (active.kind === 'standardize' && active.roleId) standardizingRoleIdRef.current = active.roleId;
         void switchProject(active.projectId, list);
         setJob({ id: active.jobId, kind: active.kind, projectId: active.projectId, phase: active.phase || 'queued', fraction: active.fraction || 0, message: active.message || '正在恢复任务状态' });
       } else if (list[0]) void switchProject(list[0].value, list);
@@ -569,6 +574,16 @@ function Studio() {
             if (!cancelled) {
               setProject(updated); setRender(latest); setRuntimeHealth(health); setDirty(false); message.success(status.message);
               setSelectedSegmentOrders([]); setSplitEditor(undefined);
+              if (job.kind === 'standardize' && standardizingRoleIdRef.current) {
+                const roleId = standardizingRoleIdRef.current;
+                const index = updated.roles.findIndex(row => row[0] === roleId);
+                if (index >= 0) {
+                  setRoleEditorIndex(index);
+                  setRoleDraft([...updated.roles[index]]);
+                  setRoleAssetDraft(normalizeCharacterAsset(updated.roles[index], updated.character_assets?.[roleId]));
+                }
+                standardizingRoleIdRef.current = undefined;
+              }
             }
           } else if (status.phase === 'cancelled') message.info(status.message);
           else message.error(status.message);
@@ -838,10 +853,12 @@ function Studio() {
 
   const openRoleEditor = (index: number) => {
     if (!project) return;
+    const asset = normalizeCharacterAsset(project.roles[index], project.character_assets?.[project.roles[index][0]]);
     setActiveRoleId(project.roles[index][0]);
     setRoleEditorIndex(index);
     setRoleDraft([...project.roles[index]]);
-    setRoleAssetDraft(normalizeCharacterAsset(project.roles[index], project.character_assets?.[project.roles[index][0]]));
+    setRoleAssetDraft(asset);
+    setStandardReferencePace(asset.standard_reference?.pace_preset ?? '舒缓');
   };
 
   const updateRoleDraft = (column: number, value: string) => setRoleDraft(current => current?.map((cell, index) => index === column ? value : ([1, 2, 3, 4, 6].includes(column) && index === 7 ? '是' : cell)) as RoleRow);
@@ -891,11 +908,79 @@ function Studio() {
           source_format: result.sourceFormat,
           size_bytes: result.sizeBytes,
         },
+        standard_reference: undefined,
         voice_candidates: current.voice_candidates?.map(candidate => ({ ...candidate, selected: false })),
       } : current);
       message.success('参考音频已上传并设为当前音色，请应用角色设置后保存工程');
     } catch (error) { message.error((error as Error).message); }
     finally { setReferenceAudioUploading(false); }
+  };
+
+  const generateStandardReference = async () => {
+    if (!project || roleEditorIndex === undefined || !roleDraft || !roleAssetDraft || projectLocked) return;
+    if (!roleAssetDraft.reference_audio?.voice_id) { message.error('请先上传原始参考音频'); return; }
+    if (roleAssetDraft.audition_text.trim().length < 10) { message.error('标准参考样本试听文本至少需要 10 个字符'); return; }
+    const roles = project.roles.map((row, index) => index === roleEditorIndex ? roleDraft : row);
+    const draftProject = { ...project, roles, character_assets: { ...project.character_assets, [roleDraft[0]]: roleAssetDraft } };
+    try {
+      const saved = await api.save(draftProject);
+      setProject(saved);
+      setDirty(false);
+      const savedIndex = saved.roles.findIndex(row => row[0] === roleDraft[0]);
+      if (savedIndex >= 0) {
+        setRoleEditorIndex(savedIndex);
+        setRoleDraft([...saved.roles[savedIndex]]);
+        setRoleAssetDraft(normalizeCharacterAsset(saved.roles[savedIndex], saved.character_assets?.[roleDraft[0]]));
+      }
+      const started = await api.generateStandardReference(saved.project_id, roleDraft[0], standardReferencePace, roleAssetDraft.audition_text.trim());
+      standardizingRoleIdRef.current = roleDraft[0];
+      setJob({ id: started.jobId, kind: 'standardize', projectId: saved.project_id, phase: 'queued', fraction: 0, message: '标准参考样本任务已进入队列' });
+      message.info('角色设置已经保存，正在以原始上传音源生成三版标准参考候选');
+    } catch (error) { message.error((error as Error).message); }
+  };
+
+  const chooseStandardReference = async (voiceId: string) => {
+    if (!project || !roleDraft || standardReferenceSavingRef.current || jobRunning) return;
+    standardReferenceSavingRef.current = true;
+    setStandardReferenceSaving(voiceId);
+    try {
+      const saved = await api.adoptStandardReference(project.project_id, roleDraft[0], voiceId);
+      const index = saved.roles.findIndex(row => row[0] === roleDraft[0]);
+      setProject(saved);
+      setDirty(false);
+      if (index >= 0) {
+        setRoleEditorIndex(index);
+        setRoleDraft([...saved.roles[index]]);
+        setRoleAssetDraft(normalizeCharacterAsset(saved.roles[index], saved.character_assets?.[roleDraft[0]]));
+      }
+      message.success('标准参考样本已经采用并保存，相关旧片断已按音色变化失效');
+    } catch (error) { message.error((error as Error).message); }
+    finally {
+      standardReferenceSavingRef.current = false;
+      setStandardReferenceSaving(undefined);
+    }
+  };
+
+  const restoreOriginalReference = async () => {
+    if (!project || !roleDraft || standardReferenceSavingRef.current || jobRunning) return;
+    standardReferenceSavingRef.current = true;
+    setStandardReferenceSaving('restore');
+    try {
+      const saved = await api.restoreOriginalReference(project.project_id, roleDraft[0]);
+      const index = saved.roles.findIndex(row => row[0] === roleDraft[0]);
+      setProject(saved);
+      setDirty(false);
+      if (index >= 0) {
+        setRoleEditorIndex(index);
+        setRoleDraft([...saved.roles[index]]);
+        setRoleAssetDraft(normalizeCharacterAsset(saved.roles[index], saved.character_assets?.[roleDraft[0]]));
+      }
+      message.success('已经恢复原始上传样本并保存，相关旧片断已按音色变化失效');
+    } catch (error) { message.error((error as Error).message); }
+    finally {
+      standardReferenceSavingRef.current = false;
+      setStandardReferenceSaving(undefined);
+    }
   };
 
   const chooseProjectVoiceCandidate = (roleId: string, voiceId: string) => {
@@ -1771,7 +1856,7 @@ function Studio() {
           {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="替换窗口和背景操作已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭窗口。" />}
         </Space>}
       </Modal>
-      <Modal className={`role-editor-modal${referenceAudioUploading ? ' role-editor-uploading' : ''}`} width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" confirmLoading={referenceAudioUploading} closable={!profileGenerating && !portraitGenerating && !referenceAudioUploading} maskClosable={!profileGenerating && !portraitGenerating && !referenceAudioUploading} keyboard={!profileGenerating && !portraitGenerating && !referenceAudioUploading} cancelButtonProps={{ disabled: profileGenerating || portraitGenerating || referenceAudioUploading }} okButtonProps={{ disabled: projectLocked || referenceAudioUploading }} onOk={applyRoleDraft} onCancel={() => { if (profileGenerating || portraitGenerating || referenceAudioUploading) return; setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
+      <Modal className={`role-editor-modal${referenceAudioUploading ? ' role-editor-uploading' : ''}${job?.kind === 'standardize' && jobRunning ? ' role-editor-standardizing' : ''}`} width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" confirmLoading={referenceAudioUploading || Boolean(standardReferenceSaving)} closable={!projectLocked} maskClosable={!projectLocked} keyboard={!projectLocked} cancelButtonProps={{ disabled: projectLocked }} okButtonProps={{ disabled: projectLocked }} onOk={applyRoleDraft} onCancel={() => { if (projectLocked) return; setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
         {roleDraft && roleAssetDraft && presets && project && <div className="role-editor-grid">
           <section className="role-editor-fields">
             <div className="editor-section-heading"><span>01 / Character</span><strong>人物身份与小传</strong><Text>人物小传来自 AI 全文分析，也是音色选择的主要人物依据。信息必须来自原文，未知内容可以明确标注。</Text></div>
@@ -1788,11 +1873,22 @@ function Studio() {
             <label className="pitch-control"><Flex justify="space-between"><Text strong>目标基频中位数</Text><Text>{roleAssetDraft.pitch_target_hz} Hz</Text></Flex><Slider disabled={jobRunning} min={roleAssetDraft.pitch_min_hz} max={roleAssetDraft.pitch_max_hz} value={roleAssetDraft.pitch_target_hz} tooltip={{ formatter: value => `${value} Hz` }} onChange={value => { setRoleAssetDraft(current => current ? { ...current, pitch_target_hz: value } : current); updateRoleDraft(7, '是'); }} /><small>{recommendPitchRange(roleAssetDraft.gender, roleAssetDraft.age).label}。靠近下限更低沉，靠近上限更高亮。系统不会电子变调，只保留落盘实测进入目标容差的自然样本。</small></label>
             <div className="voice-trait-panel"><Flex justify="space-between" align="center"><Text strong>结构化声音特征</Text><Tag>转换为 VoiceDesign 指令</Tag></Flex><Text>这些滑块按角色独立保存。年龄变化会载入对应年龄段的建议组合，之后可以逐项微调。</Text><div className="voice-trait-grid">{VOICE_TRAIT_CONTROLS.map(item => <label key={item.key}><Flex justify="space-between"><Text strong>{item.label}</Text><Text>{roleAssetDraft.voice_traits[item.key]}</Text></Flex><Slider disabled={jobRunning} min={0} max={100} value={roleAssetDraft.voice_traits[item.key]} onChange={value => updateVoiceTrait(item.key, value)} /><small>{item.low} 到 {item.high}</small></label>)}</div><label><Text strong>地域或口音要求（可选）</Text><Input disabled={jobRunning} value={roleAssetDraft.voice_traits.accent} maxLength={120} onChange={event => { setRoleAssetDraft(current => current ? { ...current, voice_traits: { ...current.voice_traits, accent: event.target.value } } : current); updateRoleDraft(7, '是'); }} placeholder="例如：轻微关西口音。留空时不添加口音约束。" /></label></div>
             <details className="voice-generation-panel"><summary>生成策略与模型原生高级参数</summary><div className="voice-generation-content"><Alert type="info" showIcon message="原生采样参数逐角色生效" description="稳定、平衡和探索会载入推荐组合。手动修改任一数值后进入高级自定义。Subtalker 参数适用于当前 12Hz tokenizer 配置。" /><label><Text strong>生成策略</Text><Select disabled={jobRunning} value={roleAssetDraft.voice_generation.preset} options={[{ value: 'stable', label: '稳定' }, { value: 'balanced', label: '平衡' }, { value: 'explore', label: '探索' }, { value: 'custom', label: '高级自定义' }]} onChange={updateVoiceGenerationPreset} /></label><div className="generation-number-grid"><label><Text strong>候选数量</Text><InputNumber disabled={jobRunning} min={1} max={6} value={roleAssetDraft.voice_generation.candidate_count} onChange={value => updateVoiceGeneration({ candidate_count: value ?? 3 })} /></label><label><Text strong>随机种子</Text><InputNumber disabled={jobRunning} min={0} max={2147483647} value={roleAssetDraft.voice_generation.seed} onChange={value => updateVoiceGeneration({ seed: value ?? 42 })} /></label><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.temperature} onChange={value => updateVoiceGeneration({ temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.top_k} onChange={value => updateVoiceGeneration({ top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.top_p} onChange={value => updateVoiceGeneration({ top_p: value ?? 0.95 })} /></label><label><Text strong>重复抑制</Text><InputNumber disabled={jobRunning} min={1} max={2} step={0.01} value={roleAssetDraft.voice_generation.repetition_penalty} onChange={value => updateVoiceGeneration({ repetition_penalty: value ?? 1.05 })} /></label><label><Text strong>最大生成 Tokens</Text><InputNumber disabled={jobRunning} min={256} max={8192} step={256} value={roleAssetDraft.voice_generation.max_new_tokens} onChange={value => updateVoiceGeneration({ max_new_tokens: value ?? 2048 })} /></label><label className="switch-field"><Text strong>主采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.do_sample} onChange={checked => updateVoiceGeneration({ do_sample: checked })} /></label></div><Text strong>Subtalker 采样</Text><div className="generation-number-grid"><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.subtalker_temperature} onChange={value => updateVoiceGeneration({ subtalker_temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.subtalker_top_k} onChange={value => updateVoiceGeneration({ subtalker_top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.subtalker_top_p} onChange={value => updateVoiceGeneration({ subtalker_top_p: value ?? 0.95 })} /></label><label className="switch-field"><Text strong>Subtalker 采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.subtalker_dosample} onChange={checked => updateVoiceGeneration({ subtalker_dosample: checked })} /></label></div><label><Text strong>角色专属试听文本</Text><Input.TextArea disabled={jobRunning} rows={3} maxLength={500} value={roleAssetDraft.audition_text} onChange={event => { setRoleAssetDraft(current => current ? { ...current, audition_text: event.target.value } : current); updateRoleDraft(7, '是'); }} /><small>建议使用符合角色身份和年龄的自然台词。每个角色可以使用不同文本。</small></label></div></details>
-            <div className="reference-audio-panel" aria-busy={referenceAudioUploading}>
+            <div className="reference-audio-panel" aria-busy={referenceAudioUploading || (job?.kind === 'standardize' && jobRunning)}>
               <Flex justify="space-between" align="center" gap={12} wrap><div><Text strong>上传参考音频</Text><Text>支持 WAV、MP3、FLAC、M4A、AAC、OGG，最大 25 MB。系统读取前 60 秒并转换为标准 WAV。</Text></div><Button icon={<UploadOutlined />} loading={referenceAudioUploading} disabled={jobRunning || referenceAudioUploading} onClick={() => referenceAudioInputRef.current?.click()}>{roleAssetDraft.reference_audio ? '更换音频' : '选择音频'}</Button></Flex>
               <input ref={referenceAudioInputRef} className="reference-audio-input" type="file" accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg" onChange={uploadRoleReferenceAudio} />
               {referenceAudioUploading && <Alert type="info" showIcon icon={<LoadingOutlined />} message="正在上传并处理参考音频" description="处理完成前角色卡片保持锁定，请等待明确结果。" />}
-              {roleAssetDraft.reference_audio && <div className="reference-audio-current"><div><Text strong>{roleAssetDraft.reference_audio.original_name}</Text><Text type="secondary">{roleAssetDraft.reference_audio.source_format.toUpperCase()} · {(roleAssetDraft.reference_audio.size_bytes / 1024 / 1024).toFixed(2)} MB</Text></div><VoicePreview voiceId={roleAssetDraft.reference_audio.voice_id} /></div>}
+              {roleAssetDraft.reference_audio && <div className="reference-audio-current"><div><Text strong>原始上传样本 · {roleAssetDraft.reference_audio.original_name}</Text><Text type="secondary">{roleAssetDraft.reference_audio.source_format.toUpperCase()} · {(roleAssetDraft.reference_audio.size_bytes / 1024 / 1024).toFixed(2)} MB · 永久保留为身份锚点</Text></div><VoicePreview voiceId={roleAssetDraft.reference_audio.voice_id} /></div>}
+              {roleAssetDraft.reference_audio && <div className="standard-reference-panel">
+                <div className="standard-reference-heading"><div><Text strong>生成标准角色参考样本</Text><Text>始终使用上方原始上传样本生成三版候选。生成结果不会自动成为下一轮参考源。</Text></div><Tag color="blue">原始音源锁定</Tag></div>
+                <div className="standard-reference-controls"><label><Text strong>目标朗读节奏</Text><Select aria-label="标准样本目标朗读节奏" disabled={projectLocked} value={standardReferencePace} onChange={setStandardReferencePace} options={[{ value: '自然', label: '自然 · 1.05 时长系数' }, { value: '舒缓', label: '沉稳舒缓 · 1.18 时长系数' }]} /></label><Button type="primary" icon={<SoundOutlined />} disabled={projectLocked || roleAssetDraft.audition_text.trim().length < 10} onClick={generateStandardReference}>生成三版标准样本</Button></div>
+                <Text>试听文本使用上方“生成策略与模型原生高级参数”中的角色专属试听文本。开始任务时会先保存当前角色设置。</Text>
+                {job?.kind === 'standardize' && jobRunning && standardizingRoleIdRef.current === roleDraft[0] && <Alert type="info" showIcon icon={<LoadingOutlined />} message={job.message} description={<div className="standard-reference-progress"><Progress percent={jobPercent} status="active" /><Button danger icon={<StopOutlined />} onClick={cancelActiveJob}>取消标准样本生成</Button></div>} />}
+                {roleAssetDraft.standard_reference && <div className="standard-reference-results">
+                  <Alert type="info" showIcon message={`最近生成：${roleAssetDraft.standard_reference.pace_preset} · ${roleAssetDraft.standard_reference.duration_factor.toFixed(2)} 时长系数`} description="请先试听原始样本，再试听通过门禁的候选。只有点击采用后才会切换角色当前稳定音色并保存工程。" />
+                  {roleAssetDraft.standard_reference.candidates.map(candidate => <div className={`standard-reference-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.voice_id}><div className="standard-reference-candidate-copy"><Flex gap={8} wrap align="center"><Text strong>标准候选 {candidate.rank}</Text><Tag color={candidate.audio_quality_passed ? 'green' : 'red'}>基础音频{candidate.audio_quality_passed ? '通过' : '未通过'}</Tag><Tag color={candidate.speaker_verified ? 'green' : 'red'}>音色 {candidate.speaker_similarity.toFixed(3)}</Tag><Tag color={candidate.echo_verified ? 'green' : 'red'}>回声 {candidate.echo_similarity.toFixed(3)}</Tag></Flex><Text>{candidate.duration_seconds.toFixed(2)} 秒 · 综合评分 {candidate.score.toFixed(2)} · 音色门禁 {candidate.speaker_similarity_threshold.toFixed(2)} · 回声上限 {candidate.echo_threshold.toFixed(2)}</Text><VoicePreview voiceId={candidate.voice_id} /></div><Button type={candidate.selected ? 'primary' : 'default'} loading={standardReferenceSaving === candidate.voice_id} disabled={jobRunning || Boolean(standardReferenceSaving) || candidate.selected || !candidate.quality_passed} onClick={() => chooseStandardReference(candidate.voice_id)}>{candidate.selected ? '当前采用' : candidate.quality_passed ? '采用此标准样本' : '未通过门禁'}</Button></div>)}
+                  {roleDraft[5] !== roleAssetDraft.reference_audio.voice_id && <Popconfirm title="恢复原始上传样本" description="恢复后相关旧片断和完整交付会按音色变化失效。" okText="恢复并保存" cancelText="取消" onConfirm={restoreOriginalReference}><Button loading={standardReferenceSaving === 'restore'} disabled={jobRunning || Boolean(standardReferenceSaving)} icon={<ReloadOutlined />}>恢复原始样本</Button></Popconfirm>}
+                </div>}
+              </div>}
             </div>
             {Boolean(roleAssetDraft.voice_candidates?.length) && <div className="voice-candidate-panel"><Text strong>最近保留的声音候选</Text><Text>可以逐个试听并采用。每个候选都显示自然原始基频、目标偏差和容差。儿童候选需要先由试听确认男童或女童身份。</Text>{roleAssetDraft.voice_candidates?.map((candidate, index) => <div className="voice-candidate-row" key={candidate.voice_id}><div><Text>候选 {index + 1} · Seed {candidate.seed}{candidate.median_pitch_hz ? ` · 实测 ${candidate.median_pitch_hz.toFixed(1)} Hz` : ''} · {candidateVerificationLabel(roleAssetDraft.age, roleAssetDraft.gender, candidate)}</Text>{candidatePitchAuditLabel(candidate) && <Text type="secondary">{candidatePitchAuditLabel(candidate)}</Text>}<VoicePreview voiceId={candidate.voice_id} /></div><Button disabled={jobRunning} type={candidate.voice_id === roleDraft[5] ? 'primary' : 'default'} onClick={() => selectVoiceCandidate(candidate.voice_id)}>{candidate.voice_id === roleDraft[5] ? '当前采用' : roleAssetDraft.age < 13 && roleAssetDraft.gender !== 'unspecified' ? `确认${roleAssetDraft.gender === 'male' ? '男童' : '女童'}并采用` : '采用此候选'}</Button></div>)}</div>}
             <div className="editor-voice-controls"><label><Text strong>角色表达节奏</Text><Select disabled={jobRunning} value={roleDraft[6]} options={presets.rhythms.map(value => ({ value, label: `${value} · ${presets.rhythmPrompts[value]}` }))} onChange={value => updateRoleDraft(6, value)} /></label><label className="regenerate-control"><Text strong>下次生成处理</Text><div><Switch disabled={jobRunning} checked={roleDraft[7] === '是'} onChange={checked => updateRoleDraft(7, checked ? '是' : '否')} /><Text>{roleDraft[7] === '是' ? '重新生成并建立新签名' : '保持当前稳定音色'}</Text></div></label></div>

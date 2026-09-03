@@ -953,6 +953,95 @@ test('rejects content that only claims to be an MP3 reference audio file', async
   await app.close();
 });
 
+test('queues standard reference generation from the saved original upload', async () => {
+  const { root, project } = await fixture();
+  const sourceVoiceId = 'voice-upload-source';
+  const voiceDir = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceDir, { recursive: true });
+  await writeFile(path.join(voiceDir, `${sourceVoiceId}.wav`), pcmWav(1));
+  project.roles[0][5] = sourceVoiceId;
+  project.character_assets = { narrator: {
+    gender: 'unspecified', age: 35, pitch_min_hz: 90, pitch_max_hz: 280, pitch_target_hz: 185,
+    audition_text: '这是用于生成标准角色参考样本的固定试听文本。', voice_traits: {},
+    voice_generation: { preset: 'balanced', candidate_count: 3 }, portrait_style: 'cinematic_manga',
+    reference_audio: { voice_id: sourceVoiceId, original_name: 'source.wav', uploaded_at: '2026-09-04T00:00:00Z', source_format: 'wav', size_bytes: 100 },
+  } };
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  let child;
+  let launch;
+  const app = await buildApp({ repoRoot: root, launchWorker: value => {
+    launch = value;
+    child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    return child;
+  } });
+
+  const response = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference', payload: { pacePreset: '舒缓', auditionText: '这是用于生成标准角色参考样本的固定试听文本。' } });
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.json().kind, 'standardize');
+  assert.equal(response.json().roleId, 'narrator');
+  assert.equal(response.json().modelKey, 'indextts:index-tts-2.5');
+  assert.ok(launch.args.some(value => value.endsWith('product_render_worker.py')));
+  const input = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-jobs', response.json().jobId, 'input.json'), 'utf8'));
+  assert.deepEqual(input.standard_reference, { role_id: 'narrator', pace_preset: '舒缓', audition_text: '这是用于生成标准角色参考样本的固定试听文本。', language: 'ZH' });
+  const active = (await app.inject('/api/active-job')).json();
+  assert.equal(active.kind, 'standardize');
+  assert.equal(active.roleId, 'narrator');
+  await writeFile(path.join(root, 'runtime-output', 'product-jobs', response.json().jobId, 'status.json'), JSON.stringify({ phase: 'complete', fraction: 1, message: '完成' }));
+  child.emit('close', 0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await assert.rejects(access(path.join(root, 'outputs', 'novel-projects', 'demo', 'process', 'standard-reference-staging')));
+  await app.close();
+});
+
+test('adopts only a passing standard reference candidate and restores the original atomically', async () => {
+  const { root, project } = await fixture();
+  const voiceDir = path.join(root, 'outputs', 'voice-library');
+  await mkdir(voiceDir, { recursive: true });
+  for (const voiceId of ['voice-upload-source', 'voice-standard-passing', 'voice-standard-failed']) {
+    await writeFile(path.join(voiceDir, `${voiceId}.wav`), pcmWav(1));
+  }
+  project.roles[0][5] = 'voice-upload-source';
+  project.character_assets = { narrator: {
+    gender: 'unspecified', age: 35, pitch_min_hz: 90, pitch_max_hz: 280, pitch_target_hz: 185,
+    audition_text: '这是用于生成标准角色参考样本的固定试听文本。', voice_traits: {},
+    voice_generation: { preset: 'balanced', candidate_count: 3 }, portrait_style: 'cinematic_manga',
+  } };
+  project.character_assets.narrator.reference_audio = { voice_id: 'voice-upload-source', original_name: 'source.wav', uploaded_at: '2026-09-04T00:00:00Z', source_format: 'wav', size_bytes: 100 };
+  project.character_assets.narrator.standard_reference = {
+    source_voice_id: 'voice-upload-source', audition_text: '这是标准试听文本。', pace_preset: '舒缓', duration_factor: 1.18, generated_at: '2026-09-04T00:01:00Z',
+    candidates: [
+      { voice_id: 'voice-standard-passing', rank: 1, duration_seconds: 3, audio_quality_passed: true, speaker_similarity: 0.86, speaker_similarity_threshold: 0.72, speaker_verified: true, echo_similarity: 0.12, echo_threshold: 0.72, echo_verified: true, quality_passed: true, score: 102, selected: false, generated_at: '2026-09-04T00:01:00Z' },
+      { voice_id: 'voice-standard-failed', rank: 2, duration_seconds: 3, audio_quality_passed: true, speaker_similarity: 0.51, speaker_similarity_threshold: 0.72, speaker_verified: false, echo_similarity: 0.14, echo_threshold: 0.72, echo_verified: true, quality_passed: false, score: 70, selected: false, generated_at: '2026-09-04T00:01:00Z' },
+    ],
+  };
+  await writeFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), JSON.stringify(project));
+  const app = await buildApp({ repoRoot: root });
+
+  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference/candidates/voice-standard-failed/adopt', payload: {} });
+  assert.equal(rejected.statusCode, 400);
+  assert.match(rejected.json().error, /未通过全部自动门禁/);
+
+  const adopted = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference/candidates/voice-standard-passing/adopt', payload: {} });
+  assert.equal(adopted.statusCode, 200);
+  assert.equal(adopted.json().roles[0][5], 'voice-standard-passing');
+  assert.equal(adopted.json().character_assets.narrator.reference_audio.voice_id, 'voice-upload-source');
+  assert.deepEqual(adopted.json().character_assets.narrator.standard_reference.candidates.map(item => item.selected), [true, false]);
+  assert.ok(adopted.json().artifact_invalidation);
+
+  const restored = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference/restore', payload: {} });
+  assert.equal(restored.statusCode, 200);
+  assert.equal(restored.json().roles[0][5], 'voice-upload-source');
+  assert.equal(restored.json().character_assets.narrator.standard_reference.adopted_voice_id, 'voice-standard-passing');
+  assert.ok(restored.json().character_assets.narrator.standard_reference.restored_at);
+  assert.deepEqual(restored.json().character_assets.narrator.standard_reference.candidates.map(item => item.selected), [false, false]);
+  const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.equal(persisted.roles[0][5], 'voice-upload-source');
+  await app.close();
+});
+
 test('accepts one legacy large save and returns compact director history summaries', async () => {
   const { root, project } = await fixture();
   project.director_history = [{

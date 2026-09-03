@@ -12,11 +12,12 @@ test('offers supported reference audio formats and previews the registered voice
 });
 
 test('locks the role editor while reference audio is uploading', () => {
-  assert.match(app, /confirmLoading=\{referenceAudioUploading\}/);
-  assert.match(app, /closable=\{!profileGenerating && !portraitGenerating && !referenceAudioUploading\}/);
-  assert.match(app, /keyboard=\{!profileGenerating && !portraitGenerating && !referenceAudioUploading\}/);
-  assert.match(app, /maskClosable=\{!profileGenerating && !portraitGenerating && !referenceAudioUploading\}/);
-  assert.match(app, /cancelButtonProps=\{\{ disabled: profileGenerating \|\| portraitGenerating \|\| referenceAudioUploading \}\}/);
-  assert.match(app, /if \(profileGenerating \|\| portraitGenerating \|\| referenceAudioUploading\) return/);
+  assert.match(app, /const projectLocked = [^;]*referenceAudioUploading[^;]*standardReferenceSaving/);
+  assert.match(app, /confirmLoading=\{referenceAudioUploading \|\| Boolean\(standardReferenceSaving\)\}/);
+  assert.match(app, /closable=\{!projectLocked\}/);
+  assert.match(app, /keyboard=\{!projectLocked\}/);
+  assert.match(app, /maskClosable=\{!projectLocked\}/);
+  assert.match(app, /cancelButtonProps=\{\{ disabled: projectLocked \}\}/);
+  assert.match(app, /onCancel=\{\(\) => \{ if \(projectLocked\) return;/);
   assert.match(app, /处理完成前角色卡片保持锁定，请等待明确结果/);
 });

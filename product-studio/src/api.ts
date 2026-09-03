@@ -111,7 +111,7 @@ export const api = {
   testAiMediaSettings: (settings: { endpoint: string; apiKey?: string; instanceId: string; allowInsecureHttp: boolean }, signal?: AbortSignal) => request<AiMediaModelDiscovery>('/api/settings/ai-media/test', { method: 'POST', body: JSON.stringify(settings), signal }),
   testDirectorSettings: (settings: { directorProvider: 'ollama' | 'compatible'; ollamaEndpoint: string; endpoint: string; apiKey?: string; instanceId: string; allowInsecureHttp: boolean }, signal?: AbortSignal) => request<AiMediaModelDiscovery>('/api/settings/ai-media/director-test', { method: 'POST', body: JSON.stringify(settings), signal }),
   saveAiMediaSettings: (settings: { endpoint: string; apiKey?: string; clearApiKey?: boolean; textModel: string; directorProvider: 'ollama' | 'compatible'; directorModel: string; ollamaEndpoint: string; directorMaxChunkChars: number; imageModel: string; imageFallbackModel: string; imageFallbackEnabled: boolean; instanceId: string; textApi: 'responses' | 'chat_completions'; allowInsecureHttp: boolean }) => request<AiMediaSettings>('/api/settings/ai-media', { method: 'PUT', body: JSON.stringify(settings) }),
-  activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'storyboard' | 'voice' | 'render'; projectId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
+  activeJob: () => request<{ available: boolean; jobId?: string; kind?: 'analyze' | 'storyboard' | 'voice' | 'render' | 'standardize'; projectId?: string; roleId?: string; phase?: string; fraction?: number; message?: string }>('/api/active-job'),
   projects: () => request<Array<{ label: string; value: string; roleCount: number }>>('/api/projects'),
   createProject: (title: string, contentType: string, sourceProjectIds: string[]) => request<ProjectPayload>('/api/projects', { method: 'POST', body: JSON.stringify({ title, content_type: contentType, source_project_ids: sourceProjectIds }) }),
   project: (id: string, signal?: AbortSignal) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}`, { signal }),
@@ -143,6 +143,11 @@ export const api = {
     headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Audio-Filename': encodeURIComponent(file.name) },
     body: file,
   })),
+  generateStandardReference: (id: string, roleId: string, pacePreset: '自然' | '舒缓', auditionText: string) => request<{ jobId: string; roleId: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference`, {
+    method: 'POST', body: JSON.stringify({ pacePreset, auditionText }),
+  }),
+  adoptStandardReference: (id: string, roleId: string, voiceId: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference/candidates/${encodeURIComponent(voiceId)}/adopt`, emptyPost),
+  restoreOriginalReference: (id: string, roleId: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference/restore`, emptyPost),
   job: (id: string) => request<JobStatus>(`/api/jobs/${encodeURIComponent(id)}`),
   cancelJob: (id: string) => request<JobCancellation>(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({}) }),
 };

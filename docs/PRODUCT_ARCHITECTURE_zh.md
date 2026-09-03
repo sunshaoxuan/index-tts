@@ -209,3 +209,7 @@ React 分句编辑事件在调用工程状态更新前同步登记 dirty 状态�
 全局 Ant Design message 容器使用左右 12px 的视口安全边界，并显式清除组件默认的水平半宽位移，避免 `left: 12px` 与 `translateX(-50%)` 叠加后把提示推到视口外。每条 notice wrapper 使用 Flex 水平居中，内容最大宽度为 520px，并允许长错误文字换行。提示顶部至少为 64px，使其位于顶部工程操作浮条下方；安全区域更高时按 `safe-area-inset-top` 增加距离。
 
 角色参考音频通过 `PUT /api/projects/:id/roles/:roleId/reference-audio` 以原始二进制上传。服务端按文件头识别 WAV、MP3、FLAC、M4A、AAC 或 OGG，限制 25 MB，使用 FFmpeg 截取最长 60 秒并转换为 24 kHz 单声道 PCM WAV。原始字节的 SHA-256 摘要生成稳定的 `voice-upload-*` 标识，标准化音频和来源元数据写入 `outputs/voice-library`。接口只验证工程并注册永久音色，因此尚未保存的手工新角色也能使用；前端将返回标识写入角色草稿，用户应用角色设置并保存工程后，现有角色音色解析和分句渲染链路自动使用该参考音频。上传过程中角色卡片禁止关闭和其他交互。
+
+标准角色参考样本使用独立的 `standardize` 任务，通过 `POST /api/projects/:id/roles/:roleId/standard-reference` 进入与完整渲染共用的 IndexTTS 模型调度队列。任务元数据保存角色 ID，页面首次提交、服务重启接管和浏览器刷新恢复均可重新关联对应角色卡片。Worker 只读取 `character_assets.<roleId>.reference_audio.voice_id` 指向的原始上传 WAV，以角色专属试听文本和自然 1.05 或舒缓 1.18 时长系数生成候选。每轮最多尝试九次，从通过基础 WAV 质量和延迟回声代理的结果中按综合评分保留三版，并使用驻留模型的 CAMPPlus 嵌入计算候选与原始音源的说话人相似度。音色相似度门槛为 0.72，回声代理上限为 0.72；候选的指标、阈值、通过状态和生成参数随 `voice-standard-*` 元数据保存。
+
+生成结果写入 `character_assets.<roleId>.standard_reference`，原始 `reference_audio` 和角色当前稳定音色保持不变。用户通过候选采用接口明确选择通过全部门禁的样本，服务端在工程锁内核对候选和文件，更新角色稳定音色，回填 `voice_files`，执行现有导演差异和成果物失效逻辑，再以临时文件原子替换 `project.json`。恢复接口执行同一保存流程并切回原始上传 `voice_id`。重新生成完成后只删除无任何工程引用且未选中的旧 `voice-standard-*` 文件；任务结束或取消时清理工程内的 `standard-reference-staging` 过程目录，Docker volumes 和其他永久音色不受影响。

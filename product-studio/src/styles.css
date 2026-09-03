@@ -773,6 +773,18 @@ body * { box-shadow: none !important; }
 .reference-audio-input { display: none; }
 .reference-audio-current { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(250px, 1.2fr); gap: 16px; align-items: center; padding-top: 12px; border-top: 1px dashed rgba(255, 237, 215, .22); }
 .reference-audio-current .voice-preview { min-width: 0; }
+.standard-reference-panel { display: grid; gap: 12px; padding-top: 14px; border-top: 1px dashed rgba(255, 237, 215, .28); }
+.standard-reference-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.standard-reference-heading > div { display: grid; gap: 4px; min-width: 0; }
+.standard-reference-controls { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 12px; align-items: end; }
+.standard-reference-controls label { display: grid; gap: 6px; }
+.standard-reference-progress { display: grid; gap: 10px; padding-top: 8px; }
+.standard-reference-progress .ant-btn { justify-self: start; }
+.standard-reference-results { display: grid; gap: 10px; }
+.standard-reference-candidate { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px; border: 1px solid rgba(255, 237, 215, .22); border-radius: 6px; background: rgba(10, 7, 4, .28); }
+.standard-reference-candidate.is-selected { border-color: var(--amber); background: rgba(105, 55, 18, .24); }
+.standard-reference-candidate-copy { display: grid; gap: 7px; min-width: 0; }
+.standard-reference-candidate-copy .voice-preview { min-width: 0; }
 .role-editor-uploading .ant-modal-body { position: relative; }
 .role-editor-uploading .role-editor-grid { pointer-events: none; opacity: .55; }
 .role-editor-uploading .ant-modal-body::after { position: absolute; inset: 0; content: ''; cursor: wait; }
@@ -1005,6 +1017,8 @@ body * { box-shadow: none !important; }
   .role-editor-modal .ant-modal-body { max-height: calc(100svh - 154px); padding: 18px; }
   .role-editor-grid, .editor-two-column { grid-template-columns: minmax(0, 1fr); }
   .reference-audio-current { grid-template-columns: minmax(0, 1fr); }
+  .standard-reference-controls, .standard-reference-candidate { grid-template-columns: minmax(0, 1fr); }
+  .standard-reference-controls .ant-btn, .standard-reference-candidate > .ant-btn { width: 100%; }
   .role-editor-fields > *, .role-editor-fields label > *, .editor-two-column > *, .editor-voice-controls > * { min-width: 0 !important; max-width: 100% !important; }
   .role-editor-fields .ant-select, .role-editor-fields .ant-input, .role-editor-fields textarea { width: 100% !important; min-width: 0 !important; max-width: 100% !important; }
   .role-editor-fields .ant-typography { width: auto !important; white-space: normal !important; }

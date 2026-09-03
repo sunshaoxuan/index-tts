@@ -55,6 +55,35 @@ export interface VoiceCandidate {
   gender_identity_method?: 'acoustic_pitch' | 'pending_human' | 'human_listening' | 'legacy';
 }
 
+export interface StandardReferenceCandidate {
+  voice_id: string;
+  rank: number;
+  duration_seconds: number;
+  audio_quality_passed: boolean;
+  speaker_similarity: number;
+  speaker_similarity_threshold: number;
+  speaker_verified: boolean;
+  echo_similarity: number;
+  echo_threshold: number;
+  echo_verified: boolean;
+  quality_passed: boolean;
+  score: number;
+  selected: boolean;
+  generated_at: string;
+}
+
+export interface StandardReference {
+  source_voice_id: string;
+  audition_text: string;
+  pace_preset: '自然' | '舒缓';
+  duration_factor: number;
+  generated_at: string;
+  candidates: StandardReferenceCandidate[];
+  adopted_voice_id?: string;
+  adopted_at?: string;
+  restored_at?: string;
+}
+
 export interface CharacterAsset {
   gender: CharacterGender;
   age: number;
@@ -72,6 +101,7 @@ export interface CharacterAsset {
     source_format: string;
     size_bytes: number;
   };
+  standard_reference?: StandardReference;
   portrait_url?: string;
   portrait_prompt?: string;
   portrait_style: string;
