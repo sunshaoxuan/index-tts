@@ -24,6 +24,34 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def attach_analysis_total_metrics(document: dict[str, Any]) -> dict[str, Any]:
+    validation_rounds = (document.get("character_validation") or {}).get("rounds") or []
+    validation_metrics = {
+        "requests": sum(
+            int(item.get("requests") or (1 + int(item.get("repair_attempts") or 0)))
+            for item in validation_rounds
+        ),
+        "prompt_tokens": sum(int(item.get("prompt_tokens") or 0) for item in validation_rounds),
+        "output_tokens": sum(int(item.get("output_tokens") or 0) for item in validation_rounds),
+        "duration_seconds": round(sum(float(item.get("duration_seconds") or 0) for item in validation_rounds), 3),
+    }
+    analysis_metrics = document.setdefault("metrics", {})
+    analysis_metrics.setdefault("stage_metrics", {})["character_validation"] = validation_metrics
+    analysis_metrics["total_requests"] = (
+        int(analysis_metrics.get("classification_requests") or 0)
+        + int(analysis_metrics.get("context_requests") or 0)
+        + int(analysis_metrics.get("chunks") or 0)
+        + validation_metrics["requests"]
+    )
+    analysis_metrics["total_prompt_tokens"] = int(analysis_metrics.get("prompt_tokens") or 0) + validation_metrics["prompt_tokens"]
+    analysis_metrics["total_output_tokens"] = int(analysis_metrics.get("output_tokens") or 0) + validation_metrics["output_tokens"]
+    analysis_metrics["total_model_duration_seconds"] = round(
+        float(analysis_metrics.get("duration_seconds") or 0) + validation_metrics["duration_seconds"],
+        3,
+    )
+    return analysis_metrics
+
+
 def analysis_voice_ids(root: Path, project: dict[str, Any]) -> list[str]:
     available_by_stem: dict[str, str] = {}
     for raw_path in project.get("voice_files") or []:
@@ -576,6 +604,7 @@ def main() -> int:
             max_rounds=5,
             progress=validation_progress,
         )
+    attach_analysis_total_metrics(document)
     existing_roles = project.get("roles") or []
     previous_characters = (project.get("document") or {}).get("characters") or []
     if single_anchor:

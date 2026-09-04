@@ -295,6 +295,44 @@ CONTEXT_SCHEMA: dict[str, Any] = {
     },
 }
 
+STAGED_CHUNK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["characters", "scenes", "segments"],
+    "properties": {
+        "characters": {
+            **deepcopy(DIRECTOR_SCHEMA["properties"]["characters"]),
+            "maxItems": 0,
+        },
+        "scenes": {
+            **deepcopy(DIRECTOR_SCHEMA["properties"]["scenes"]),
+            "maxItems": 0,
+        },
+        "segments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["i", "s", "c", "q", "e", "g", "l", "a", "m", "v", "p", "d"],
+                "properties": {
+                    "i": {"type": "integer", "minimum": 1, "description": "source unit id"},
+                    "s": {"type": "string", "maxLength": 40, "description": "speaker_id"},
+                    "c": {"type": "array", "items": {"type": "string", "maxLength": 40}, "maxItems": 3, "description": "speaker_candidates"},
+                    "q": {"type": "number", "minimum": 0, "maximum": 1, "description": "speaker_confidence"},
+                    "e": {"type": "string", "maxLength": 60, "description": "speaker_evidence"},
+                    "g": {"type": "string", "maxLength": 40, "description": "scene_id"},
+                    "l": {"type": "string", "enum": sorted(LANGUAGES), "description": "language"},
+                    "a": {"type": "string", "enum": sorted(ATTITUDE_PRESETS), "description": "attitude"},
+                    "m": {"type": "string", "enum": sorted(EMOTIONS), "description": "emotion"},
+                    "v": {"type": "number", "minimum": 0, "maximum": 1, "description": "intensity"},
+                    "p": {"type": "string", "enum": sorted(PACE_PRESETS), "description": "pace"},
+                    "d": {"type": "integer", "minimum": 0, "maximum": 3000, "description": "pause_after_ms"},
+                },
+            },
+        },
+    },
+}
+
 CONTENT_CLASSIFICATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -928,6 +966,11 @@ class OllamaTextDirector:
             "classification_requests": 0,
             "planned_chunks": len(chunks),
             "chunk_chars": chunk_chars,
+            "stage_metrics": {
+                "classification": {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0},
+                "context": {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0},
+                "chunks": [],
+            },
         }
         resolved_type = content_type
         classification_reason = "使用者已指定作品体裁"
@@ -941,6 +984,7 @@ class OllamaTextDirector:
             metrics["output_tokens"] += classification_metrics["output_tokens"]
             metrics["duration_seconds"] += classification_metrics["duration_seconds"]
             metrics["classification_requests"] = 1
+            metrics["stage_metrics"]["classification"] = {"requests": 1, **classification_metrics}
         single_anchor = resolved_type in SINGLE_ANCHOR_CONTENT_TYPES
         if single_anchor:
             global_characters = [self._single_anchor_character()]
@@ -958,6 +1002,7 @@ class OllamaTextDirector:
                 metrics["output_tokens"] += context_metrics["output_tokens"]
                 metrics["duration_seconds"] += context_metrics["duration_seconds"]
                 metrics["context_requests"] = context_metrics["requests"]
+                metrics["stage_metrics"]["context"] = dict(context_metrics)
             except (DirectorError, ValueError, TypeError, json.JSONDecodeError):
                 metrics["context_fallback"] = 1
                 global_characters = []
@@ -1029,6 +1074,14 @@ class OllamaTextDirector:
             metrics["duration_seconds"] += result_metrics["duration_seconds"]
             metrics["chunks"] += 1
             metrics["fallback_chunks"] += int(result_metrics.get("fallback_chunks", 0))
+            metrics["stage_metrics"]["chunks"].append({
+                "index": index + 1,
+                "chars": len(chunk),
+                "prompt_tokens": result_metrics["prompt_tokens"],
+                "output_tokens": result_metrics["output_tokens"],
+                "duration_seconds": result_metrics["duration_seconds"],
+                "fallback": bool(result_metrics.get("fallback_chunks", 0)),
+            })
             if detected_type is None:
                 detected_type = result["content_type"]
                 title = result["title"].strip() or title
@@ -1154,14 +1207,41 @@ SOURCE
             people = [item for item in document.get("characters") or [] if item.get("kind") == "character"]
             if not people:
                 return {"all_valid": True, "round_count": 0, "rounds": [], "summary": "没有需要校验的人物"}
-            _notify(progress, 0.9 + round_index * 0.015, f"AI 正在进行第 {round_index} 轮人物设定校验")
-            current_evidence = self._character_validation_evidence(source_text, people)
-            linked_evidence = self._character_validation_evidence(demographic_reference_text, people)
-            roster = json.dumps(people, ensure_ascii=False, separators=(",", ":"))
-            prompt = f"""
-你是长篇作品的人物设定审校员。现在进行第 {round_index}/{max_rounds} 轮逐人校验。
+            batch_size = 2
+            batches = [people[index:index + batch_size] for index in range(0, len(people), batch_size)]
+            all_character_ids = {str(item.get("id") or "") for item in people}
+            peer_roster = json.dumps(
+                [
+                    {key: item.get(key) for key in ("id", "name", "aliases")}
+                    for item in people
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            normalized_rows: list[dict[str, Any]] = []
+            summaries: list[str] = []
+            all_valid_signals: list[bool] = []
+            reconciled_redundant_issues: list[str] = []
+            total_repair_attempts = 0
+            total_metrics = {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
+            for batch_index, batch in enumerate(batches, start=1):
+                _notify(
+                    progress,
+                    min(0.98, 0.9 + ((batch_index - 1) / max(1, len(batches))) * 0.08),
+                    f"AI 正在复核第 {batch_index}/{len(batches)} 个人物小批次",
+                )
+                current_evidence = self._character_validation_evidence(source_text, batch, max_chars=4000, focused=True)
+                linked_evidence = self._character_validation_evidence(
+                    demographic_reference_text,
+                    batch,
+                    max_chars=4000,
+                    focused=True,
+                )
+                roster = json.dumps(batch, ensure_ascii=False, separators=(",", ":"))
+                prompt = f"""
+你是长篇作品的人物设定审校员。现在进行第 {round_index}/{max_rounds} 轮、第 {batch_index}/{len(batches)} 个人物小批次校验。
 
-必须逐一检查人物表中的每一个人物，任何人物都不能遗漏：
+只检查当前小批次中的人物，并完整返回当前小批次的每个 ID：
 1. 校验规范名称、aliases 和人物关系，识别同一人物的简称、全名、关系称谓或译名差异。重复人物的 canonical_id 指向保留人物 ID，两个条目输出一致的修正人口属性。
 2. 校验 age 是否符合原文明示年龄、年龄范围、就学阶段、亲属关系、职业阶段、时间线和行为。age 必须输出一个整数；原文给出 10 至 11 岁等范围时保存下限 10，并在 age_evidence 保留完整范围。禁止把 35 当作缺省值。
 3. 校验 gender 是否符合称谓、亲属关系、代词、身份和上下文，证据不足时允许 unspecified。
@@ -1169,11 +1249,14 @@ SOURCE
 5. 人口属性证据优先级为当前文章明示、关联文章明示、当前文章语境推断、关联文章语境推断。强证据不得被弱推断覆盖。关联文章已经明确写出年龄的人物，当前文章只有父亲、母亲、子女等关系身份时必须保留关联文章明示年龄。
 6. age_basis 和 gender_basis 必须填写 current_explicit、linked_explicit、current_inference、linked_inference 或 unknown。
 7. 当前文章没有直接写年龄数字或性别词本身不构成问题。只要已经使用最高优先级的可用证据，并由关联文章明示或文章语境得到合理结论，就应判为 pass。不得仅因证据来自关联文章、称谓、就学阶段、职业阶段或人物关系而填 uncertain 或重复报告 issue。
+   age 始终保留 5 至 100 的整数推断值，不能改成“未明确提及”等文字。gender 已根据姓名、称谓、关系或上下文合理推断为 female 或 male 时，gender_basis 使用 current_inference 或 linked_inference，不能仅因缺少直接性别词改为 unknown。
 8. 发现真实错误时直接输出修正后的完整字段，status 填 corrected，并在 issues 说明原值问题。修正字段必须准确解决本轮 issues，下一轮不得继续报告已经修正的问题。只有证据相互冲突、无法选择合理结论时才填 uncertain。
-9. 只有本轮每个人物都无需再修改、没有重复身份、没有 unresolved issue 时，所有 status 才能为 pass 且 all_valid 为 true。只要本轮进行了任何修正，all_valid 必须为 false，由下一轮复核修正结果。
-10. characters 必须覆盖人物表全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
+9. 本轮修正字段已经完整解决 issues，且没有重复身份或 unresolved issue 时，修正项使用 corrected，all_valid 填 true。只有仍需下一轮处理时才填 false。程序会确定性检查修正字段是否真实变化并满足结构门禁。
+10. characters 必须覆盖当前小批次全部 ID 且每个 ID 恰好一次。旁白不属于人物，本流程不校验旁白。
 
-当前人物表：{roster}
+全文身份索引，仅用于判断重复人物：{peer_roster}
+
+当前待复核小批次：{roster}
 
 当前文章人物证据：
 <<<CURRENT_ARTICLE
@@ -1185,64 +1268,78 @@ CURRENT_ARTICLE
 {linked_evidence or '无'}
 LINKED_ARTICLES
 """.strip()
-            expected_ids = {str(item.get("id") or "") for item in people}
-            request_prompt = prompt
-            repair_attempts = 0
-            total_metrics = {"prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
-            while True:
-                result, metrics = self._request_structured(
-                    request_prompt,
-                    CHARACTER_VALIDATION_SCHEMA,
-                    system="你只输出严格符合 JSON Schema 的逐人人物设定校验结果。",
-                    schema_name="character_validation",
-                    context_tokens=8192,
-                    keep_alive="30m",
-                )
-                for key in total_metrics:
-                    total_metrics[key] += metrics.get(key, 0)
-                rows = result.get("characters")
-                if not isinstance(rows, list):
-                    raise DirectorValidationError(f"第 {round_index} 轮人物设定校验缺少 characters")
-                actual_ids = [str(item.get("id") or "") for item in rows if isinstance(item, dict)]
-                if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
-                    missing = sorted(expected_ids.difference(actual_ids))
-                    extra = sorted(set(actual_ids).difference(expected_ids))
-                    raise DirectorValidationError(f"第 {round_index} 轮人物设定校验覆盖不完整：缺少 {missing}，多出 {extra}")
-                normalized_rows = [self._normalize_character_validation(item, expected_ids) for item in rows]
-                reconciled_redundant_issues = self._reconcile_redundant_character_corrections(people, normalized_rows)
-                inconsistencies = self._character_validation_inconsistencies(people, normalized_rows)
-                if not inconsistencies:
-                    break
-                repair_attempts += 1
-                if repair_attempts >= 3:
-                    raise DirectorValidationError(f"第 {round_index} 轮 AI 声明修正但字段未落实：{inconsistencies}")
-                _notify(progress, 0.9 + round_index * 0.015, f"第 {round_index} 轮修正未落实，正在要求 AI 重做")
-                request_prompt = (
-                    prompt
-                    + "\n\n上一次输出存在下列自相矛盾，status 虽为 corrected，要求修正的字段却没有改变。"
-                    + "请逐项重新比较当前人物表和 issue。若字段确实错误，必须真正修改对应字段；"
-                    + "若当前字段已经满足 issue，例如 age 已为范围下限且 age_evidence 已保留完整范围，"
-                    + "必须把该人物改判为 pass 并清空 issues，不得重复报告已经满足的要求。\n"
-                    + json.dumps(inconsistencies, ensure_ascii=False)
-                    + "\n上一次输出："
-                    + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                )
+                expected_ids = {str(item.get("id") or "") for item in batch}
+                request_prompt = prompt
+                repair_attempts = 0
+                while True:
+                    result, metrics = self._request_structured(
+                        request_prompt,
+                        CHARACTER_VALIDATION_SCHEMA,
+                        system="你只输出严格符合 JSON Schema 的当前人物小批次校验结果。",
+                        schema_name="character_validation_batch",
+                        context_tokens=8192,
+                        keep_alive="30m",
+                    )
+                    total_metrics["requests"] += 1
+                    for key in ("prompt_tokens", "output_tokens", "duration_seconds"):
+                        total_metrics[key] += metrics.get(key, 0)
+                    rows = result.get("characters")
+                    if not isinstance(rows, list):
+                        raise DirectorValidationError(f"第 {round_index} 轮第 {batch_index} 批人物校验缺少 characters")
+                    actual_ids = [str(item.get("id") or "") for item in rows if isinstance(item, dict)]
+                    if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+                        missing = sorted(expected_ids.difference(actual_ids))
+                        extra = sorted(set(actual_ids).difference(expected_ids))
+                        raise DirectorValidationError(
+                            f"第 {round_index} 轮第 {batch_index} 批人物校验覆盖不完整：缺少 {missing}，多出 {extra}"
+                        )
+                    batch_rows = [self._normalize_character_validation(item, all_character_ids) for item in rows]
+                    batch_reconciled = self._reconcile_redundant_character_corrections(batch, batch_rows)
+                    inconsistencies = self._character_validation_inconsistencies(batch, batch_rows)
+                    if not inconsistencies:
+                        break
+                    repair_attempts += 1
+                    total_repair_attempts += 1
+                    if repair_attempts >= 3:
+                        raise DirectorValidationError(
+                            f"第 {round_index} 轮第 {batch_index} 批 AI 声明修正但字段未落实：{inconsistencies}"
+                        )
+                    _notify(progress, 0.9, f"第 {batch_index} 个人物小批次修正未落实，正在单独重做")
+                    request_prompt = (
+                        prompt
+                        + "\n\n上一次输出存在下列自相矛盾，status 虽为 corrected，要求修正的字段却没有改变。"
+                        + "请逐项重新比较当前人物表和 issue。若字段确实错误，必须真正修改对应字段；"
+                        + "若当前字段已经满足 issue，必须改判为 pass 并清空 issues。\n"
+                        + json.dumps(inconsistencies, ensure_ascii=False)
+                        + "\n上一次输出："
+                        + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                    )
+                normalized_rows.extend(batch_rows)
+                reconciled_redundant_issues.extend(batch_reconciled)
+                summaries.append(str(result.get("summary") or "").strip())
+                all_valid_signals.append(bool(result.get("all_valid")))
             self._apply_character_validation(document, normalized_rows)
             statuses = {item["id"]: item["status"] for item in normalized_rows}
+            corrected_and_resolved = any(status == "corrected" for status in statuses.values()) and all(
+                status in {"pass", "corrected"} for status in statuses.values()
+            )
             round_valid = (
-                (bool(result.get("all_valid")) or bool(reconciled_redundant_issues))
-                and all(status == "pass" for status in statuses.values())
-                and all(not item["issues"] for item in normalized_rows)
+                (all(all_valid_signals) or bool(reconciled_redundant_issues) or corrected_and_resolved)
+                and all(status in {"pass", "corrected"} for status in statuses.values())
+                and all(not item["issues"] or item["status"] == "corrected" for item in normalized_rows)
                 and all(item["canonical_id"] == item["id"] for item in normalized_rows)
             )
             rounds.append({
                 "round": round_index,
                 "all_valid": round_valid,
-                "summary": str(result.get("summary") or "").strip(),
+                "summary": "；".join(item for item in summaries if item),
                 "statuses": statuses,
                 "issues": {item["id"]: item["issues"] for item in normalized_rows if item["issues"]},
-                "repair_attempts": repair_attempts,
+                "batch_count": len(batches),
+                "requests": total_metrics["requests"],
+                "repair_attempts": total_repair_attempts,
                 "reconciled_redundant_issues": reconciled_redundant_issues,
+                "accepted_corrected": corrected_and_resolved and round_valid,
                 "prompt_tokens": total_metrics["prompt_tokens"],
                 "output_tokens": total_metrics["output_tokens"],
                 "duration_seconds": total_metrics["duration_seconds"],
@@ -1258,9 +1355,14 @@ LINKED_ARTICLES
         raise DirectorValidationError(f"人物年龄、性别与小传经过 {max_rounds} 轮 AI 校验后仍未全部通过：{unresolved}")
 
     @staticmethod
-    def _character_validation_evidence(source: str, people: list[dict[str, Any]], max_chars: int = 30000) -> str:
+    def _character_validation_evidence(
+        source: str,
+        people: list[dict[str, Any]],
+        max_chars: int = 30000,
+        focused: bool = False,
+    ) -> str:
         source = normalize_source_text(str(source or ""))
-        if len(source) <= max_chars:
+        if len(source) <= max_chars and not focused:
             return source
         names = {
             str(value).strip()
@@ -1276,7 +1378,7 @@ LINKED_ARTICLES
                     if paragraphs[nearby] not in selected:
                         selected.append(paragraphs[nearby])
         evidence = "\n".join(selected)
-        return evidence[:max_chars]
+        return (evidence or source)[:max_chars]
 
     @staticmethod
     def _normalize_character_validation(raw: dict[str, Any], expected_ids: set[str]) -> dict[str, Any]:
@@ -1303,6 +1405,8 @@ LINKED_ARTICLES
             raise DirectorValidationError(f"人物 {role_id} 的小传或年龄缺少校验证据")
         if age_basis == "unknown":
             age_basis = "current_inference"
+        if gender != "unspecified" and gender_basis == "unknown" and gender_evidence:
+            gender_basis = "current_inference"
         if gender not in {"female", "male", "unspecified"}:
             raise DirectorValidationError(f"人物 {role_id} 的校验性别无效")
         if gender != "unspecified" and not gender_evidence:
@@ -1376,20 +1480,48 @@ LINKED_ARTICLES
                 continue
 
             issue_text = " ".join(row["issues"])
-            non_explicit_age_issue = (
-                row["age_basis"] in {"current_explicit", "current_inference", "linked_inference"}
-                and bool(row["age_evidence"])
-                and any(token in issue_text for token in ("未明确", "没有明确", "并未明确", "未直接", "没有直接"))
-                and any(token in issue_text for token in ("年龄", "age_evidence", "age_basis"))
-                and not any(
-                    token in issue_text
-                    for token in (
-                        "年龄值", "应为", "改为", "下限", "范围", "错误", "不合理",
-                        "性别", "gender", "小传", "profile", "姓名", "name", "重复", "合并", "canonical",
-                    )
+            absence_claim = any(
+                token in issue_text
+                for token in ("未明确", "没有明确", "并未明确", "未提供明确", "未直接", "没有直接")
+            )
+            age_issue = any(token in issue_text for token in ("年龄", "age_evidence", "age_basis"))
+            gender_issue = any(token in issue_text for token in ("性别", "gender_evidence", "gender_basis"))
+            requested_age_match = re.search(
+                r"(?:年龄(?:值)?(?:应为|改为|应修正为|需修正为)|age\s*(?:应为|改为|=|should\s+be)|应修正为|需修正为)\s*[:：'\"]*\s*(\d{1,3})",
+                issue_text,
+                flags=re.IGNORECASE,
+            )
+            requested_age = int(requested_age_match.group(1)) if requested_age_match else None
+            age_inference_resolved = (
+                not age_issue
+                or (
+                    absence_claim
+                    and requested_age in {None, row["age"]}
+                    and row["age_basis"] in {"current_explicit", "current_inference", "linked_inference"}
+                    and bool(row["age_evidence"])
                 )
             )
-            if non_explicit_age_issue:
+            gender_inference_resolved = (
+                not gender_issue
+                or (
+                    absence_claim
+                    and row["gender"] in {"female", "male"}
+                    and row["gender_basis"] in {"current_inference", "linked_inference"}
+                    and bool(row["gender_evidence"])
+                )
+            )
+            identity_or_profile_issue = any(
+                token in issue_text
+                for token in ("小传", "profile", "姓名", "name", "别名", "alias", "重复", "合并", "canonical")
+            )
+            redundant_inference_issue = (
+                absence_claim
+                and (age_issue or gender_issue)
+                and age_inference_resolved
+                and gender_inference_resolved
+                and not identity_or_profile_issue
+            )
+            if redundant_inference_issue:
                 if row["age_basis"] == "current_explicit":
                     row["age_basis"] = "current_inference"
                     evidence = row["age_evidence"]
@@ -1398,7 +1530,7 @@ LINKED_ARTICLES
                     inference_note = "该年龄为结合相关时间线与当前叙事语境的推断值"
                     row["age_evidence"] = f"{evidence.rstrip('。；;')}；{inference_note}"
                 reconciled.append(
-                    f"{row['id']} 已使用 {row['age_basis']} 并保留 age_evidence；原文未明示年龄不构成重复 issue"
+                    f"{row['id']} 已使用推断型人口属性证据；缺少直接年龄或性别词不构成重复 issue"
                 )
                 row["status"] = "pass"
                 row["issues"] = []
@@ -1429,14 +1561,14 @@ LINKED_ARTICLES
                 flags=re.IGNORECASE,
             )
             requested_age_match = re.search(
-                r"(?:下限|年龄(?:值)?(?:应为|改为)|age\s*(?:应为|改为|=|should\s+be))\s*[:：]?\s*(\d{1,3})",
+                r"(?:下限|年龄(?:值)?(?:应为|改为|应修正为|需修正为)|age\s*(?:应为|改为|=|should\s+be)|应修正为|需修正为)\s*[:：'\"]*\s*(\d{1,3})",
                 age_value_issue_text,
                 flags=re.IGNORECASE,
             )
             requested_age = int(requested_age_match.group(1)) if requested_age_match else None
             age_value_change_required = (
                 any(token in age_value_issue_text for token in ("年龄", "age", "岁"))
-                and any(token in age_value_issue_text for token in ("应为", "改为", "下限", "不是", "错误", "不合理"))
+                and any(token in age_value_issue_text for token in ("应为", "改为", "应修正为", "需修正为", "下限", "不是", "错误", "不合理"))
                 and (requested_age is None or requested_age != row["age"])
             )
             if age_value_change_required and row["age"] == original.get("age"):
@@ -1606,6 +1738,12 @@ LINKED_ARTICLE_EVIDENCE
         guidance: str,
         single_anchor: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        staged_registry = bool(
+            self.config.staged_analysis
+            and existing_characters
+            and getattr(self, "_scene_registry", None)
+        )
+        source_units = split_exact_sentences(chunk) if staged_registry else []
         prompt = self._build_prompt(
             chunk=chunk,
             chunk_index=chunk_index,
@@ -1614,6 +1752,8 @@ LINKED_ARTICLE_EVIDENCE
             existing_characters=existing_characters,
             previous_context=previous_context,
             guidance=guidance,
+            staged_registry=staged_registry,
+            source_units=source_units,
         )
         last_error: Exception | None = None
         attempts = max(1, self.config.chunk_validation_attempts)
@@ -1626,7 +1766,17 @@ LINKED_ARTICLE_EVIDENCE
                     f"\n校验错误：{last_error}"
                 )
             try:
-                result, metrics = self._chat(current_prompt)
+                if staged_registry:
+                    result, metrics = self._chat_staged(current_prompt)
+                    result = self._expand_staged_chunk_result(
+                        result,
+                        existing_characters,
+                        getattr(self, "_scene_registry", []),
+                        requested_type,
+                        source_units,
+                    )
+                else:
+                    result, metrics = self._chat(current_prompt)
                 if single_anchor:
                     result = self._enforce_single_anchor_result(result, requested_type)
                 return self._validate_chunk(result, chunk, single_anchor=single_anchor), metrics
@@ -1698,9 +1848,10 @@ LINKED_ARTICLE_EVIDENCE
         existing_characters: list[dict[str, Any]],
         previous_context: str,
         guidance: str,
+        staged_registry: bool = False,
+        source_units: list[str] | None = None,
     ) -> str:
         if requested_type in SINGLE_ANCHOR_CONTENT_TYPES:
-            schema_text = json.dumps(DIRECTOR_SCHEMA, ensure_ascii=False, separators=(",", ":"))
             label = CONTENT_TYPE_LABELS[requested_type]
             return f"""
 你是专业有声内容导演和中文文本编辑。当前稿件已经判定为{label}，处理第 {chunk_index}/{chunk_count} 个连续文本块。
@@ -1724,7 +1875,6 @@ LINKED_ARTICLE_EVIDENCE
 {chunk}
 SOURCE
 
-JSON Schema：{schema_text}
 只输出符合 Schema 的 JSON，不输出说明文字。
 """.strip()
         type_instruction = {
@@ -1732,9 +1882,50 @@ JSON Schema：{schema_text}
             "novel": "体裁固定为 novel。旁白负责环境、动作、心理和说话归属；人物台词独立分轨。",
             "story": "体裁固定为 story。旁白具有讲述感，人物台词保持可辨识的态度变化。",
         }[requested_type]
-        roster = json.dumps(existing_characters, ensure_ascii=False, separators=(",", ":"))
-        scene_registry = json.dumps(getattr(self, "_scene_registry", []), ensure_ascii=False, separators=(",", ":"))
-        schema_text = json.dumps(DIRECTOR_SCHEMA, ensure_ascii=False, separators=(",", ":"))
+        prompt_characters = [
+            {
+                key: character.get(key)
+                for key in ("id", "name", "kind", "aliases", "profile", "gender", "age")
+            }
+            for character in existing_characters
+        ]
+        prompt_scenes = [
+            {
+                key: scene.get(key)
+                for key in (
+                    "id", "title", "topic", "location", "spatial_direction", "time",
+                    "participants", "narrative_perspective", "mood",
+                )
+            }
+            for scene in getattr(self, "_scene_registry", [])
+        ]
+        roster = json.dumps(prompt_characters, ensure_ascii=False, separators=(",", ":"))
+        scene_registry = json.dumps(prompt_scenes, ensure_ascii=False, separators=(",", ":"))
+        source_payload = chunk
+        source_label = "本次原文"
+        if staged_registry:
+            source_payload = json.dumps(
+                [{"i": index, "text": source_text} for index, source_text in enumerate(source_units or [], start=1)],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            return f"""
+你是有声作品的分句导演。全文注册已经完成，处理第 {chunk_index}/{chunk_count} 个连续文本块。
+
+1. characters 与 scenes 固定输出空数组。每条分句只引用下方注册表中的稳定人物 ID 和场景 ID，描述短语、动作和副词不能成为人物。
+2. 输入已经按自然句边界切成带 i 的原文单元。segments 按 i 顺序逐项覆盖全部单元，每个 i 恰好一次，禁止合并、拆分或遗漏。程序负责回填原文、朗读清洗稿、序号和章节。
+3. 结合完整句、上一块结尾、人物表和说话动作判断旁白、对白、心理活动与句内引用。旁白和说话归属使用 narrator。第一人称“我说、我问”使用 narrator。句内标题、名称和术语不建立人物。
+4. 每项选择准确的 scene_id、speaker_id、语言、态度、情绪、强度、节奏和停顿。态度范围：{'、'.join(ATTITUDE_PRESETS)}。节奏范围：{'、'.join(PACE_PRESETS)}。语言范围：ZH、EN、JA、ES、AR。
+5. 用户导演补充：{guidance.strip() or '无'}。体裁：{type_instruction}
+6. segments 使用紧凑字段：i=原文单元编号，s=speaker_id，c=speaker_candidates，q=speaker_confidence，e=不超过 30 个中文字符的说话归属依据，g=scene_id，l=language，a=attitude，m=emotion，v=intensity，p=pace，d=pause_after_ms。角色名称和类型由程序按 s 回填。
+
+人物注册表：{roster or '[]'}
+场景注册表：{scene_registry or '[]'}
+上一文本块结尾，仅用于连续性：{previous_context or '无'}
+原文单元 JSON：{source_payload}
+
+只输出符合 Schema 的 JSON。
+""".strip()
         return f"""
 你是专业有声内容导演和中文文本编辑。处理第 {chunk_index}/{chunk_count} 个连续文本块。
 
@@ -1761,14 +1952,91 @@ JSON Schema：{schema_text}
 全文场景注册表：{scene_registry or '[]'}。优先复用其中的 scene id；当前块出现有证据的新场景时可以新增。
 上一文本块结尾，仅用于人物连续性，不要重复输出：{previous_context or '无'}
 
-本次原文开始：
+{source_label}开始：
 <<<SOURCE
-{chunk}
+{source_payload}
 SOURCE
 
-JSON Schema：{schema_text}
 只输出符合 Schema 的 JSON，不输出说明文字。
 """.strip()
+
+    @staticmethod
+    def _expand_staged_chunk_result(
+        result: dict[str, Any],
+        existing_characters: list[dict[str, Any]],
+        existing_scenes: list[dict[str, Any]],
+        content_type: str,
+        source_units: list[str],
+    ) -> dict[str, Any]:
+        raw_segments = result.get("segments") if isinstance(result, dict) else None
+        if not isinstance(raw_segments, list):
+            raise DirectorValidationError("AI 紧凑分块结果缺少 segments")
+        expected_ids = list(range(1, len(source_units) + 1))
+        actual_ids = [row.get("i") for row in raw_segments if isinstance(row, dict)]
+        if actual_ids != expected_ids:
+            raise DirectorValidationError(
+                f"AI 紧凑分块未按顺序完整覆盖原文单元：期望 {expected_ids}，实际 {actual_ids}"
+            )
+        segments = []
+        role_by_identity = {
+            str(value).strip().casefold(): character
+            for character in existing_characters
+            for value in (character.get("id"), character.get("name"), *(character.get("aliases") or []))
+            if str(value or "").strip()
+        }
+        for index, row in enumerate(raw_segments, start=1):
+            if not isinstance(row, dict):
+                raise DirectorValidationError(f"AI 紧凑分块第 {index} 条分句格式无效")
+            source_text = source_units[index - 1]
+            spoken_text = source_text.strip().strip("“”‘’\"'") or source_text.strip()
+            speaker_id = str(row.get("s") or "").strip()
+            speaker_name = ""
+            speaker_kind = "narrator"
+            resolved_role = role_by_identity.get(speaker_id.casefold())
+            first_person_speech = bool(
+                re.search(
+                    r"(?:^|[。！？；;\n])\s*我[^。！？\n]{0,40}(?:说|问|答|回应|喊|叫|道)[：:]",
+                    source_text,
+                )
+            )
+            if resolved_role:
+                speaker_id = str(resolved_role.get("id") or speaker_id)
+                speaker_name = str(resolved_role.get("name") or speaker_name)
+                speaker_kind = str(resolved_role.get("kind") or speaker_kind)
+            elif first_person_speech:
+                speaker_id = "narrator"
+                speaker_name = "旁白"
+                speaker_kind = "narrator"
+            else:
+                raise DirectorValidationError(
+                    f"AI 紧凑分块第 {index} 条引用了未注册人物：{speaker_id or speaker_name}"
+                )
+            segments.append({
+                "order": index,
+                "section": "",
+                "speaker_id": speaker_id,
+                "speaker_name": speaker_name,
+                "speaker_kind": speaker_kind,
+                "speaker_candidates": row.get("c"),
+                "speaker_confidence": row.get("q"),
+                "speaker_evidence": row.get("e"),
+                "scene_id": row.get("g"),
+                "language": row.get("l"),
+                "source_text": source_text,
+                "text": spoken_text,
+                "attitude": row.get("a"),
+                "emotion": row.get("m"),
+                "intensity": row.get("v"),
+                "pace": row.get("p"),
+                "pause_after_ms": row.get("d"),
+            })
+        return {
+            "content_type": content_type,
+            "title": "",
+            "characters": [*deepcopy(existing_characters), *deepcopy(result.get("characters") or [])],
+            "scenes": [*deepcopy(existing_scenes), *deepcopy(result.get("scenes") or [])],
+            "segments": segments,
+        }
 
     def resolve_guidance(self, guidance: str, role_table: Any) -> dict[str, Any]:
         guidance = str(guidance or "").strip()
@@ -1941,6 +2209,16 @@ JSON Schema：{schema_text}
             DIRECTOR_SCHEMA,
             system="你只输出严格符合 JSON Schema 的有声导演结果，完整保留原文可朗读信息。",
             schema_name="audio_director",
+            context_tokens=8192,
+            keep_alive="30m",
+        )
+
+    def _chat_staged(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        return self._request_structured(
+            prompt,
+            STAGED_CHUNK_SCHEMA,
+            system="你只输出严格符合 JSON Schema 的紧凑有声导演结果，完整保留原文可朗读信息。",
+            schema_name="audio_director_staged",
             context_tokens=8192,
             keep_alive="30m",
         )
@@ -2285,6 +2563,8 @@ JSON Schema：{schema_text}
     @staticmethod
     def _infer_quoted_speaker(prefix: str) -> str:
         compact = re.sub(r"\s+", "", prefix)
+        if re.search(r"(?:^|[。！？；])我[^。！？；：]{0,40}(?:说|问|答|回应|喊|叫|道)[：:]$", compact):
+            return ""
         patterns = (
             r"(?:传来|响起|听见|听到)([\u4e00-\u9fff]{1,6})的(?:喊声|声音|叫声|低语)",
             r"([\u4e00-\u9fff]{1,6})在[^，。！？；：]{0,16}(?:说|问|答|回应|喊|叫|道)[：:]$",

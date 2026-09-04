@@ -2,6 +2,7 @@ from pathlib import Path
 
 from product_analysis_worker import (
     analysis_voice_ids,
+    attach_analysis_total_metrics,
     apply_analysis_demographics,
     apply_validated_character_profiles,
     current_document_with_project_segments,
@@ -10,6 +11,39 @@ from product_analysis_worker import (
     merge_analysis_roles,
     prepare_single_anchor_analysis,
 )
+
+
+def test_analysis_total_metrics_include_chunk_pipeline_and_character_review():
+    document = {
+        "metrics": {
+            "prompt_tokens": 100,
+            "output_tokens": 40,
+            "duration_seconds": 3.5,
+            "classification_requests": 1,
+            "context_requests": 1,
+            "chunks": 2,
+            "stage_metrics": {},
+        },
+        "character_validation": {
+            "rounds": [
+                {"prompt_tokens": 20, "output_tokens": 8, "duration_seconds": 0.7, "repair_attempts": 1},
+                {"prompt_tokens": 22, "output_tokens": 6, "duration_seconds": 0.5, "repair_attempts": 0},
+            ]
+        },
+    }
+
+    metrics = attach_analysis_total_metrics(document)
+
+    assert metrics["stage_metrics"]["character_validation"] == {
+        "requests": 3,
+        "prompt_tokens": 42,
+        "output_tokens": 14,
+        "duration_seconds": 1.2,
+    }
+    assert metrics["total_requests"] == 7
+    assert metrics["total_prompt_tokens"] == 142
+    assert metrics["total_output_tokens"] == 54
+    assert metrics["total_model_duration_seconds"] == 4.7
 
 
 def test_storyboard_regeneration_uses_current_user_edited_segments():

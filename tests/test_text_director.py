@@ -247,7 +247,7 @@ def test_current_explicit_demographics_override_linked_explicit_value():
     assert existing[0]["age_basis"] == "current_explicit"
 
 
-def test_ai_character_validation_rechecks_corrections_until_every_person_passes():
+def test_ai_character_validation_accepts_program_verified_corrections_without_repeating_review():
     class ValidationDirector(OllamaTextDirector):
         def __init__(self):
             super().__init__(DirectorConfig(model="fake"))
@@ -259,20 +259,6 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
                     "characters": [{
                         "id": "role_007", "canonical_id": "role_007", "name": "桐原洋介",
                         "status": "corrected", "issues": ["35 岁缺少依据，关联文章明示 52 岁"],
-                        "profile": "桐原洋介是五十二岁的桐原当铺老板，也是桐原亮司的父亲。",
-                        "profile_evidence": "关联文章写明年龄和当铺老板身份",
-                        "gender": "male", "gender_evidence": "原文称其为丈夫和父亲",
-                        "gender_basis": "current_explicit", "age": 52,
-                        "age_evidence": "关联文章明确写明被害人的年龄是五十二岁",
-                        "age_basis": "linked_explicit",
-                    }],
-                },
-                {
-                    "all_valid": True,
-                    "summary": "全部人物设定通过",
-                    "characters": [{
-                        "id": "role_007", "canonical_id": "role_007", "name": "桐原洋介",
-                        "status": "pass", "issues": [],
                         "profile": "桐原洋介是五十二岁的桐原当铺老板，也是桐原亮司的父亲。",
                         "profile_evidence": "关联文章写明年龄和当铺老板身份",
                         "gender": "male", "gender_evidence": "原文称其为丈夫和父亲",
@@ -306,11 +292,138 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
     )
 
     assert report["all_valid"] is True
-    assert report["round_count"] == 2
+    assert report["round_count"] == 1
     assert document["characters"][0]["age"] == 52
     assert report["rounds"][0]["statuses"] == {"role_007": "corrected"}
-    assert report["rounds"][1]["statuses"] == {"role_007": "pass"}
-    assert director.context_tokens == [8192, 8192]
+    assert report["rounds"][0]["accepted_corrected"] is True
+    assert director.context_tokens == [8192]
+
+
+def test_ai_character_validation_splits_roster_into_small_batches():
+    class BatchedValidationDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            self.batch_ids = [["role_001", "role_002"], ["role_003"]]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            ids = self.batch_ids.pop(0)
+            rows = []
+            for role_id in ids:
+                rows.append({
+                    "id": role_id,
+                    "canonical_id": role_id,
+                    "name": role_id,
+                    "status": "pass",
+                    "issues": [],
+                    "profile": f"{role_id} 是当前文章中需要复核的人物。",
+                    "profile_evidence": f"原文出现 {role_id}",
+                    "gender": "unspecified",
+                    "gender_evidence": "",
+                    "gender_basis": "unknown",
+                    "age": 30,
+                    "age_evidence": "根据当前文章语境推断为成年人",
+                    "age_basis": "current_inference",
+                })
+            return {"all_valid": True, "summary": "当前小批次通过", "characters": rows}, {
+                "prompt_tokens": 10,
+                "output_tokens": 5,
+                "duration_seconds": 0.1,
+            }
+
+    document = {
+        "characters": [
+            {
+                "id": role_id, "name": role_id, "kind": "character", "aliases": [],
+                "profile": f"{role_id} 是当前文章中的人物。", "voice_hint": "中性清晰",
+                "gender": "unspecified", "gender_evidence": "", "gender_basis": "unknown",
+                "age": 30, "age_evidence": "根据当前文章语境推断为成年人", "age_basis": "current_inference",
+            }
+            for role_id in ("role_001", "role_002", "role_003")
+        ],
+        "segments": [],
+        "scenes": [],
+    }
+
+    report = BatchedValidationDirector().validate_character_analysis(
+        document,
+        "role_001 出场。\n无关段落。\nrole_002 出场。\n无关段落。\nrole_003 出场。",
+    )
+
+    assert report["all_valid"] is True
+    assert report["rounds"][0]["batch_count"] == 2
+    assert report["rounds"][0]["requests"] == 2
+    assert report["rounds"][0]["prompt_tokens"] == 20
+
+
+def test_ai_character_validation_retries_only_the_failed_small_batch():
+    class IsolatedRetryDirector(OllamaTextDirector):
+        def __init__(self):
+            super().__init__(DirectorConfig(model="fake"))
+            self.requested_batches = []
+            self.responses = [
+                ["role_001", "role_002"],
+                ["role_003", "role_004"],
+                ["role_003", "role_004"],
+            ]
+            self.ages = [30, 30, 25]
+
+        def _request_structured(self, prompt, schema, **kwargs):
+            ids = self.responses.pop(0)
+            corrected_age = self.ages.pop(0)
+            self.requested_batches.append(ids)
+            rows = []
+            for role_id in ids:
+                requires_age_fix = role_id == "role_003" and corrected_age == 30
+                rows.append({
+                    "id": role_id,
+                    "canonical_id": role_id,
+                    "name": role_id,
+                    "status": "corrected" if requires_age_fix else "pass",
+                    "issues": ["年龄应修正为 25"] if requires_age_fix else [],
+                    "profile": f"{role_id} 是当前文章中的人物。",
+                    "profile_evidence": f"原文出现 {role_id}",
+                    "gender": "unspecified",
+                    "gender_evidence": "",
+                    "gender_basis": "unknown",
+                    "age": corrected_age if role_id == "role_003" else 30,
+                    "age_evidence": "原文写明年龄" if role_id == "role_003" else "根据语境推断为成年人",
+                    "age_basis": "current_explicit" if role_id == "role_003" else "current_inference",
+                })
+            return {
+                "all_valid": not any(row["issues"] for row in rows),
+                "summary": "当前小批次复核完成",
+                "characters": rows,
+            }, {"prompt_tokens": 10, "output_tokens": 5, "duration_seconds": 0.1}
+
+    document = {
+        "characters": [
+            {
+                "id": role_id, "name": role_id, "kind": "character", "aliases": [],
+                "profile": f"{role_id} 是当前文章中的人物。", "voice_hint": "中性清晰",
+                "gender": "unspecified", "gender_evidence": "", "gender_basis": "unknown",
+                "age": 30, "age_evidence": "根据语境推断为成年人", "age_basis": "current_inference",
+            }
+            for role_id in ("role_001", "role_002", "role_003", "role_004")
+        ],
+        "segments": [],
+        "scenes": [],
+    }
+    director = IsolatedRetryDirector()
+
+    report = director.validate_character_analysis(
+        document,
+        "role_001、role_002、role_003 和 role_004 出场。",
+    )
+
+    assert report["all_valid"] is True
+    assert director.requested_batches == [
+        ["role_001", "role_002"],
+        ["role_003", "role_004"],
+        ["role_003", "role_004"],
+    ]
+    assert report["rounds"][0]["requests"] == 3
+    assert report["rounds"][0]["repair_attempts"] == 1
+    assert next(item for item in document["characters"] if item["id"] == "role_003")["age"] == 25
 
 
 def test_character_validation_normalizes_unknown_age_basis_when_age_evidence_exists():
@@ -325,6 +438,18 @@ def test_character_validation_normalizes_unknown_age_basis_when_age_evidence_exi
     assert row["age"] == 18
     assert row["age_evidence"] == "原文写明她十八岁"
     assert row["age_basis"] == "current_inference"
+
+
+def test_character_validation_normalizes_inferred_gender_basis_with_evidence():
+    row = OllamaTextDirector._normalize_character_validation({
+        "id": "role_003", "canonical_id": "role_003", "name": "欣雨",
+        "status": "pass", "issues": [], "profile": "欣雨是刘至诚的小情人。",
+        "profile_evidence": "原文使用小情人称谓", "gender": "female",
+        "gender_evidence": "根据姓名和小情人称谓推断", "gender_basis": "unknown",
+        "age": 28, "age_evidence": "根据社会关系与语境推断", "age_basis": "current_inference",
+    }, {"role_003"})
+
+    assert row["gender_basis"] == "current_inference"
 
 
 def test_ai_character_validation_merges_duplicate_identity_then_rechecks():
@@ -427,7 +552,7 @@ def test_ai_character_validation_retries_when_declared_age_fix_was_not_applied()
 
     report = RepairDirector().validate_character_analysis(document, "孩子是小学五年级学生。")
 
-    assert report["round_count"] == 2
+    assert report["round_count"] == 1
     assert report["rounds"][0]["repair_attempts"] == 1
     assert document["characters"][0]["age"] == 10
 
@@ -483,6 +608,45 @@ def test_ai_character_validation_reconciles_repeated_non_explicit_age_issues_for
     assert all(row["status"] == "pass" for row in rows)
     assert all(row["issues"] == [] for row in rows)
     assert OllamaTextDirector._character_validation_inconsistencies(people, rows) == []
+
+
+def test_ai_character_validation_reconciles_combined_non_explicit_age_and_gender_issue():
+    person = {
+        "id": "role_003", "name": "欣雨", "profile": "欣雨是刘至诚的小情人。",
+        "profile_evidence": "原文使用小情人称谓", "gender": "female",
+        "gender_evidence": "根据姓名和小情人称谓推断", "gender_basis": "current_inference",
+        "age": 28, "age_evidence": "根据社会关系与当前叙事语境推断", "age_basis": "current_inference",
+    }
+    row = {
+        **person, "canonical_id": "role_003", "status": "corrected",
+        "issues": [
+            "age_evidence 与原文不符，原文未明确提及年龄，但 age 字段为 28，应修正为 '未明确提及'。"
+            " gender_basis 应为 'unknown'，因为原文未提供明确性别信息。"
+        ],
+    }
+
+    reconciled = OllamaTextDirector._reconcile_redundant_character_corrections([person], [row])
+
+    assert len(reconciled) == 1
+    assert row["status"] == "pass"
+    assert row["issues"] == []
+
+
+def test_character_validation_detects_explicit_should_correct_age_target():
+    original = {
+        "id": "role_002", "name": "刘至诚", "profile": "刘至诚是叙述者的高中同学。",
+        "gender": "male", "gender_evidence": "原文称其为丈夫", "gender_basis": "current_inference",
+        "age": 30, "age_evidence": "原文提到刘至诚二十五岁结婚", "age_basis": "current_inference",
+    }
+    row = {
+        **original, "canonical_id": "role_002", "status": "corrected",
+        "issues": ["age 字段为 30，应修正为 '25岁'。"],
+        "profile_evidence": "原文写明两人是高中同学",
+    }
+
+    inconsistencies = OllamaTextDirector._character_validation_inconsistencies([original], [row])
+
+    assert any("issue 要求 age=25" in item for item in inconsistencies)
 
 
 def test_ai_character_validation_downgrades_non_explicit_current_age_evidence_to_inference():
@@ -556,7 +720,7 @@ def test_ai_character_validation_does_not_require_value_change_for_basis_only_is
 
     report = BasisRepairDirector().validate_character_analysis(document, "父亲的遗照由儿子抱着。")
 
-    assert report["round_count"] == 2
+    assert report["round_count"] == 1
     assert report["rounds"][0]["repair_attempts"] == 0
     assert document["characters"][0]["age"] == 52
     assert document["characters"][0]["age_basis"] == "linked_explicit"
@@ -1016,6 +1180,10 @@ def test_ai_analysis_keeps_short_unpunctuated_dialogue_as_character_speech():
     assert [item["speaker_name"] for item in result["segments"]] == ["旁白", "老板娘", "旁白"]
     assert result["segments"][1]["source_text"] == "“好了”"
     assert result["segments"][1]["text"] == "好了"
+
+
+def test_first_person_speech_attribution_does_not_create_phrase_character():
+    assert OllamaTextDirector._infer_quoted_speaker("我很尊重地对她说：") == ""
 
 
 def test_ai_analysis_pairs_multiple_quotes_and_distinguishes_sign_from_dialogue():
@@ -1717,6 +1885,8 @@ def test_compatible_responses_uses_strict_structured_output_and_instance_header(
 
 def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segments():
     class StagedDirector(OllamaTextDirector):
+        chunk_prompts = []
+
         def _request_structured(self, prompt, schema, **kwargs):
             assert kwargs["schema_name"] == "director_context"
             return ({
@@ -1729,7 +1899,8 @@ def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segm
                 "scenes": [{"id": "local-scene", "location": "小吃店", "time": "傍晚", "participants": ["local-owner"], "narrative_perspective": "第三人称", "mood": "克制", "evidence": "店内对话"}],
             }, {"prompt_tokens": 20, "output_tokens": 30, "duration_seconds": 0.2})
 
-        def _chat(self, prompt):
+        def _chat_staged(self, prompt):
+            self.chunk_prompts.append(prompt)
             response = _valid_response()
             response["characters"][1] = _character("shopkeeper", "老板娘", "character")
             response["segments"][1]["speaker_id"] = "shopkeeper"
@@ -1739,9 +1910,29 @@ def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segm
             response["scenes"] = [{"id": "scene_001", "location": "小吃店", "time": "傍晚", "participants": ["shopkeeper"], "narrative_perspective": "第三人称", "mood": "克制", "evidence": "店内对话"}]
             for segment in response["segments"]:
                 segment["scene_id"] = "scene_001"
-            return response, {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
+            return {
+                "characters": [],
+                "scenes": [],
+                "segments": [
+                    {
+                        "i": index,
+                            "s": "role_001" if item["speaker_id"] == "shopkeeper" else item["speaker_id"],
+                        "c": item.get("speaker_candidates", [item["speaker_id"]]),
+                        "q": item.get("speaker_confidence", 1),
+                        "e": item.get("speaker_evidence", "测试说话归属"),
+                        "g": item["scene_id"],
+                        "l": item["language"],
+                        "a": item["attitude"],
+                        "m": item["emotion"],
+                        "v": item["intensity"],
+                        "p": item["pace"],
+                        "d": item["pause_after_ms"],
+                    }
+                    for index, item in enumerate(response["segments"][:2], start=1)
+                ],
+            }, {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
 
-    result = StagedDirector(DirectorConfig(model="fake", staged_analysis=True)).analyze_document("雨夜。李明说：“你终于来了。”", content_type="novel")
+    result = StagedDirector(DirectorConfig(model="fake", staged_analysis=True)).analyze_document("雨夜。老板娘说：“你终于来了。”", content_type="novel")
 
     owner = next(item for item in result["characters"] if item["name"] == "中年妇人")
     assert "老板娘" in owner["aliases"]
@@ -1750,6 +1941,9 @@ def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segm
     assert result["scenes"][0]["end_segment_order"] == len(result["segments"])
     assert result["metrics"]["context_requests"] == 1
     assert result["metrics"]["context_fallback"] == 0
+    assert result["content_type"] == "novel"
+    assert "segments 使用紧凑字段" in StagedDirector.chunk_prompts[0]
+    assert "JSON Schema：" not in StagedDirector.chunk_prompts[0]
 
 
 def test_scene_ranges_follow_actual_segment_assignments_and_drop_unused_registry_rows():
