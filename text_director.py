@@ -1195,7 +1195,7 @@ LINKED_ARTICLES
                     CHARACTER_VALIDATION_SCHEMA,
                     system="你只输出严格符合 JSON Schema 的逐人人物设定校验结果。",
                     schema_name="character_validation",
-                    context_tokens=12288,
+                    context_tokens=8192,
                     keep_alive="30m",
                 )
                 for key in total_metrics:
@@ -1827,8 +1827,8 @@ JSON Schema：{schema_text}
                     GUIDANCE_ROUTING_SCHEMA,
                     system="你只输出严格符合 JSON Schema 的导演补充语义分配。",
                     schema_name="guidance_routing",
-                    context_tokens=4096,
-                    keep_alive=0,
+                    context_tokens=8192,
+                    keep_alive="30m",
                 )
                 assignments = validate_guidance_assignments(result, clauses, roster)
                 return {

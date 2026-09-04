@@ -251,6 +251,7 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
     class ValidationDirector(OllamaTextDirector):
         def __init__(self):
             super().__init__(DirectorConfig(model="fake"))
+            self.context_tokens = []
             self.responses = [
                 {
                     "all_valid": False,
@@ -283,6 +284,7 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
             ]
 
         def _request_structured(self, prompt, schema, **kwargs):
+            self.context_tokens.append(kwargs.get("context_tokens"))
             return self.responses.pop(0), {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
 
     document = {
@@ -296,7 +298,8 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
         "scenes": [],
     }
 
-    report = ValidationDirector().validate_character_analysis(
+    director = ValidationDirector()
+    report = director.validate_character_analysis(
         document,
         "桐原洋介的儿子抱着遗照。",
         "被害人的年龄是五十二岁。",
@@ -307,6 +310,7 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
     assert document["characters"][0]["age"] == 52
     assert report["rounds"][0]["statuses"] == {"role_007": "corrected"}
     assert report["rounds"][1]["statuses"] == {"role_007": "pass"}
+    assert director.context_tokens == [8192, 8192]
 
 
 def test_ai_character_validation_merges_duplicate_identity_then_rechecks():
@@ -1594,7 +1598,8 @@ def test_ai_guidance_router_resolves_inherited_and_global_targets(monkeypatch):
     monkeypatch.setattr("text_director.requests.post", fake_post)
     routing = OllamaTextDirector(DirectorConfig()).resolve_guidance("旁白缓慢而深沉，老年男性音色。作品整体保持克制。", roles)
 
-    assert captured["body"]["keep_alive"] == 0
+    assert captured["body"]["keep_alive"] == "30m"
+    assert captured["body"]["options"]["num_ctx"] == 8192
     assert captured["body"]["format"]["properties"]["assignments"]
     assert routing["role_signature"] == guidance_role_signature(roles)
     assert routing["assignments"][0]["target_role_names"] == ["旁白"]
