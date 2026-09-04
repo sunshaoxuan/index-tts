@@ -29,3 +29,8 @@
 25. `git fetch fork master`、`git rev-parse master`、`git rev-parse refs/remotes/fork/master` 和 `git ls-remote fork refs/heads/master` 均得到 `80bb9f8ef13dd289a5c44bd3ba66ea296e9ebc96`。
 26. `git merge-base --is-ancestor 13537153c4d8eb2c37e94958bacc7e4fcdab98b6 master` 返回 0，确认 Compose revision 被交付分支包含。
 27. 再次检查 7864 为 HTTP 200、容器 healthy、Ollama `qwen3:14b` 为 8192 context 和 100% GPU。
+28. 读取生产任务 `f0e52ec0479c40f5bb846391c42bbb8a` 的模型文档与工程角色资产，确认模型旁白为 `male`、basis 为 `unknown`，角色资产旁白为 `unspecified`。
+29. 执行 `pytest tests/test_text_director.py tests/test_product_analysis_worker.py tests/test_character_assets.py -q`，126 passed。
+30. 执行 `pytest -m "not gpu" -q`，362 passed、22 deselected、30 subtests passed。
+31. 在 `product-studio` 执行 `pnpm test`，216 passed。
+32. 在 `product-studio` 执行 `pnpm build`，3110 modules transformed。

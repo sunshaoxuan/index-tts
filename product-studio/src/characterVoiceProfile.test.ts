@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
+import { ageVoiceConstraint, genderAssetLabel, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile.ts';
 import type { RoleRow } from './types.ts';
 
 const role: RoleRow = ['role_001', '林澈', 'character', '三十五岁的男性刑警，性格克制。', '低沉厚实', '', '自然叙述', '是'];
@@ -68,6 +68,12 @@ test('preserves uploaded reference audio metadata during character normalization
     source_format: 'mp3',
     size_bytes: 12345,
   });
+});
+
+test('labels article inference and evidence-free fallback as different gender recommendations', () => {
+  assert.equal(genderAssetLabel(normalizeCharacterAsset(role, { gender: 'male', gender_source: 'ai_article_inference' })), '男性 · AI文章推断');
+  assert.equal(genderAssetLabel(normalizeCharacterAsset(role, { gender: 'female', gender_source: 'ai_recommended_default', gender_recommendation_only: true })), '女性 · 系统建议');
+  assert.equal(genderAssetLabel(normalizeCharacterAsset(role, { gender: 'unspecified' })), '性别待定');
 });
 
 test('normalizes standardized reference candidates without changing the original source id', () => {

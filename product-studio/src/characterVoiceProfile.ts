@@ -47,6 +47,14 @@ export function inferCharacterGender(...sources: string[]): CharacterGender {
   return 'unspecified';
 }
 
+export function genderAssetLabel(asset: Pick<CharacterAsset, 'gender' | 'gender_source' | 'gender_recommendation_only'>): string {
+  if (asset.gender === 'unspecified') return '性别待定';
+  const gender = asset.gender === 'female' ? '女性' : '男性';
+  if (asset.gender_recommendation_only || asset.gender_source === 'ai_recommended_default') return `${gender} · 系统建议`;
+  if (asset.gender_source === 'ai_article_inference') return `${gender} · AI文章推断`;
+  return gender;
+}
+
 export function recommendPitchRange(gender: CharacterGender, age: number): PitchRecommendation {
   const safeAge = Math.max(5, Math.min(100, Number.isFinite(age) ? Math.round(age) : 35));
   let min: number;
@@ -123,6 +131,8 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     age_evidence: input?.age_evidence,
     gender_source: input?.gender_source,
     gender_evidence: input?.gender_evidence,
+    gender_basis: input?.gender_basis,
+    gender_recommendation_only: input?.gender_recommendation_only,
   };
 }
 
@@ -140,5 +150,7 @@ export function updateAssetDemographics(asset: CharacterAsset, gender: Character
     age_evidence: undefined,
     gender_source: 'manual',
     gender_evidence: undefined,
+    gender_basis: undefined,
+    gender_recommendation_only: undefined,
   };
 }

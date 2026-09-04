@@ -57,3 +57,14 @@ def test_demographic_evidence_basis_survives_asset_normalization():
 
     assert assets["role_001"]["age_basis"] == "linked_explicit"
     assert assets["role_001"]["gender_basis"] == "linked_explicit"
+
+
+def test_gender_recommendation_marker_survives_asset_normalization():
+    roles = [["narrator", "旁白", "narrator", "全文叙述", "中性声音", "", "自然叙述", "否"]]
+    assets = normalize_character_assets(roles, {"narrator": {
+        "gender": "male", "gender_evidence": "系统暂建议男性声音",
+        "gender_basis": "unknown", "gender_recommendation_only": True,
+    }})
+
+    assert assets["narrator"]["gender"] == "male"
+    assert assets["narrator"]["gender_recommendation_only"] is True

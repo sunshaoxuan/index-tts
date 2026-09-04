@@ -295,6 +295,27 @@ CONTEXT_SCHEMA: dict[str, Any] = {
     },
 }
 
+GENDER_SUGGESTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["suggestions"],
+    "properties": {
+        "suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "gender", "evidence"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "gender": {"type": "string", "enum": ["female", "male"]},
+                    "evidence": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
 STAGED_CHUNK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -969,6 +990,7 @@ class OllamaTextDirector:
             "stage_metrics": {
                 "classification": {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0},
                 "context": {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0},
+                "gender_suggestion": {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0},
                 "chunks": [],
             },
         }
@@ -1088,6 +1110,16 @@ class OllamaTextDirector:
             self._merge_chunk(result, global_characters, global_segments, global_scenes)
             previous_context = chunk[-400:]
             index += 1
+
+        gender_metrics = (
+            {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
+            if single_anchor
+            else self._resolve_unset_gender_suggestions(global_characters, source)
+        )
+        metrics["prompt_tokens"] += gender_metrics["prompt_tokens"]
+        metrics["output_tokens"] += gender_metrics["output_tokens"]
+        metrics["duration_seconds"] += gender_metrics["duration_seconds"]
+        metrics["stage_metrics"]["gender_suggestion"] = gender_metrics
 
         global_segments = assign_numbered_chapter_sections(source, global_segments)
         for order, segment in enumerate(global_segments, start=1):
@@ -1676,6 +1708,113 @@ LINKED_ARTICLE_EVIDENCE
             metrics["duration_seconds"] += current_metrics["duration_seconds"]
             metrics["requests"] += 1
         return characters, scenes, metrics
+
+    @staticmethod
+    def _first_person_gender_inference(source: str) -> tuple[str, str]:
+        compact = re.sub(r"\s+", "", source)
+        male_patterns = (
+            r"(?:我(?:的)?|当时的)(?:女友|女朋友|妻子|老婆)",
+            r"我是(?:一个)?(?:男人|男性|男生|丈夫|父亲|爸爸)",
+        )
+        female_patterns = (
+            r"(?:我(?:的)?|当时的)(?:男友|男朋友|丈夫|老公)",
+            r"我是(?:一个)?(?:女人|女性|女生|妻子|母亲|妈妈)",
+        )
+        male = any(re.search(pattern, compact) for pattern in male_patterns)
+        female = any(re.search(pattern, compact) for pattern in female_patterns)
+        if male == female:
+            return "unspecified", ""
+        if male:
+            return "male", "第一人称叙述者在当前文章中提到自己的女友、妻子或男性身份，建议采用男性声音"
+        return "female", "第一人称叙述者在当前文章中提到自己的男友、丈夫或女性身份，建议采用女性声音"
+
+    def _resolve_unset_gender_suggestions(
+        self,
+        characters: list[dict[str, Any]],
+        source: str,
+    ) -> dict[str, Any]:
+        metrics = {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
+        narrator_inference = self._first_person_gender_inference(source)
+        unresolved: list[dict[str, Any]] = []
+        for character in characters:
+            if character.get("kind") == "narrator" and narrator_inference[0] in {"female", "male"}:
+                if character.get("gender") == "unspecified":
+                    character["gender"] = narrator_inference[0]
+                if character.get("gender") == narrator_inference[0]:
+                    character["gender_evidence"] = narrator_inference[1]
+                    character["gender_basis"] = "current_inference"
+                    character.pop("gender_recommendation_only", None)
+            if character.get("gender") in {"female", "male"}:
+                continue
+            inferred = infer_voice_gender(
+                str(character.get("voice_hint") or ""),
+                str(character.get("profile") or ""),
+                str(character.get("name") or ""),
+            )
+            if inferred in {"female", "male"}:
+                character["gender"] = inferred
+                character["gender_evidence"] = "根据当前角色名称、小传和声音提示综合推断"
+                character["gender_basis"] = "current_inference"
+                continue
+            unresolved.append(character)
+        if not unresolved:
+            return metrics
+
+        roster = []
+        for character in unresolved:
+            roster.append({
+                "id": character["id"],
+                "name": character["name"],
+                "kind": character["kind"],
+                "profile": character.get("profile", ""),
+                "voice_hint": character.get("voice_hint", ""),
+                "source_evidence": self._character_validation_evidence(source, [character], max_chars=1200, focused=True),
+            })
+        prompt = f"""
+你是有声作品的性别声音建议员。只处理以下尚未确定性别的角色。
+1. 每个 ID 必须返回一次，gender 必须在 female 和 male 中选择。
+2. 优先依据第一人称身份、称谓、亲属和伴侣关系、代词、人物小传与声音提示。
+3. 缺少直接证据时仍给出适合当前作品的建议性别，并在 evidence 明确写为声音选型建议，不能写成原文明示事实。
+4. 这是独立的小型复核任务，不重新分析场景、分句、年龄或其他人物字段。
+
+待建议角色：{json.dumps(roster, ensure_ascii=False, separators=(',', ':'))}
+""".strip()
+        try:
+            result, request_metrics = self._request_structured(
+                prompt,
+                GENDER_SUGGESTION_SCHEMA,
+                system="你只输出严格符合 JSON Schema 的角色性别声音建议。",
+                schema_name="gender_suggestion",
+                context_tokens=8192,
+                keep_alive="30m",
+            )
+            metrics = {"requests": 1, **request_metrics}
+            suggestions = result.get("suggestions")
+            if not isinstance(suggestions, list):
+                raise DirectorValidationError("性别建议结果缺少 suggestions")
+            by_id = {
+                str(item.get("id") or ""): item
+                for item in suggestions
+                if isinstance(item, dict) and item.get("gender") in {"female", "male"}
+            }
+            if set(by_id) != {str(item["id"]) for item in unresolved}:
+                raise DirectorValidationError("性别建议结果没有完整覆盖未决角色")
+        except (DirectorError, ValueError, TypeError, json.JSONDecodeError):
+            by_id = {}
+
+        for character in unresolved:
+            suggestion = by_id.get(str(character["id"]))
+            if suggestion:
+                character["gender"] = suggestion["gender"]
+                character["gender_evidence"] = str(suggestion.get("evidence") or "AI 根据当前作品语境给出的声音选型建议").strip()
+                character["gender_basis"] = "current_inference"
+                character.pop("gender_recommendation_only", None)
+                continue
+            character["gender"] = "male"
+            character["gender_evidence"] = "当前原文没有可验证的性别线索，系统暂建议男性声音，需人工确认"
+            character["gender_basis"] = "unknown"
+            character["gender_recommendation_only"] = True
+        return metrics
 
     @classmethod
     def _merge_context_registry(
@@ -2588,19 +2727,31 @@ SOURCE
         if kind == "narrator":
             role_id = "narrator"
             name = "旁白"
+        gender = str(raw.get("gender", "unspecified")).strip()
+        gender = gender if gender in {"female", "male", "unspecified"} else "unspecified"
+        gender_evidence = str(raw.get("gender_evidence", "")).strip()
+        gender_basis = str(raw.get("gender_basis", "unknown")).strip()
+        gender_basis = gender_basis if gender_basis in DEMOGRAPHIC_BASIS_PRIORITY else "unknown"
+        recommendation_only = bool(raw.get("gender_recommendation_only"))
+        if gender in {"female", "male"} and gender_basis == "unknown" and not recommendation_only:
+            gender_basis = "current_inference"
+            if not gender_evidence:
+                gender_evidence = "AI 根据当前文章中的身份、关系、称谓和叙事语境给出性别建议"
         normalized = {
             "id": role_id,
             "name": name,
             "kind": kind,
             "profile": str(raw.get("profile", "")).strip(),
             "voice_hint": str(raw.get("voice_hint", "")).strip(),
-            "gender": str(raw.get("gender", "unspecified")).strip() if str(raw.get("gender", "unspecified")).strip() in {"female", "male", "unspecified"} else "unspecified",
-            "gender_evidence": str(raw.get("gender_evidence", "")).strip(),
-            "gender_basis": str(raw.get("gender_basis", "unknown")).strip() if str(raw.get("gender_basis", "unknown")).strip() in DEMOGRAPHIC_BASIS_PRIORITY else "unknown",
+            "gender": gender,
+            "gender_evidence": gender_evidence,
+            "gender_basis": gender_basis,
             "age": max(5, min(100, int(raw["age"]))) if isinstance(raw.get("age"), int) and not isinstance(raw.get("age"), bool) else None,
             "age_evidence": str(raw.get("age_evidence", "")).strip(),
             "age_basis": str(raw.get("age_basis", "unknown")).strip() if str(raw.get("age_basis", "unknown")).strip() in DEMOGRAPHIC_BASIS_PRIORITY else "unknown",
         }
+        if recommendation_only:
+            normalized["gender_recommendation_only"] = True
         if any(key in raw for key in ("aliases", "confidence", "evidence")):
             normalized.update({
                 "aliases": [str(item).strip() for item in raw.get("aliases", []) if str(item).strip() and str(item).strip() != name],

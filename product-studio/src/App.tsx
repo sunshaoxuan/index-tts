@@ -12,7 +12,7 @@ import { countMatchingFragments, filterSegmentsWithoutMatchingFragments, findMat
 import { fragmentAudioErrorMessage, fragmentAudioRetryUrl, fragmentAudioSelectionUrl, validFragmentAudioDuration, type FragmentAudioStatus } from './fragmentAudioState';
 import { deliveryAudioBufferedPercent, deliveryAudioErrorMessage, deliveryAudioRetryUrl, type DeliveryAudioStatus } from './deliveryAudioState';
 import { activeCaptionIndex, buildCaptionTimeline } from './subtitleTimeline';
-import { ageVoiceConstraint, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
+import { ageVoiceConstraint, genderAssetLabel, genderVoiceIdentityConstraint, normalizeCharacterAsset, recommendPitchRange, updateAssetDemographics } from './characterVoiceProfile';
 import { applyVoiceGenerationPreset, voiceTraitsInstruction } from './voiceControls';
 import { applyVoiceCandidateSelection, candidatePitchAuditLabel, candidateVerificationLabel } from './voiceCandidateSelection';
 import { PORTRAIT_STYLE_PRESETS, portraitStylePreset } from './portraitStyles';
@@ -1802,7 +1802,7 @@ function Studio() {
                 const asset = normalizeCharacterAsset(row, project.character_assets?.[row[0]]);
                 const referencedSegments = project.segments.filter(segment => segment[2] === row[0]).length;
                 const incomplete = String(row[3]).trim().length < 80 || /请.*补充|证据尚不足/.test(String(row[3]));
-                const gender = asset.gender === 'female' ? '女性' : asset.gender === 'male' ? '男性' : '性别待定';
+                const gender = genderAssetLabel(asset);
                 return <Card key={row[0]} hoverable className={`character-card ${roleRowClassName(row[0], activeRoleId)}`} tabIndex={0} aria-selected={row[0] === activeRoleId} onClick={() => { setActiveRoleId(row[0]); openRoleEditor(index); }} onFocus={() => setActiveRoleId(row[0])} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRoleEditor(index); } }}>
                   <div className="character-portrait">{asset.portrait_url ? <img src={asset.portrait_url} alt={`${row[1]}角色形象`} /> : <div className="character-portrait-placeholder"><UserOutlined /><span>尚未生成形象</span></div>}<Tag className="character-id">{row[0]}</Tag></div>
                   <div className="character-card-body"><div className="character-card-title"><div><strong>{row[1]}</strong><Text>{presets.roleKindLabels[row[2]] || row[2]}</Text></div><Tag>{incomplete ? '小传待完善' : '详细小传已建立'}</Tag></div>

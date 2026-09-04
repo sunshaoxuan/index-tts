@@ -75,5 +75,6 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
             **({"gender_source": str(source["gender_source"])} if source.get("gender_source") else {}),
             **({"gender_evidence": str(source["gender_evidence"])} if source.get("gender_evidence") else {}),
             **({"gender_basis": str(source["gender_basis"])} if source.get("gender_basis") else {}),
+            **({"gender_recommendation_only": True} if source.get("gender_recommendation_only") else {}),
         }
     return result

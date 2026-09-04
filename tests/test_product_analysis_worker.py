@@ -22,7 +22,7 @@ def test_analysis_total_metrics_include_chunk_pipeline_and_character_review():
             "classification_requests": 1,
             "context_requests": 1,
             "chunks": 2,
-            "stage_metrics": {},
+            "stage_metrics": {"gender_suggestion": {"requests": 1}},
         },
         "character_validation": {
             "rounds": [
@@ -40,7 +40,7 @@ def test_analysis_total_metrics_include_chunk_pipeline_and_character_review():
         "output_tokens": 14,
         "duration_seconds": 1.2,
     }
-    assert metrics["total_requests"] == 7
+    assert metrics["total_requests"] == 8
     assert metrics["total_prompt_tokens"] == 142
     assert metrics["total_output_tokens"] == 54
     assert metrics["total_model_duration_seconds"] == 4.7
@@ -155,6 +155,40 @@ def test_anchor_demographics_remain_manual_and_are_not_inferred_from_article_peo
     assert assets["anchor"]["age_source"] == "user"
     assert assets["anchor"]["gender_source"] == "user"
     assert report == {"analyzed": 0, "changed": 0}
+
+
+def test_narrator_gender_inference_updates_character_asset_without_requiring_age():
+    roles = [["narrator", "旁白", "narrator", "第一人称叙述者", "成熟声音", "voice.wav", "自然", "否"]]
+    document = {"characters": [{
+        "id": "narrator", "name": "旁白", "kind": "narrator", "age": None,
+        "gender": "male", "gender_evidence": "第一人称叙述者提到自己的女友",
+        "gender_basis": "current_inference",
+    }]}
+
+    assets, report = apply_analysis_demographics(document, roles, {"narrator": {"age": 35, "gender": "unspecified"}})
+
+    assert assets["narrator"]["gender"] == "male"
+    assert assets["narrator"]["gender_basis"] == "current_inference"
+    assert assets["narrator"]["gender_evidence"] == "第一人称叙述者提到自己的女友"
+    assert assets["narrator"]["age"] == 35
+    assert report == {"analyzed": 1, "changed": 1}
+
+
+def test_narrator_gender_inference_preserves_a_manual_gender_choice():
+    roles = [["narrator", "旁白", "narrator", "第一人称叙述者", "成熟声音", "voice.wav", "自然", "否"]]
+    document = {"characters": [{
+        "id": "narrator", "name": "旁白", "kind": "narrator", "age": None,
+        "gender": "male", "gender_evidence": "第一人称叙述者提到自己的女友",
+        "gender_basis": "current_inference",
+    }]}
+    existing = {"narrator": {"age": 42, "gender": "female", "gender_source": "manual"}}
+
+    assets, report = apply_analysis_demographics(document, roles, existing)
+
+    assert assets["narrator"]["gender"] == "female"
+    assert assets["narrator"]["gender_source"] == "manual"
+    assert assets["narrator"]["age"] == 42
+    assert report == {"analyzed": 1, "changed": 0}
 
 
 def test_linked_article_text_is_supplied_as_ai_demographic_reference():

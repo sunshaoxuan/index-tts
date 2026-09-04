@@ -41,6 +41,7 @@ def attach_analysis_total_metrics(document: dict[str, Any]) -> dict[str, Any]:
         int(analysis_metrics.get("classification_requests") or 0)
         + int(analysis_metrics.get("context_requests") or 0)
         + int(analysis_metrics.get("chunks") or 0)
+        + int((analysis_metrics.get("stage_metrics") or {}).get("gender_suggestion", {}).get("requests") or 0)
         + validation_metrics["requests"]
     )
     analysis_metrics["total_prompt_tokens"] = int(analysis_metrics.get("prompt_tokens") or 0) + validation_metrics["prompt_tokens"]
@@ -306,7 +307,8 @@ def apply_analysis_demographics(
     changed = 0
     for row in roles:
         role_id = str(row[0])
-        if str(row[2]) != "character":
+        role_kind = str(row[2])
+        if role_kind not in {"character", "narrator"}:
             if isinstance(prepared.get(role_id), dict):
                 prepared[role_id] = deepcopy(prepared[role_id])
             continue
@@ -322,9 +324,16 @@ def apply_analysis_demographics(
         prior_age = source.get("age")
         prior_gender = source.get("gender")
         inferred_age = character.get("age") if isinstance(character.get("age"), int) and not isinstance(character.get("age"), bool) else None
-        if inferred_age is None:
+        if role_kind == "character" and inferred_age is None:
             raise ValueError(f"本次 AI 人物 {row[1]} 缺少文章证据支持的年龄推断")
+        preserve_manual_narrator_gender = (
+            role_kind == "narrator"
+            and prior_gender in {"female", "male"}
+            and source.get("gender_source") in {"manual", "user"}
+        )
         inferred_gender = character.get("gender") if character.get("gender") in {"female", "male", "unspecified"} else "unspecified"
+        if preserve_manual_narrator_gender:
+            inferred_gender = prior_gender
         demographic_changed = False
         if inferred_age is not None:
             inferred_age = max(5, min(100, inferred_age))
@@ -335,9 +344,11 @@ def apply_analysis_demographics(
             source["age_basis"] = str(character.get("age_basis") or "unknown")
         demographic_changed = demographic_changed or (prior_gender is not None and prior_gender != inferred_gender)
         source["gender"] = inferred_gender
-        source["gender_source"] = "ai_article_inference"
-        source["gender_evidence"] = str(character.get("gender_evidence") or "").strip()
-        source["gender_basis"] = str(character.get("gender_basis") or "unknown")
+        if not preserve_manual_narrator_gender:
+            source["gender_source"] = "ai_recommended_default" if character.get("gender_recommendation_only") else "ai_article_inference"
+            source["gender_evidence"] = str(character.get("gender_evidence") or "").strip()
+            source["gender_basis"] = str(character.get("gender_basis") or "unknown")
+            source["gender_recommendation_only"] = bool(character.get("gender_recommendation_only"))
         analyzed += 1
         if demographic_changed:
             age = int(source.get("age") or 35)

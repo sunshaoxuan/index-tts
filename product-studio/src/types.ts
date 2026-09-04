@@ -111,6 +111,8 @@ export interface CharacterAsset {
   age_evidence?: string;
   gender_source?: string;
   gender_evidence?: string;
+  gender_basis?: string;
+  gender_recommendation_only?: boolean;
 }
 
 export interface ProjectPayload {

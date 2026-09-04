@@ -223,6 +223,75 @@ def test_linked_explicit_demographics_survive_weaker_current_inference():
     assert global_characters[0]["age_basis"] == "linked_explicit"
 
 
+def test_narrator_binary_gender_without_basis_is_normalized_as_current_inference():
+    narrator = OllamaTextDirector._normalize_character({
+        "id": "narrator", "name": "旁白", "kind": "narrator",
+        "profile": "第一人称叙述者", "voice_hint": "成熟声音",
+        "gender": "male", "gender_evidence": "根据全文叙事语境判断", "gender_basis": "unknown",
+    })
+
+    assert narrator["gender"] == "male"
+    assert narrator["gender_basis"] == "current_inference"
+
+
+def test_first_person_partner_context_resolves_narrator_without_an_extra_request():
+    director = OllamaTextDirector(DirectorConfig(model="fake"))
+    characters = [{
+        "id": "narrator", "name": "旁白", "kind": "narrator",
+        "profile": "第一人称叙述者", "voice_hint": "中性自然",
+        "gender": "unspecified", "gender_evidence": "", "gender_basis": "unknown",
+    }]
+
+    metrics = director._resolve_unset_gender_suggestions(characters, "当时的女友周家梅正在和我闹分手。")
+
+    assert metrics["requests"] == 0
+    assert characters[0]["gender"] == "male"
+    assert characters[0]["gender_basis"] == "current_inference"
+    assert "女友" in characters[0]["gender_evidence"]
+
+
+def test_unresolved_gender_uses_one_compact_suggestion_request():
+    class SuggestionDirector(OllamaTextDirector):
+        def _request_structured(self, prompt, schema, **kwargs):
+            self.suggestion_prompt = prompt
+            return {"suggestions": [{"id": "narrator", "gender": "female", "evidence": "适合作品的女性旁白声音建议"}]}, {
+                "prompt_tokens": 40, "output_tokens": 12, "duration_seconds": 0.2,
+            }
+
+    director = SuggestionDirector(DirectorConfig(model="fake"))
+    characters = [{
+        "id": "narrator", "name": "旁白", "kind": "narrator",
+        "profile": "负责全文叙述", "voice_hint": "中性自然",
+        "gender": "unspecified", "gender_evidence": "", "gender_basis": "unknown",
+    }]
+
+    metrics = director._resolve_unset_gender_suggestions(characters, "雨停了，故事仍在继续。")
+
+    assert metrics == {"requests": 1, "prompt_tokens": 40, "output_tokens": 12, "duration_seconds": 0.2}
+    assert characters[0]["gender"] == "female"
+    assert characters[0]["gender_basis"] == "current_inference"
+    assert "不重新分析场景" in director.suggestion_prompt
+
+
+def test_failed_gender_suggestion_uses_a_visible_manual_confirmation_fallback():
+    class FailingSuggestionDirector(OllamaTextDirector):
+        def _request_structured(self, prompt, schema, **kwargs):
+            raise DirectorError("建议服务暂时不可用")
+
+    characters = [{
+        "id": "narrator", "name": "旁白", "kind": "narrator",
+        "profile": "负责全文叙述", "voice_hint": "中性自然",
+        "gender": "unspecified", "gender_evidence": "", "gender_basis": "unknown",
+    }]
+
+    FailingSuggestionDirector(DirectorConfig(model="fake"))._resolve_unset_gender_suggestions(characters, "雨停了。")
+
+    assert characters[0]["gender"] == "male"
+    assert characters[0]["gender_basis"] == "unknown"
+    assert characters[0]["gender_recommendation_only"] is True
+    assert "需人工确认" in characters[0]["gender_evidence"]
+
+
 def test_current_explicit_demographics_override_linked_explicit_value():
     existing = [{
         "id": "role_007", "name": "桐原洋介", "kind": "character", "aliases": [],
@@ -1892,6 +1961,10 @@ def test_staged_analysis_builds_global_role_alias_and_scene_registry_before_segm
         chunk_prompts = []
 
         def _request_structured(self, prompt, schema, **kwargs):
+            if kwargs["schema_name"] == "gender_suggestion":
+                return ({
+                    "suggestions": [{"id": "narrator", "gender": "female", "evidence": "适合作品的女性旁白声音建议"}],
+                }, {"prompt_tokens": 4, "output_tokens": 3, "duration_seconds": 0.02})
             assert kwargs["schema_name"] == "director_context"
             return ({
                 "content_type": "novel",
