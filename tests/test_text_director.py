@@ -467,7 +467,7 @@ def test_ai_character_validation_reconciles_repeated_non_explicit_age_issues_for
     assert OllamaTextDirector._character_validation_inconsistencies(people, rows) == []
 
 
-def test_ai_character_validation_keeps_non_explicit_issue_when_basis_still_claims_explicit_evidence():
+def test_ai_character_validation_downgrades_non_explicit_current_age_evidence_to_inference():
     original = {
         "id": "role_002", "name": "刘至诚", "profile": "刘至诚是叙述者的高中同学。",
         "profile_evidence": "原文写明两人是高中同学", "gender": "male",
@@ -482,9 +482,13 @@ def test_ai_character_validation_keeps_non_explicit_issue_when_basis_still_claim
 
     reconciled = OllamaTextDirector._reconcile_redundant_character_corrections([original], [row])
 
-    assert reconciled == []
-    assert row["status"] == "corrected"
-    assert OllamaTextDirector._character_validation_inconsistencies([original], [row])
+    assert len(reconciled) == 1
+    assert row["status"] == "pass"
+    assert row["issues"] == []
+    assert row["age_basis"] == "current_inference"
+    assert "推断值" in row["age_evidence"]
+    assert "明确写明" not in row["age_evidence"]
+    assert OllamaTextDirector._character_validation_inconsistencies([original], [row]) == []
 
 
 def test_ai_character_validation_does_not_require_value_change_for_basis_only_issue():
@@ -1260,17 +1264,19 @@ def test_long_document_adaptively_splits_coverage_failures():
 
     source = "林舟沿着长街继续前行，仔细记下沿途的每一个细节。" * 100
     director = CoverageDirector(DirectorConfig(model="fake", max_chunk_chars=1400))
-    progress_messages = []
+    progress_updates = []
     result = director.analyze_document(
         source,
         content_type="novel",
-        progress=lambda fraction, desc="": progress_messages.append(desc),
+        progress=lambda fraction, desc="": progress_updates.append((fraction, desc)),
     )
 
     assert max(director.attempted_lengths) > 320
     assert result["metrics"]["chunks"] > 4
     assert coverage_key("".join(item["source_text"] for item in result["segments"])) == coverage_key(source)
-    assert any("覆盖校验失败" in message and "拆" in message for message in progress_messages)
+    assert any("覆盖校验失败" in message and "拆" in message for _, message in progress_updates)
+    chunk_fractions = [fraction for fraction, message in progress_updates if "逐段解析第" in message]
+    assert chunk_fractions == sorted(chunk_fractions)
 
 
 def test_real_validation_retry_chain_subdivides_until_coverage_passes():

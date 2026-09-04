@@ -966,9 +966,11 @@ class OllamaTextDirector:
         self._scene_registry = global_scenes
         previous_context = ""
         index = 0
+        reported_chunk_fraction = 0.15
         while index < len(chunks):
             chunk = chunks[index]
-            chunk_fraction = 0.15 + (index / len(chunks)) * 0.8
+            chunk_fraction = max(reported_chunk_fraction, 0.15 + (index / len(chunks)) * 0.8)
+            reported_chunk_fraction = chunk_fraction
             _notify(progress, chunk_fraction, f"AI 正在逐段解析第 {index + 1}/{len(chunks)} 个文本块")
             try:
                 result, result_metrics = self._analyze_chunk(
@@ -1372,8 +1374,8 @@ LINKED_ARTICLES
                 continue
 
             issue_text = " ".join(row["issues"])
-            inference_only_issue = (
-                row["age_basis"] in {"current_inference", "linked_inference"}
+            non_explicit_age_issue = (
+                row["age_basis"] in {"current_explicit", "current_inference", "linked_inference"}
                 and bool(row["age_evidence"])
                 and any(token in issue_text for token in ("未明确", "没有明确", "并未明确", "未直接", "没有直接"))
                 and any(token in issue_text for token in ("年龄", "age_evidence", "age_basis"))
@@ -1385,7 +1387,14 @@ LINKED_ARTICLES
                     )
                 )
             )
-            if inference_only_issue:
+            if non_explicit_age_issue:
+                if row["age_basis"] == "current_explicit":
+                    row["age_basis"] = "current_inference"
+                    evidence = row["age_evidence"]
+                    for phrase in ("明确写明", "明确提到", "明示"):
+                        evidence = evidence.replace(phrase, "提到")
+                    inference_note = "该年龄为结合相关时间线与当前叙事语境的推断值"
+                    row["age_evidence"] = f"{evidence.rstrip('。；;')}；{inference_note}"
                 reconciled.append(
                     f"{row['id']} 已使用 {row['age_basis']} 并保留 age_evidence；原文未明示年龄不构成重复 issue"
                 )
