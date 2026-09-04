@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { passingStandardReferenceCandidates } from './standardReferenceCandidates.ts';
+import { completeStandardReferenceCandidates, passingStandardReferenceCandidates } from './standardReferenceCandidates.ts';
 import type { StandardReferenceCandidate } from './types.ts';
 
 function candidate(rank: number, overrides: Partial<StandardReferenceCandidate> = {}): StandardReferenceCandidate {
@@ -40,4 +40,29 @@ test('returns an empty list when every standard reference candidate failed', () 
   ]);
 
   assert.deepEqual(visible, []);
+});
+
+test('withholds an incomplete historical candidate set', () => {
+  const visible = completeStandardReferenceCandidates([
+    candidate(1),
+    candidate(2, { quality_passed: false, speaker_verified: false }),
+    candidate(3, { quality_passed: false, speaker_verified: false }),
+  ]);
+
+  assert.deepEqual(visible, []);
+});
+
+test('delivers exactly three candidates only when all three passed every gate', () => {
+  const visible = completeStandardReferenceCandidates([
+    candidate(1),
+    candidate(2),
+    candidate(3),
+    candidate(4),
+  ]);
+
+  assert.deepEqual(visible.map(item => item.voice_id), [
+    'voice-standard-1',
+    'voice-standard-2',
+    'voice-standard-3',
+  ]);
 });

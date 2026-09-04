@@ -14,11 +14,11 @@ test('offers a standard reference workflow anchored to the original upload', () 
   assert.match(app, /结果不会自动成为下一轮参考源/);
 });
 
-test('shows quality evidence and only renders candidates that passed every gate', () => {
+test('shows quality evidence only for a complete set of three full-gate candidates', () => {
   assert.match(app, /candidate\.speaker_similarity\.toFixed\(3\)/);
   assert.match(app, /candidate\.echo_similarity\.toFixed\(3\)/);
-  assert.match(app, /passingStandardReferenceCandidates\(roleAssetDraft\.standard_reference\.candidates\)/);
-  assert.match(app, /没有通过全部门禁的候选，请重新生成标准样本/);
+  assert.match(app, /completeStandardReferenceCandidates\(roleAssetDraft\.standard_reference\.candidates\)\.length === 3/);
+  assert.match(app, /当前结果只有.*个候选通过全部门禁，未形成完整三版，请重新生成标准样本/);
   assert.doesNotMatch(app, />未通过门禁</);
   assert.match(app, /api\.adoptStandardReference/);
 });
