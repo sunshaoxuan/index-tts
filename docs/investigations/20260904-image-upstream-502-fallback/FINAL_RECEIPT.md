@@ -14,6 +14,6 @@
 | 生成结果应用并保存 | 工程角色资产与人物小传 | 页面“全部修改已保存”，工程 API 返回图片 URL | 合格 |
 | 原公网故障入口可用 | `https://ivs.briconbric.com` | Health、首页、bundle、PNG 均为 200 | 合格 |
 | UI、Console 和截图完整 | `browser-public.png`、`browser-console.json` | 图片 1122 x 1402；Console 和资源失败均为 0 | 合格 |
-| Git 交付到 `fork/master` | 本地与远端 SHA 相等 | 待提交和推送 | 待验收 |
+| Git 交付到 `fork/master` | 本地 `HEAD`、`fork/master` 与 `ls-remote` 相等 | 三方 SHA 核对 | 合格 |
 
-存在待验收条目，本回执当前不构成完成声明。
+代码、文档、部署、真实生图、持久化、公网、Console、截图与 Git 交付均通过初衷级验收。
