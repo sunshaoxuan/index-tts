@@ -64,7 +64,97 @@ def _character(role_id="narrator", name="旁白", kind="narrator"):
 
 
 def test_director_config_defaults_to_qwen3_14b():
-    assert DirectorConfig().model == "qwen3:14b"
+    config = DirectorConfig()
+    assert config.model == "qwen3:14b"
+    assert config.timeout_seconds == 600
+    assert config.hot_request_timeout_seconds == 120
+    assert config.chunk_validation_attempts == 2
+
+
+def test_warm_model_preloads_ollama_with_the_director_context(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"load_duration": 2_500_000_000}
+
+    def post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    monkeypatch.setattr("text_director.requests.post", post)
+    metrics = OllamaTextDirector(DirectorConfig()).warm_model()
+
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert "messages" not in captured["json"]
+    assert captured["json"]["options"]["num_ctx"] == 8192
+    assert captured["json"]["keep_alive"] == "30m"
+    assert captured["timeout"] == 600
+    assert metrics["load_duration_seconds"] == 2.5
+
+
+def test_hot_ollama_chunk_uses_short_timeout_and_same_context(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "message": {"content": json.dumps(_valid_response(), ensure_ascii=False)},
+                "prompt_eval_count": 10,
+                "eval_count": 20,
+            }
+
+    def post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    monkeypatch.setattr("text_director.requests.post", post)
+    OllamaTextDirector(DirectorConfig())._chat("测试")
+
+    assert captured["timeout"] == 120
+    assert captured["json"]["options"]["num_ctx"] == 8192
+
+
+def test_local_analysis_pre_splits_into_bounded_sequential_chunks():
+    class PlannedDirector(OllamaTextDirector):
+        attempted_chunks = []
+
+        def _analyze_chunk(self, *, chunk, **kwargs):
+            self.attempted_chunks.append(chunk)
+            return (
+                {
+                    "content_type": "story",
+                    "title": "预拆分测试",
+                    "characters": [_character()],
+                    "segments": [_segment(1, chunk, chunk)],
+                },
+                {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.01},
+            )
+
+    source = "这一段用于验证本地模型会先拆分任务再逐段解析。" * 80
+    progress = []
+    result = PlannedDirector(DirectorConfig(
+        model="fake",
+        max_chunk_chars=1400,
+        pre_split_chunk_chars=700,
+    )).analyze_document(
+        source,
+        content_type="story",
+        progress=lambda fraction, desc="": progress.append((fraction, desc)),
+    )
+
+    assert len(PlannedDirector.attempted_chunks) >= 3
+    assert max(map(len, PlannedDirector.attempted_chunks)) <= 700
+    assert result["metrics"]["planned_chunks"] == len(PlannedDirector.attempted_chunks)
+    assert result["metrics"]["chunk_chars"] == 700
+    first_chunk_progress = next(item for item in progress if "逐段解析第 1/" in item[1])
+    assert first_chunk_progress[0] == pytest.approx(0.15)
 
 
 def test_context_prompt_uses_linked_article_demographics_with_explicit_priority():
@@ -1025,6 +1115,31 @@ def test_timeout_is_not_repeated_for_the_same_large_chunk():
     with pytest.raises(DirectorTimeout, match="测试超时"):
         director._analyze_chunk(
             chunk="长文本。" * 100,
+            chunk_index=1,
+            chunk_count=1,
+            requested_type="story",
+            existing_characters=[],
+            previous_context="",
+            guidance="",
+        )
+
+    assert director.calls == 1
+
+
+def test_product_chunk_policy_does_not_repeat_an_invalid_same_size_request():
+    class OneAttemptDirector(OllamaTextDirector):
+        calls = 0
+
+        def _chat(self, prompt):
+            self.calls += 1
+            invalid = _valid_response()
+            invalid["segments"] = []
+            return invalid, {"prompt_tokens": 1, "output_tokens": 1, "duration_seconds": 0.01}
+
+    director = OneAttemptDirector(DirectorConfig(model="fake", chunk_validation_attempts=1))
+    with pytest.raises(DirectorValidationError, match="1 次尝试"):
+        director._analyze_chunk(
+            chunk="需要重新拆分的文本。",
             chunk_index=1,
             chunk_count=1,
             requested_type="story",

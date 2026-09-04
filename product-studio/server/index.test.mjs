@@ -274,6 +274,9 @@ test('writes global compatible director configuration to the analysis worker wit
   assert.equal(input.config.instance_id, '.director-agent');
   assert.equal(input.config.max_chunk_chars, 2400);
   assert.equal(input.config.timeout_seconds, 600);
+  assert.equal(input.config.hot_request_timeout_seconds, 120);
+  assert.equal(input.config.chunk_validation_attempts, 1);
+  assert.equal(input.config.pre_split_chunk_chars, 700);
   assert.equal(input.config.staged_analysis, true);
   assert.equal(JSON.stringify(input).includes('director-secret'), false);
   child.emit('close', 0);

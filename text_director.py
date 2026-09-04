@@ -403,7 +403,10 @@ class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3:14b"
     timeout_seconds: int = 600
+    hot_request_timeout_seconds: int = 120
+    chunk_validation_attempts: int = 2
     max_chunk_chars: int = 1400
+    pre_split_chunk_chars: int = 0
     provider: str = "ollama"
     api_key: str = ""
     instance_id: str = ""
@@ -641,6 +644,33 @@ class OllamaTextDirector:
         provider_label = "本地 Ollama" if self.config.provider == "ollama" else "兼容 Endpoint"
         return f"{provider_label} 已连接｜{self.config.model}｜{self.base_url}"
 
+    def warm_model(self) -> dict[str, Any]:
+        if self.config.provider != "ollama":
+            return {"duration_seconds": 0.0, "load_duration_seconds": 0.0}
+        started = time.perf_counter()
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.config.model,
+                    "stream": False,
+                    "think": False,
+                    "keep_alive": "30m",
+                    "options": {"num_ctx": 8192},
+                },
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.Timeout as exc:
+            raise DirectorTimeout(f"本地 AI 模型在 {self.config.timeout_seconds} 秒内未完成加载") from exc
+        except requests.RequestException as exc:
+            raise DirectorServiceError(f"本地 AI 模型加载失败：{exc}") from exc
+        payload = response.json()
+        return {
+            "duration_seconds": round(time.perf_counter() - started, 3),
+            "load_duration_seconds": round(float(payload.get("load_duration") or 0) / 1_000_000_000, 3),
+        }
+
     def author_storyboard_shots(
         self,
         document: dict[str, Any],
@@ -874,9 +904,13 @@ class OllamaTextDirector:
         if content_type not in {"auto", *ANALYZED_CONTENT_TYPES}:
             raise DirectorError(f"不支持的内容体裁：{content_type}")
 
-        chunks = split_document(source, self.config.max_chunk_chars)
+        chunk_chars = self.config.max_chunk_chars
+        if self.config.provider == "ollama" and self.config.pre_split_chunk_chars > 0:
+            chunk_chars = min(chunk_chars, self.config.pre_split_chunk_chars)
+        chunks = split_document(source, chunk_chars)
         if not chunks:
             raise DirectorError("输入文字没有可处理内容。")
+        _notify(progress, 0.01, f"已将全文拆分为 {len(chunks)} 个文本块，准备逐段解析")
 
         global_characters: list[dict[str, Any]] = []
         global_scenes: list[dict[str, Any]] = []
@@ -892,11 +926,13 @@ class OllamaTextDirector:
             "context_requests": 0,
             "context_fallback": 0,
             "classification_requests": 0,
+            "planned_chunks": len(chunks),
+            "chunk_chars": chunk_chars,
         }
         resolved_type = content_type
         classification_reason = "使用者已指定作品体裁"
         if content_type == "auto":
-            _notify(progress, 0.005, "AI 正在判断稿件类型")
+            _notify(progress, 0.03, "AI 正在判断稿件类型")
             classification, classification_metrics = self._classify_content_type(source)
             resolved_type = classification["content_type"]
             title = classification["title"] or title
@@ -908,9 +944,9 @@ class OllamaTextDirector:
         single_anchor = resolved_type in SINGLE_ANCHOR_CONTENT_TYPES
         if single_anchor:
             global_characters = [self._single_anchor_character()]
-            _notify(progress, 0.01, f"稿件类型为 {CONTENT_TYPE_LABELS[resolved_type]}，采用单主播分析")
+            _notify(progress, 0.08, f"稿件类型为 {CONTENT_TYPE_LABELS[resolved_type]}，采用单主播分析")
         elif self.config.staged_analysis:
-            _notify(progress, 0.01, "AI 正在建立全文角色与场景注册表")
+            _notify(progress, 0.08, "AI 正在建立全文角色与场景注册表")
             try:
                 global_characters, global_scenes, context_metrics = self._analyze_context(
                     source,
@@ -926,13 +962,14 @@ class OllamaTextDirector:
                 metrics["context_fallback"] = 1
                 global_characters = []
                 global_scenes = []
-                _notify(progress, 0.02, "全文角色与场景注册未通过校验，继续使用逐块识别并标记待复核")
+                _notify(progress, 0.12, "全文角色与场景注册未通过校验，继续使用逐块识别并标记待复核")
         self._scene_registry = global_scenes
         previous_context = ""
         index = 0
         while index < len(chunks):
             chunk = chunks[index]
-            _notify(progress, index / len(chunks), f"AI 正在导演第 {index + 1}/{len(chunks)} 个文本块")
+            chunk_fraction = 0.15 + (index / len(chunks)) * 0.8
+            _notify(progress, chunk_fraction, f"AI 正在逐段解析第 {index + 1}/{len(chunks)} 个文本块")
             try:
                 result, result_metrics = self._analyze_chunk(
                     chunk=chunk,
@@ -956,7 +993,7 @@ class OllamaTextDirector:
                     }
                     _notify(
                         progress,
-                        index / len(chunks),
+                        chunk_fraction,
                         f"第 {index + 1} 个最小文本块仍{failure_kind}，已使用无损安全分段继续处理",
                     )
                 else:
@@ -974,14 +1011,14 @@ class OllamaTextDirector:
                         }
                         _notify(
                             progress,
-                            index / len(chunks),
+                            chunk_fraction,
                             f"第 {index + 1} 个文本块无法继续自然拆分，已使用无损安全分段",
                         )
                     else:
                         chunks[index : index + 1] = smaller_chunks
                         _notify(
                             progress,
-                            index / len(chunks),
+                            chunk_fraction,
                             f"第 {index + 1} 个文本块{failure_kind}，已按自然边界拆为 {len(smaller_chunks)} 个更小文本块",
                         )
                         continue
@@ -1046,7 +1083,7 @@ SOURCE
             CONTENT_CLASSIFICATION_SCHEMA,
             system="你只输出严格符合 JSON Schema 的稿件体裁判断。",
             schema_name="content_classification",
-            context_tokens=4096,
+            context_tokens=8192,
             keep_alive="30m",
         )
         resolved = str(result.get("content_type") or "")
@@ -1543,7 +1580,8 @@ LINKED_ARTICLE_EVIDENCE
             guidance=guidance,
         )
         last_error: Exception | None = None
-        for attempt in range(2):
+        attempts = max(1, self.config.chunk_validation_attempts)
+        for attempt in range(attempts):
             current_prompt = prompt
             if attempt:
                 current_prompt += (
@@ -1560,11 +1598,11 @@ LINKED_ARTICLE_EVIDENCE
                 raise
             except DirectorServiceError as exc:
                 last_error = exc
-                if attempt:
+                if attempt + 1 >= attempts:
                     raise
             except (DirectorError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = exc
-        raise DirectorValidationError(f"AI 连续两次未生成可验证的完整分轨：{last_error}")
+        raise DirectorValidationError(f"AI 在 {attempts} 次尝试内未生成可验证的完整分轨：{last_error}")
 
     def _fallback_chunk(self, chunk: str, requested_type: str) -> dict[str, Any]:
         segments = []
@@ -1834,13 +1872,18 @@ JSON Schema：{schema_text}
                 "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}},
             }
         try:
-            request_kwargs = {"json": body, "timeout": self.config.timeout_seconds}
+            request_timeout = (
+                self.config.hot_request_timeout_seconds
+                if self.config.provider == "ollama"
+                else self.config.timeout_seconds
+            )
+            request_kwargs = {"json": body, "timeout": request_timeout}
             if headers:
                 request_kwargs["headers"] = headers
             response = requests.post(url, **request_kwargs)
             response.raise_for_status()
         except requests.Timeout as exc:
-            raise DirectorTimeout(f"AI 在 {self.config.timeout_seconds} 秒内未完成当前请求") from exc
+            raise DirectorTimeout(f"AI 在 {request_timeout} 秒内未完成当前文本块") from exc
         except requests.RequestException as exc:
             raise DirectorServiceError(f"AI 调用失败：{exc}") from exc
         payload = response.json()

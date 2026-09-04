@@ -2047,7 +2047,10 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           text_api: settings.text_api,
           allow_insecure_http: settings.allow_insecure_http,
           timeout_seconds: 600,
+          hot_request_timeout_seconds: 120,
+          chunk_validation_attempts: 1,
           max_chunk_chars: settings.director_max_chunk_chars,
+          pre_split_chunk_chars: 700,
           staged_analysis: true,
           settings_file: aiMediaSettingsFile,
         };
