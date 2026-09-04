@@ -13,9 +13,9 @@
 | 保持人物与原文正确性 | 角色固定为周家梅、刘至诚、欣雨、小燕子、旁白；工程原文覆盖 100%；关键叙述归属和小燕子台词已在页面核对 | 合格 |
 | 完整测试 | 定向 Python 137 passed；全量非 GPU Python 363 passed、22 deselected、30 subtests；Product Studio 216 passed；Vite 3110 modules | 合格 |
 | 生产页面与持久化 | 7864 的角色资产页显示旁白“男性 · AI文章推断”、角色资产 5、分句导演 60；Console 日志数组为空；桌面角色页截图已目视检查且无重叠 | 合格 |
-| Git 与运行版本交付 | 容器镜像 `indextts25-product-studio:1.1.82-31dc7f4` 健康，revision 为 `31dc7f469284d7a90e101d06968edee2c99f28fa`；最终证据提交推送后核对本地、跟踪分支和远程 `master`；运行 revision 必须为最终分支祖先 | 待最终 Git 等值核对 |
+| Git 与运行版本交付 | 容器镜像 `indextts25-product-studio:1.1.82-31dc7f4` 健康，revision 为 `31dc7f469284d7a90e101d06968edee2c99f28fa`；验收证据提交 `b7e80602db1d7270bb50deebd492042637488afd` 推送后，本地 `master`、`fork/master` 和远程 `refs/heads/master` 完全相等；运行 revision 是最终分支祖先 | 合格 |
 | 《成都粉子》旁白性别 | 文档保存 `male`、`current_inference` 和第一人称伴侣关系证据；角色资产保存 `male`、`ai_article_inference`；页面显示“男性 · AI文章推断” | 合格 |
 | 完全未决时提供建议 | 只对未决角色执行一次紧凑建议请求；失败时保存带人工确认标记的系统建议；本稿由确定性语境解决，`gender_suggestion.requests=0` | 合格 |
 | 保留人工选择 | 用户手工指定的旁白性别不被 AI 分析覆盖 | 合格 |
 
-本表已在最终生产任务成功后从第一项重新核对。Git 等值检查在本次文档提交推送后执行并回填。
+本表已在最终生产任务成功后从第一项重新核对，全部条目合格。
