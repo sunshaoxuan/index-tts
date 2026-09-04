@@ -722,6 +722,22 @@ def test_character_validation_detects_explicit_should_correct_age_target():
     assert any("issue 要求 age=25" in item for item in inconsistencies)
 
 
+def test_character_validation_does_not_treat_basis_fix_with_age_evidence_as_value_change():
+    original = {
+        "id": "role_001", "name": "周家梅", "profile": "周家梅是叙述者的前女友。",
+        "gender": "female", "gender_evidence": "原文称其为女友", "gender_basis": "current_explicit",
+        "age": 25, "age_evidence": "25岁", "age_basis": "unknown",
+    }
+    row = {
+        **original, "canonical_id": "role_001", "status": "corrected",
+        "issues": ["age_basis 应为 current_explicit，而非 unknown。原文明确提到周家梅 25 岁。"],
+        "profile_evidence": "原文称周家梅为女友",
+        "age_basis": "current_explicit",
+    }
+
+    assert OllamaTextDirector._character_validation_inconsistencies([original], [row]) == []
+
+
 def test_ai_character_validation_downgrades_non_explicit_current_age_evidence_to_inference():
     original = {
         "id": "role_002", "name": "刘至诚", "profile": "刘至诚是叙述者的高中同学。",

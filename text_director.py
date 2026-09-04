@@ -1599,10 +1599,14 @@ LINKED_ARTICLES
                 flags=re.IGNORECASE,
             )
             requested_age = int(requested_age_match.group(1)) if requested_age_match else None
+            age_field_declared_wrong = bool(re.search(
+                r"(?:年龄(?:值)?|age(?:\s*字段)?)\s*(?:为|是|=)?[^。；;]{0,16}(?:错误|不合理|不正确|有误)",
+                age_value_issue_text,
+                flags=re.IGNORECASE,
+            ))
             age_value_change_required = (
-                any(token in age_value_issue_text for token in ("年龄", "age", "岁"))
-                and any(token in age_value_issue_text for token in ("应为", "改为", "应修正为", "需修正为", "下限", "不是", "错误", "不合理"))
-                and (requested_age is None or requested_age != row["age"])
+                (requested_age is not None and requested_age != row["age"])
+                or age_field_declared_wrong
             )
             if age_value_change_required and row["age"] == original.get("age"):
                 target = f"，issue 要求 age={requested_age}" if requested_age is not None else ""
