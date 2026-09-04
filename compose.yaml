@@ -2,13 +2,13 @@ name: indextts25
 
 services:
   studio:
-    image: indextts25-product-studio:1.1.79-96f65c8
+    image: indextts25-product-studio:1.1.80-1353715
     build:
       context: .
       dockerfile: Dockerfile.app-update
       args:
-        BASE_IMAGE: indextts25-product-studio:1.1.78-11dbb01
-        APP_REVISION: ${INDEXTTS_APP_REVISION:-96f65c8c03dc69dea8987c2cbf7789e7f4f10be1}
+        BASE_IMAGE: indextts25-product-studio:1.1.79-96f65c8
+        APP_REVISION: ${INDEXTTS_APP_REVISION:-13537153c4d8eb2c37e94958bacc7e4fcdab98b6}
     container_name: indextts25-product-studio
     restart: unless-stopped
     init: true
