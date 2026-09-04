@@ -12,7 +12,6 @@
 | 运行版本是修复版本 | Docker 镜像与 revision | `1.1.83-719278a`，revision `719278a9...` | 合格 |
 | UI 运行检查完整 | 页面、Console、截图 | Console 0 error/0 warning，截图显示旁白形象 | 合格 |
 | 需求变化已记录 | CHANGELOG、需求文档、架构文档、调查文档 | 提交 `719278a` 与本目录 | 合格 |
-| Git 交付到 master | 本地提交与远端相等 | 推送后补充最终 SHA 证据 | 待完成 |
+| Git 交付到 master | 本地提交与远端相等 | `git rev-parse HEAD` 与 `git ls-remote fork refs/heads/master` 相等 | 合格 |
 
-当前代码、部署和真实运行验收已合格。Git 推送和远端相等性检查完成后，本回执进入最终状态。
-
+代码、部署、真实运行、文档和 Git 交付均按上述证据门禁验收。

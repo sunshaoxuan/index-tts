@@ -46,4 +46,3 @@ Gemini 图像模型应使用图像响应模态。当前兼容平台通过 `/v1/c
 ## 外部依据
 
 Google 官方 Gemini 图像生成文档：<https://ai.google.dev/gemini-api/docs/image-generation>
-
