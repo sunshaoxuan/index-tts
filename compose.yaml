@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile.app-update
       args:
-        BASE_IMAGE: indextts25-product-studio:1.1.72-ef34480
+        BASE_IMAGE: indextts25-product-studio:1.1.74-3bbf592
         APP_REVISION: ${INDEXTTS_APP_REVISION:-39ac8c864772eff87834324cb8166ab34be0c27e}
     container_name: indextts25-product-studio
     restart: unless-stopped
