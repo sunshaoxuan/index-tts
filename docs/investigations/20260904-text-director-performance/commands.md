@@ -34,3 +34,10 @@
 30. 执行 `pytest -m "not gpu" -q`，362 passed、22 deselected、30 subtests passed。
 31. 在 `product-studio` 执行 `pnpm test`，216 passed。
 32. 在 `product-studio` 执行 `pnpm build`，3110 modules transformed。
+33. 部署 `indextts25-product-studio:1.1.81-0d3503e` 后运行任务 `2f13433c45aa409d9f82351c4fad60e1`，复现 `age_basis` issue 被误判为年龄值未修改。
+34. 执行 `.venv\Scripts\python.exe -m pytest tests/test_product_analysis_worker.py tests/test_text_director.py tests/test_text_director_worker.py tests/test_novel_project.py tests/test_character_assets.py -q`，137 passed。
+35. 执行 `.venv\Scripts\python.exe -m pytest -m "not gpu" -q`，363 passed、22 deselected、30 subtests passed。
+36. 在 `product-studio` 执行 `pnpm test`，216 passed。
+37. 构建并部署 `indextts25-product-studio:1.1.82-31dc7f4`，容器 revision 固定为 `31dc7f469284d7a90e101d06968edee2c99f28fa`。
+38. 在 7864 对《成都粉子》运行最终任务 `6566f3ff96fa4ba0acd00bfa680ef030`，读取任务 API、持久化工程、阶段 metrics 和原文覆盖。
+39. 使用 Computer Use 检查生产角色资产页、Console 和桌面截图，确认旁白显示“男性 · AI文章推断”。
