@@ -24,4 +24,8 @@
 21. 使用 Computer Use 打开生产页，检查角色资产 5、分句导演 60、关键角色归属、Console 日志和角色页及分句页截图。
 22. `git diff --check`。
 
-最终文档提交、`git push fork master:master` 和本地、远程、Compose 提交包含关系在交付后记录。
+23. 仅暂存五份调查文档，`git diff --cached --check` 通过，提交为 `80bb9f8ef13dd289a5c44bd3ba66ea296e9ebc96`。
+24. `git push fork master:master` 成功。
+25. `git fetch fork master`、`git rev-parse master`、`git rev-parse refs/remotes/fork/master` 和 `git ls-remote fork refs/heads/master` 均得到 `80bb9f8ef13dd289a5c44bd3ba66ea296e9ebc96`。
+26. `git merge-base --is-ancestor 13537153c4d8eb2c37e94958bacc7e4fcdab98b6 master` 返回 0，确认 Compose revision 被交付分支包含。
+27. 再次检查 7864 为 HTTP 200、容器 healthy、Ollama `qwen3:14b` 为 8192 context 和 100% GPU。

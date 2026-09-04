@@ -13,6 +13,6 @@
 | 保持人物与原文正确性 | 角色固定为周家梅、刘至诚、欣雨、小燕子、旁白；工程原文覆盖 100%；关键叙述归属和小燕子台词已在页面核对 | 合格 |
 | 完整测试 | Python 355 passed；Product Studio 215 passed；Vite 3110 modules | 合格 |
 | 生产页面与持久化 | 7864 显示“AI 文本导演完成，恢复历史分句 60 条”；角色资产 5、分句导演 60；Console 0 条日志；角色页和分句页截图均已目视检查 | 合格 |
-| Git 与运行版本交付 | 容器镜像 `indextts25-product-studio:1.1.80-1353715` 健康，revision 为 `13537153c4d8eb2c37e94958bacc7e4fcdab98b6`；最终文档提交、推送和远程 equality 在本回执提交后执行 | 执行中 |
+| Git 与运行版本交付 | 容器镜像 `indextts25-product-studio:1.1.80-1353715` 健康，revision 为 `13537153c4d8eb2c37e94958bacc7e4fcdab98b6`；生产验收证据提交 `80bb9f8ef13dd289a5c44bd3ba66ea296e9ebc96` 已推送，核对时本地 `master`、`fork/master` 跟踪分支和远程 `refs/heads/master` 完全相等；容器 revision 是最终分支祖先 | 合格 |
 
-本清单在 Git 最终交付完成后从第一项重新核对，全部合格后关闭任务。
+本清单已在 Git 交付完成后从第一项重新核对，所有条目合格。
