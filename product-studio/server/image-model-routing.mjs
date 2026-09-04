@@ -94,6 +94,7 @@ export function compatibleServiceError(response, body, fallbackMessage = '兼容
   const detail = String(body?.error?.message || body?.message || `${fallbackMessage} ${response?.status || ''}`).trim();
   const error = new Error(detail);
   error.statusCode = Number(response?.status) || 400;
+  error.responseStatusCode = error.statusCode >= 500 && error.statusCode <= 599 ? 424 : error.statusCode;
   error.retryAfterMs = retryAfterMs(response, body);
   error.serviceCode = String(body?.error?.code || body?.code || '').trim();
   return error;
@@ -101,9 +102,9 @@ export function compatibleServiceError(response, body, fallbackMessage = '兼容
 
 export function isImageCooldownError(error) {
   if (error?.name === 'AbortError') return false;
-  if ([429, 503].includes(Number(error?.statusCode))) return true;
-  const detail = `${String(error?.serviceCode || '')} ${String(error?.message || '')}`.toLowerCase();
-  return /resource[_\s-]?exhausted|rate[_\s-]?limit|too many requests|quota|cooldown|temporar(?:y|ily) unavailable|overloaded|冷却|限流|配额|暂时不可用/u.test(detail);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(Number(error?.statusCode))) return true;
+  const detail = `${String(error?.serviceCode || '')} ${String(error?.code || '')} ${String(error?.cause?.code || '')} ${String(error?.message || '')}`.toLowerCase();
+  return /resource[_\s-]?exhausted|rate[_\s-]?limit|too many requests|quota|cooldown|temporar(?:y|ily) unavailable|overloaded|timeout|timed out|econnreset|econnrefused|eai_again|socket hang up|fetch failed|network error|冷却|限流|配额|暂时不可用|连接超时|连接中断/u.test(detail);
 }
 
 export function imageModelCandidates(settings, requestedModel, allowFallback) {

@@ -9,7 +9,8 @@ test('reports an actionable service error for an HTML API response', async () =>
   });
 
   await assert.rejects(parseApiResponse(response), error => {
-    assert.match(String((error as Error).message), /非 JSON 响应.*HTTP 502.*正在重启/);
+    assert.match(String((error as Error).message), /非 JSON 响应.*HTTP 502.*反向代理.*上游生成服务/);
+    assert.doesNotMatch(String((error as Error).message), /正在重启/);
     assert.doesNotMatch(String((error as Error).message), /Unexpected token|DOCTYPE/);
     return true;
   });

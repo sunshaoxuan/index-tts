@@ -422,6 +422,30 @@ test('generates a Gemini portrait through Chat Completions and decodes a Markdow
   await app.close();
 });
 
+test('falls back to GPT Image when the Gemini portrait gateway returns HTML 502', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 41, 42, 43, 44]);
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    if (String(url).endsWith('/chat/completions')) {
+      return new Response('<!DOCTYPE html><title>Bad Gateway</title>', { status: 502, headers: { 'Content-Type': 'text/html' } });
+    }
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gemini-3.1-flash-image', imageFallbackModel: 'gpt-image-2', imageFallbackEnabled: true } });
+  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: '负责全文叙事，并具有稳定人物设定和明确的视觉识别特征。', gender: 'unspecified', age: 40, allowFallback: true } });
+  assert.equal(portrait.statusCode, 200);
+  assert.deepEqual(calls.map(call => call.url), ['https://ai.example/v1/chat/completions', 'https://ai.example/v1/images/generations']);
+  assert.equal(portrait.json().requestedModel, 'gemini-3.1-flash-image');
+  assert.equal(portrait.json().model, 'gpt-image-2');
+  assert.equal(portrait.json().modelFallbackUsed, true);
+  assert.match(portrait.json().modelFallbackReason, /502/);
+  assert.equal((await app.inject(portrait.json().portraitUrl)).statusCode, 200);
+  await app.close();
+});
+
 test('defaults portraits to comics and uses realistic rendering only when explicitly selected', async () => {
   const { root } = await fixture();
   const prompts = [];

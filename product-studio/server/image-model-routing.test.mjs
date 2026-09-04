@@ -55,8 +55,14 @@ test('limits requested models to the configured primary and complement', () => {
 test('preserves compatible response status and cooldown duration', () => {
   const error = compatibleServiceError({ status: 429, headers: new Headers({ 'retry-after': '12' }) }, { error: { message: 'RESOURCE_EXHAUSTED', code: 'quota' } });
   assert.equal(error.statusCode, 429);
+  assert.equal(error.responseStatusCode, 429);
   assert.equal(error.retryAfterMs, 12_000);
   assert.equal(isImageCooldownError(error), true);
+  const gateway = compatibleServiceError({ status: 502, headers: new Headers() }, {});
+  assert.equal(gateway.statusCode, 502);
+  assert.equal(gateway.responseStatusCode, 424);
+  assert.equal(isImageCooldownError(gateway), true);
+  assert.equal(isImageCooldownError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })), true);
   assert.equal(isImageCooldownError(Object.assign(new Error('invalid reference image'), { statusCode: 400 })), false);
 });
 
@@ -80,6 +86,26 @@ test('uses the complement after a retryable primary cooldown error', async () =>
   assert.equal(result.fallbackUsed, true);
   assert.match(result.fallbackReason, /gpt-image-2 rate limit/);
   assert.equal(cooldowns.get('gpt-image-2'), 31_000);
+});
+
+test('uses the complement after an upstream gateway error', async () => {
+  const calls = [];
+  const result = await runWithImageModelFallback({
+    settings,
+    requestedModel: 'gpt-image-2',
+    allowFallback: true,
+    cooldowns: new Map(),
+    now: () => 2_000,
+    execute: async model => {
+      calls.push(model);
+      if (model === 'gpt-image-2') throw compatibleServiceError({ status: 502, headers: new Headers() }, {});
+      return { image: 'ok' };
+    },
+  });
+  assert.deepEqual(calls, ['gpt-image-2', 'gemini-3-pro-image']);
+  assert.equal(result.actualModel, 'gemini-3-pro-image');
+  assert.equal(result.fallbackUsed, true);
+  assert.match(result.fallbackReason, /502/);
 });
 
 test('skips a model already cooling and rejects non-cooldown failures', async () => {

@@ -782,7 +782,7 @@ function requestAbortSignal(request, reply) {
 }
 
 function requestErrorStatus(error) {
-  return error?.name === 'AbortError' ? 499 : error?.statusCode || 400;
+  return error?.name === 'AbortError' ? 499 : error?.responseStatusCode || error?.statusCode || 400;
 }
 
 async function callCompatibleJson(remoteFetch, url, settings, payload, signal) {

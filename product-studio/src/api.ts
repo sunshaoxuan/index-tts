@@ -86,7 +86,7 @@ export async function parseApiResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const detail = body?.message || body?.error;
     if (detail) throw new Error(String(detail));
-    throw new Error(`服务返回了非 JSON 响应（HTTP ${response.status}），服务可能正在重启，请稍后重试`);
+    throw new Error(`请求链路返回了非 JSON 响应（HTTP ${response.status}），请检查反向代理和上游生成服务状态后重试`);
   }
   if (!body) throw new Error(`接口返回格式异常（HTTP ${response.status}，${contentType || '未知类型'}）`);
   return body as T;
