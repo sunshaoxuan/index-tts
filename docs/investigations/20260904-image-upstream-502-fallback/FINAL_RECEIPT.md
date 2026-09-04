@@ -9,9 +9,11 @@
 | 页面收到可诊断错误 | 供应商状态和浏览器响应状态分离 | 5xx 映射为 424 JSON 的代码与测试 | 合格 |
 | 错误提示符合真实链路 | 非 JSON 提示指向代理和上游服务 | 前端 API 测试 | 合格 |
 | 需求变化有文档记录 | 需求 129、137、README、架构和 CHANGELOG | Git 差异 | 合格 |
-| 修复部署到当前服务 | 新 Docker 镜像与 revision | 待部署 | 待验收 |
-| 小燕子真实角色形象生成成功 | 页面图片和角色资产 | 待真实请求 | 待验收 |
-| UI、Console 和截图完整 | 浏览器状态、Console、截图 | 待浏览器检查 | 待验收 |
+| 修复部署到当前服务 | `1.1.84-09ba10b` 与 revision `09ba10bc...` | healthy，RestartCount 0，Health 200 | 合格 |
+| 小燕子真实角色形象生成成功 | `role_004-1788532228895.png` | `req-b` HTTP 200，PNG 签名、长度与 SHA256 | 合格 |
+| 生成结果应用并保存 | 工程角色资产与人物小传 | 页面“全部修改已保存”，工程 API 返回图片 URL | 合格 |
+| 原公网故障入口可用 | `https://ivs.briconbric.com` | Health、首页、bundle、PNG 均为 200 | 合格 |
+| UI、Console 和截图完整 | `browser-public.png`、`browser-console.json` | 图片 1122 x 1402；Console 和资源失败均为 0 | 合格 |
 | Git 交付到 `fork/master` | 本地与远端 SHA 相等 | 待提交和推送 | 待验收 |
 
 存在待验收条目，本回执当前不构成完成声明。

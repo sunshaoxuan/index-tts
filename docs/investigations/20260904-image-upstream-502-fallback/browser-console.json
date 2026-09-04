@@ -1,0 +1,16 @@
+{
+  "title": "Index Voice Studio",
+  "version": "v1.1.5",
+  "project": true,
+  "portraitVisible": true,
+  "portraitPixels": {
+    "complete": true,
+    "width": 1122,
+    "height": 1402
+  },
+  "saved": true,
+  "consoleErrors": [],
+  "consoleWarnings": [],
+  "exceptions": [],
+  "failedResources": []
+}

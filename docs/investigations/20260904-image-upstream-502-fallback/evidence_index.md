@@ -9,4 +9,7 @@
 | 上游 5xx 最终以 424 JSON 返回浏览器 | `compatibleServiceError` 与 `requestErrorStatus` 代码及测试 | high | 公网代理行为需部署后复核 |
 | 前端提示不再宣称服务重启 | `src/api.ts` 与 `src/api.test.ts` | high | 需部署后浏览器复核 |
 | 全套回归通过 | 221 项 Node 测试、TypeScript、Vite build、Compose config | high | 运行时验收另行记录 |
-| 当前生产可以生成小燕子形象 | 待部署后真实浏览器请求和截图 | pending | evidence_missing |
+| 当前生产可以生成小燕子形象 | `req-b` HTTP 200；`role_004-1788532228895.png`；`browser-public.png` | high | 当前实际供应商请求 |
+| 真实请求使用互补模型完成 | 全局主模型为 Gemini、互补模型为 GPT Image；保存的提示为 GPT Image 执行规格 | high | 供应商原始 502 响应体没有单独落盘 |
+| 公网页面运行完整 | `browser-console.json` 与 `browser-public.png` | high | 无头 Edge 实际公网运行 |
+| 新错误提示已进入公网 bundle | `index-tnu5BpGs.js` HTTP 200 且包含新提示 | high | 无 |
