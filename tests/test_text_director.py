@@ -431,6 +431,62 @@ def test_ai_character_validation_reports_the_current_and_requested_age_on_no_cha
     assert any("age 仍为 11，issue 要求 age=10" in item for item in inconsistencies)
 
 
+def test_ai_character_validation_reconciles_repeated_non_explicit_age_issues_for_inferences():
+    people = [
+        {
+            "id": "role_002", "name": "刘至诚", "profile": "刘至诚是叙述者的高中同学。",
+            "profile_evidence": "原文写明两人是高中同学", "gender": "male",
+            "gender_evidence": "原文称其为丈夫", "gender_basis": "current_inference",
+            "age": 25, "age_evidence": "原文写明刘至诚二十五岁结婚，据当前叙事语境推断年龄",
+            "age_basis": "current_inference",
+        },
+        {
+            "id": "role_003", "name": "欣雨", "profile": "欣雨是刘至诚的小情人。",
+            "profile_evidence": "原文明确称欣雨为刘至诚的小情人", "gender": "female",
+            "gender_evidence": "原文使用小情人称谓", "gender_basis": "current_inference",
+            "age": 25, "age_evidence": "根据其社会关系与当前叙事语境推断为青年",
+            "age_basis": "current_inference",
+        },
+    ]
+    rows = [
+        {
+            **people[0], "canonical_id": "role_002", "status": "corrected",
+            "issues": ["原文中并未明确提到刘至诚的年龄为25岁，仅提到他25岁就结婚，因此 age_evidence 和 age_basis 需要修正。"],
+        },
+        {
+            **people[1], "canonical_id": "role_003", "status": "corrected",
+            "issues": ["原文中并未明确提到欣雨的年龄，因此 age_evidence 和 age_basis 需要修正。"],
+        },
+    ]
+
+    reconciled = OllamaTextDirector._reconcile_redundant_character_corrections(people, rows)
+
+    assert len(reconciled) == 2
+    assert all(row["status"] == "pass" for row in rows)
+    assert all(row["issues"] == [] for row in rows)
+    assert OllamaTextDirector._character_validation_inconsistencies(people, rows) == []
+
+
+def test_ai_character_validation_keeps_non_explicit_issue_when_basis_still_claims_explicit_evidence():
+    original = {
+        "id": "role_002", "name": "刘至诚", "profile": "刘至诚是叙述者的高中同学。",
+        "profile_evidence": "原文写明两人是高中同学", "gender": "male",
+        "gender_evidence": "原文称其为丈夫", "gender_basis": "current_inference",
+        "age": 25, "age_evidence": "原文仅写明刘至诚二十五岁结婚",
+        "age_basis": "current_explicit",
+    }
+    row = {
+        **original, "canonical_id": "role_002", "status": "corrected",
+        "issues": ["原文中并未明确提到刘至诚当前年龄为25岁，因此 age_evidence 和 age_basis 需要修正。"],
+    }
+
+    reconciled = OllamaTextDirector._reconcile_redundant_character_corrections([original], [row])
+
+    assert reconciled == []
+    assert row["status"] == "corrected"
+    assert OllamaTextDirector._character_validation_inconsistencies([original], [row])
+
+
 def test_ai_character_validation_does_not_require_value_change_for_basis_only_issue():
     class BasisRepairDirector(OllamaTextDirector):
         def __init__(self):

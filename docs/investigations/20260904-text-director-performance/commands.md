@@ -10,5 +10,7 @@
 8. `pnpm build`
 9. `git diff --check`
 10. `pytest -m "not gpu" -q`
+11. `Invoke-RestMethod http://127.0.0.1:7864/api/jobs/7266224af1914c17ad44ec93c2517a63`
+12. `pytest tests/test_text_director.py -q`
 
 部署、浏览器、Console、截图和 Git 交付命令在最终验收后补充。

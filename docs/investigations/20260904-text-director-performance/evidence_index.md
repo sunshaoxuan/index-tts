@@ -9,3 +9,5 @@
 | 新实现预热并统一上下文 | `text_director.py` 的 `warm_model`、体裁判断与 `_chat` | 高 | 单元测试与部署运行分别验收 |
 | 新实现先预拆分再逐段处理 | `text_director.py` 的 `pre_split_chunk_chars` 与逐段状态；服务端任务输入固定 700 | 高 | Product Studio 本地 Ollama 路径 |
 | 新实现限制同尺寸等待与重试 | 服务端任务输入 `hot_request_timeout_seconds=120`、`chunk_validation_attempts=1` | 高 | 兼容 Provider 沿用原超时策略 |
+| 新任务前序分析完成后仍为空 | `/api/jobs/7266224af1914c17ad44ec93c2517a63` 返回第 2 轮 `role_002`、`role_003` 字段未落实错误；对应工程持久化结果为 0 个角色和 0 个分句 | 高 | 修复前镜像运行证据 |
+| 重复未明示年龄 issue 可确定性协调 | `text_director.py` 的 `_reconcile_redundant_character_corrections` 与 `tests/test_text_director.py` 的《成都粉子》两人物回归和 explicit basis 反例 | 高 | 真实模型结果仍需部署验收 |

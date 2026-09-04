@@ -1345,25 +1345,50 @@ LINKED_ARTICLES
                     "gender_basis", "age", "age_evidence", "age_basis",
                 )
             ) or row["canonical_id"] != row["id"]
-            if changed or not age_range_pattern.search(row["age_evidence"]):
+            if changed:
                 continue
             requested_ages: list[int] = []
             only_resolved_age_issues = True
-            for issue in row["issues"]:
-                if any(token in issue for token in ("性别", "gender", "小传", "profile", "姓名", "name", "重复", "合并", "canonical")):
-                    only_resolved_age_issues = False
-                    break
-                match = re.search(
-                    r"(?:下限|年龄(?:值)?(?:应为|改为)|age\s*(?:应为|改为|=|should\s+be))\s*[:：]?\s*(\d{1,3})",
-                    issue,
-                    flags=re.IGNORECASE,
-                )
-                if not match:
-                    only_resolved_age_issues = False
-                    break
-                requested_ages.append(int(match.group(1)))
+            if age_range_pattern.search(row["age_evidence"]):
+                for issue in row["issues"]:
+                    if any(token in issue for token in ("性别", "gender", "小传", "profile", "姓名", "name", "重复", "合并", "canonical")):
+                        only_resolved_age_issues = False
+                        break
+                    match = re.search(
+                        r"(?:下限|年龄(?:值)?(?:应为|改为)|age\s*(?:应为|改为|=|should\s+be))\s*[:：]?\s*(\d{1,3})",
+                        issue,
+                        flags=re.IGNORECASE,
+                    )
+                    if not match:
+                        only_resolved_age_issues = False
+                        break
+                    requested_ages.append(int(match.group(1)))
+            else:
+                only_resolved_age_issues = False
             if only_resolved_age_issues and requested_ages and all(age == row["age"] for age in requested_ages):
                 reconciled.append(f"{row['id']} 的年龄目标已为 {row['age']}，且 age_evidence 已保留范围")
+                row["status"] = "pass"
+                row["issues"] = []
+                continue
+
+            issue_text = " ".join(row["issues"])
+            inference_only_issue = (
+                row["age_basis"] in {"current_inference", "linked_inference"}
+                and bool(row["age_evidence"])
+                and any(token in issue_text for token in ("未明确", "没有明确", "并未明确", "未直接", "没有直接"))
+                and any(token in issue_text for token in ("年龄", "age_evidence", "age_basis"))
+                and not any(
+                    token in issue_text
+                    for token in (
+                        "年龄值", "应为", "改为", "下限", "范围", "错误", "不合理",
+                        "性别", "gender", "小传", "profile", "姓名", "name", "重复", "合并", "canonical",
+                    )
+                )
+            )
+            if inference_only_issue:
+                reconciled.append(
+                    f"{row['id']} 已使用 {row['age_basis']} 并保留 age_evidence；原文未明示年龄不构成重复 issue"
+                )
                 row["status"] = "pass"
                 row["issues"] = []
         return reconciled
