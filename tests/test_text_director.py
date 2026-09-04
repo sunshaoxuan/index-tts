@@ -409,10 +409,12 @@ def test_ai_character_validation_retries_only_the_failed_small_batch():
         "scenes": [],
     }
     director = IsolatedRetryDirector()
+    progress_updates = []
 
     report = director.validate_character_analysis(
         document,
         "role_001、role_002、role_003 和 role_004 出场。",
+        progress=lambda fraction, desc="": progress_updates.append((fraction, desc)),
     )
 
     assert report["all_valid"] is True
@@ -424,6 +426,8 @@ def test_ai_character_validation_retries_only_the_failed_small_batch():
     assert report["rounds"][0]["requests"] == 3
     assert report["rounds"][0]["repair_attempts"] == 1
     assert next(item for item in document["characters"] if item["id"] == "role_003")["age"] == 25
+    assert [fraction for fraction, _ in progress_updates] == sorted(fraction for fraction, _ in progress_updates)
+    assert progress_updates[-1][0] == pytest.approx(0.94)
 
 
 def test_character_validation_normalizes_unknown_age_basis_when_age_evidence_exists():

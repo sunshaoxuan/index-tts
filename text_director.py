@@ -1225,9 +1225,10 @@ SOURCE
             total_repair_attempts = 0
             total_metrics = {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_seconds": 0.0}
             for batch_index, batch in enumerate(batches, start=1):
+                batch_progress = min(0.98, 0.9 + ((batch_index - 1) / max(1, len(batches))) * 0.08)
                 _notify(
                     progress,
-                    min(0.98, 0.9 + ((batch_index - 1) / max(1, len(batches))) * 0.08),
+                    batch_progress,
                     f"AI 正在复核第 {batch_index}/{len(batches)} 个人物小批次",
                 )
                 current_evidence = self._character_validation_evidence(source_text, batch, max_chars=4000, focused=True)
@@ -1304,7 +1305,7 @@ LINKED_ARTICLES
                         raise DirectorValidationError(
                             f"第 {round_index} 轮第 {batch_index} 批 AI 声明修正但字段未落实：{inconsistencies}"
                         )
-                    _notify(progress, 0.9, f"第 {batch_index} 个人物小批次修正未落实，正在单独重做")
+                    _notify(progress, batch_progress, f"第 {batch_index} 个人物小批次修正未落实，正在单独重做")
                     request_prompt = (
                         prompt
                         + "\n\n上一次输出存在下列自相矛盾，status 虽为 corrected，要求修正的字段却没有改变。"
