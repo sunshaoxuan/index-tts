@@ -282,8 +282,8 @@ def test_standard_reference_generation_keeps_failed_attempts_in_job_audit_only(t
         }, result_path, tmp_path / "status.json", FakeRuntime())
 
     audit = json.loads(result_path.read_text(encoding="utf-8"))
-    assert model.calls == 9
-    assert audit["attempt_count"] == 9
+    assert model.calls == 30
+    assert audit["attempt_count"] == 30
     assert audit["passing_count"] == 0
     assert all(not item["quality_passed"] for item in audit["attempt_audit"])
     assert "standard_reference" not in json.loads((project_dir / "project.json").read_text(encoding="utf-8"))["character_assets"]["narrator"]
