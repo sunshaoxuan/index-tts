@@ -403,6 +403,25 @@ test('expands a character profile and generates a locally served portrait throug
   await app.close();
 });
 
+test('generates a Gemini portrait through Chat Completions and decodes a Markdown data URL', async () => {
+  const { root } = await fixture();
+  const calls = [];
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 31, 32, 33, 34]);
+  const remoteFetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ choices: [{ message: { content: `![image](data:image/png;base64,${png.toString('base64')})` } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const app = await buildApp({ repoRoot: root, remoteFetch });
+  await app.inject({ method: 'PUT', url: '/api/settings/ai-media', payload: { endpoint: 'https://ai.example/v1', apiKey: 'secret-key', textModel: 'text-model', imageModel: 'gemini-3.1-flash-image' } });
+  const portrait = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/portrait', payload: { name: '旁白', profile: '负责全文叙事，并具有稳定人物设定和明确的视觉识别特征。', gender: 'unspecified', age: 40 } });
+  assert.equal(portrait.statusCode, 200);
+  assert.equal(calls[0].url, 'https://ai.example/v1/chat/completions');
+  assert.equal(calls[0].body.model, 'gemini-3.1-flash-image');
+  assert.deepEqual(calls[0].body.generationConfig.responseModalities, ['IMAGE']);
+  assert.equal((await app.inject(portrait.json().portraitUrl)).statusCode, 200);
+  await app.close();
+});
+
 test('defaults portraits to comics and uses realistic rendering only when explicitly selected', async () => {
   const { root } = await fixture();
   const prompts = [];

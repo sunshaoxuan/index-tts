@@ -25,6 +25,64 @@ export function adaptImagePrompt(basePrompt, model, purpose = 'storyboard') {
   return [familyLine, purposeLine, '跨模型统一约束：不得改变人物身份，不得增加文字、边框、多格布局或与原文无关的主体。', String(basePrompt || '').trim()].filter(Boolean).join('\n');
 }
 
+export function compatibleImageGenerationRequest(model, prompt, aspectRatio = '1:1') {
+  const family = imageModelFamily(model);
+  if (family === 'gemini_image') {
+    return {
+      route: '/chat/completions',
+      payload: {
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        generationConfig: {
+          responseModalities: ['IMAGE'],
+          imageConfig: { aspectRatio, imageSize: '1K' },
+        },
+      },
+    };
+  }
+  return {
+    route: '/images/generations',
+    payload: {
+      model,
+      prompt,
+      size: aspectRatio === '1:1' ? '1024x1024' : '1536x1024',
+      n: 1,
+      response_format: 'b64_json',
+    },
+  };
+}
+
+function imageUrlItem(value) {
+  const url = String(value || '').trim();
+  return url ? { url } : undefined;
+}
+
+export function extractCompatibleImageItem(body) {
+  const direct = body?.data?.[0]
+    || body?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+  if (direct) return direct;
+
+  const message = body?.choices?.[0]?.message;
+  const image = Array.isArray(message?.images) ? message.images[0] : undefined;
+  const imageUrl = image?.image_url?.url || image?.image_url || image?.url;
+  if (imageUrl) return imageUrlItem(imageUrl);
+
+  if (Array.isArray(message?.content)) {
+    const part = message.content.find(item => item?.inlineData || item?.inline_data || item?.b64_json || item?.image_url || item?.url);
+    if (part?.image_url) return imageUrlItem(part.image_url?.url || part.image_url);
+    if (part?.url) return imageUrlItem(part.url);
+    if (part) return part;
+  }
+
+  const content = typeof message?.content === 'string' ? message.content : '';
+  const markdown = content.match(/!\[[^\]]*\]\((data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/_=-]+|https?:\/\/[^)\s]+)\)/iu);
+  if (markdown) return imageUrlItem(markdown[1]);
+  const dataUrl = content.match(/data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/_=-]+/iu);
+  if (dataUrl) return imageUrlItem(dataUrl[0]);
+  throw new Error('兼容服务没有返回图像数据');
+}
+
 function retryAfterMs(response, body) {
   const headerValue = response?.headers?.get?.('retry-after');
   if (headerValue && /^\d+(?:\.\d+)?$/u.test(headerValue)) return Math.max(1_000, Number(headerValue) * 1_000);

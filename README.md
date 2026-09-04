@@ -71,7 +71,7 @@ IndexVoiceStudio 是面向小说、故事和新闻长文本的本地声音与视
 | 音色设计 | Python、Qwen3 TTS VoiceDesign | 角色音色生成和永久音色库 |
 | 音频渲染 | Python、IndexTTS 2.5 | 分句合成、缓存复用、完整音频与分轨交付 |
 | MP3 下载 | FFmpeg、libmp3lame | 从完整 WAV 按请求实时编码 |
-| 人物与图像服务 | OpenAI 兼容 Chat Completions 与 Images API | 详细人物小传、角色形象和视频分镜关键帧 |
+| 人物与图像服务 | OpenAI 兼容 Chat Completions 与 Images API | 详细人物小传、按模型族路由的角色形象和视频分镜关键帧 |
 
 详细设计见 [产品架构](docs/PRODUCT_ARCHITECTURE_zh.md) 和 [小说工程需求](docs/NOVEL_PROJECT_REQUIREMENTS_zh.md)。
 

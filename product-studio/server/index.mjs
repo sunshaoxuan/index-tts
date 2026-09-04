@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyPendingJobs, jobModelKey } from './model-job-scheduler.mjs';
 import { assignNumberedChapterSections, splitChapters } from './chapterSections.mjs';
-import { adaptImagePrompt, compatibleServiceError, imageModelCandidates, runWithImageModelFallback } from './image-model-routing.mjs';
+import { adaptImagePrompt, compatibleImageGenerationRequest, compatibleServiceError, extractCompatibleImageItem, imageModelCandidates, runWithImageModelFallback } from './image-model-routing.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(here, '..', '..');
@@ -990,6 +990,8 @@ async function decodeCompatibleImage(remoteFetch, item, settings, signal) {
   if (item?.inlineData?.data) return Buffer.from(String(item.inlineData.data), 'base64');
   if (item?.url) {
     const imageUrl = String(item.url);
+    const dataUrl = imageUrl.match(/^data:image\/(?:png|jpeg|webp);base64,(.+)$/isu);
+    if (dataUrl) return Buffer.from(dataUrl[1], 'base64');
     const sameOrigin = new URL(imageUrl).origin === new URL(settings.endpoint).origin;
     const response = await remoteFetch(imageUrl, { headers: sameOrigin ? compatibleHeaders(settings) : {}, signal });
     if (!response.ok) throw new Error(`兼容服务图像下载失败 ${response.status}`);
@@ -1011,12 +1013,13 @@ async function generateSceneKeyframe({ remoteFetch, settings, projectRoot, proje
     cooldowns: imageModelCooldowns,
     execute: async model => {
       const prompt = adaptImagePrompt(basePrompt, model, 'storyboard');
-      const response = references.length
-        ? await callCompatibleImageEdit(remoteFetch, settings, model, prompt, references, signal)
-        : await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
-          model, prompt, size: '1536x1024', n: 1, response_format: 'b64_json',
-        }, signal);
-      const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+      let response;
+      if (references.length) response = await callCompatibleImageEdit(remoteFetch, settings, model, prompt, references, signal);
+      else {
+        const generation = compatibleImageGenerationRequest(model, prompt, '16:9');
+        response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, generation.route), settings, generation.payload, signal);
+      }
+      const item = extractCompatibleImageItem(response);
       const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
       return { bytes, prompt };
     },
@@ -1644,10 +1647,9 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         cooldowns: imageModelCooldowns,
         execute: async model => {
           const prompt = adaptImagePrompt(basePrompt, model, 'portrait');
-          const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, '/images/generations'), settings, {
-            model, prompt, size: '1024x1024', n: 1, response_format: 'b64_json',
-          }, signal);
-          const item = response?.data?.[0] || response?.candidates?.[0]?.content?.parts?.find(part => part?.inlineData || part?.inline_data);
+          const generation = compatibleImageGenerationRequest(model, prompt, '1:1');
+          const response = await callCompatibleJson(remoteFetch, aiRoute(settings.endpoint, generation.route), settings, generation.payload, signal);
+          const item = extractCompatibleImageItem(response);
           const bytes = await decodeCompatibleImage(remoteFetch, item, settings, signal);
           return { bytes, prompt };
         },
