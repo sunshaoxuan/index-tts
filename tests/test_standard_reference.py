@@ -10,6 +10,10 @@ import product_render_worker as render_worker
 from novel_project import NovelProjectStore
 from standard_reference import (
     ECHO_SIMILARITY_THRESHOLD,
+    STANDARD_REFERENCE_EMOTION_ALPHA,
+    STANDARD_REFERENCE_TEMPERATURE,
+    STANDARD_REFERENCE_TOP_K,
+    STANDARD_REFERENCE_TOP_P,
     cleanup_unreferenced_standard_voices,
     delayed_echo_similarity,
     register_standard_voice,
@@ -104,10 +108,12 @@ def test_standard_reference_generation_keeps_original_as_anchor_and_waits_for_ad
     class FakeModel:
         def __init__(self):
             self.anchors = []
+            self.infer_kwargs = []
             self.calls = 0
 
         def infer(self, **kwargs):
             self.anchors.append(kwargs["spk_audio_prompt"])
+            self.infer_kwargs.append(kwargs)
             self.calls += 1
             write_noise_wav(Path(kwargs["output_path"]), 100 + self.calls)
             return kwargs["output_path"]
@@ -144,6 +150,11 @@ def test_standard_reference_generation_keeps_original_as_anchor_and_waits_for_ad
     assert standard["source_voice_id"] == source_voice_id
     assert all(not candidate["selected"] for candidate in standard["candidates"])
     assert all(Path(anchor) == voice_library / f"{source_voice_id}.wav" for anchor in model.anchors)
+    assert all(kwargs["emo_alpha"] == STANDARD_REFERENCE_EMOTION_ALPHA for kwargs in model.infer_kwargs)
+    assert all(kwargs["temperature"] == STANDARD_REFERENCE_TEMPERATURE for kwargs in model.infer_kwargs)
+    assert all(kwargs["top_k"] == STANDARD_REFERENCE_TOP_K for kwargs in model.infer_kwargs)
+    assert all(kwargs["top_p"] == STANDARD_REFERENCE_TOP_P for kwargs in model.infer_kwargs)
+    assert all(kwargs["use_random"] is False for kwargs in model.infer_kwargs)
     assert not list((project_dir / "process" / "standard-reference-staging").glob("*"))
 
 
