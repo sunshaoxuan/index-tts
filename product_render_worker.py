@@ -229,17 +229,30 @@ def execute_standard_reference_request(
                 )
                 metrics["score"] = standard_reference_score(metrics)
                 generated.append((candidate_path, metrics))
-                base_safe = [item for item in generated if item[1]["audio_quality_passed"] and item[1]["echo_verified"]]
-                passing = [item for item in base_safe if item[1]["quality_passed"]]
-                if len(base_safe) >= STANDARD_REFERENCE_CANDIDATE_COUNT and passing:
+                passing = [item for item in generated if item[1]["quality_passed"]]
+                if len(passing) >= STANDARD_REFERENCE_CANDIDATE_COUNT:
                     break
 
-        base_safe = [item for item in generated if item[1]["audio_quality_passed"] and item[1]["echo_verified"]]
-        if len(base_safe) < STANDARD_REFERENCE_CANDIDATE_COUNT:
-            raise RuntimeError(f"仅生成 {len(base_safe)} 个通过基础音频和回声门禁的候选，需要 {STANDARD_REFERENCE_CANDIDATE_COUNT} 个")
-        selected = sorted(base_safe, key=lambda item: float(item[1]["score"]), reverse=True)[:STANDARD_REFERENCE_CANDIDATE_COUNT]
-        if not any(item[1]["quality_passed"] for item in selected):
-            raise RuntimeError("标准参考样本均未通过音色相似度门禁，请重新生成或更换原始样本")
+        passing = [item for item in generated if item[1]["quality_passed"]]
+        attempt_audit = [
+            {"attempt": index, **metrics}
+            for index, (_, metrics) in enumerate(generated, start=1)
+        ]
+        audit_payload = {
+            "role_id": role_id,
+            "source_voice_id": source_voice_id,
+            "candidate_count": 0,
+            "passing_count": len(passing),
+            "attempt_count": len(generated),
+            "attempt_audit": attempt_audit,
+        }
+        write_json(result_path, audit_payload)
+        if len(passing) < STANDARD_REFERENCE_CANDIDATE_COUNT:
+            raise RuntimeError(
+                f"连续 {len(generated)} 次生成后只有 {len(passing)} 个候选通过全部自动门禁，"
+                f"需要 {STANDARD_REFERENCE_CANDIDATE_COUNT} 个，请重新生成或更换原始样本"
+            )
+        selected = sorted(passing, key=lambda item: float(item[1]["score"]), reverse=True)[:STANDARD_REFERENCE_CANDIDATE_COUNT]
 
         generated_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         candidates = []
@@ -303,6 +316,8 @@ def execute_standard_reference_request(
             "source_voice_id": source_voice_id,
             "candidate_count": len(candidates),
             "passing_count": sum(1 for item in candidates if item["quality_passed"]),
+            "attempt_count": len(generated),
+            "attempt_audit": attempt_audit,
             "removed_unreferenced_candidates": removed,
             "render_runtime": {"model_reused": model_reused, "resident": True, "pid": os.getpid()},
             "updated_at": saved.get("updated_at"),
@@ -311,7 +326,7 @@ def execute_standard_reference_request(
         write_json(status_path, {
             "phase": "complete",
             "fraction": 1.0,
-            "message": f"已生成 {len(candidates)} 个标准参考候选，其中 {payload['passing_count']} 个通过全部自动门禁，请 A/B 试听后采用",
+            "message": f"已生成 {len(candidates)} 个通过全部自动门禁的标准参考候选，请 A/B 试听后采用",
         })
         return payload
     finally:
