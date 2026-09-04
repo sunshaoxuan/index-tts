@@ -742,6 +742,8 @@ test('normalizes per character voice controls and invalidates only the affected 
   assert.ok(project.character_assets.narrator.audition_text.length > 0);
   project.character_assets.narrator.voice_traits.roughness = 83;
   project.character_assets.narrator.voice_generation = { ...project.character_assets.narrator.voice_generation, preset: 'custom', temperature: 1.25, top_k: 90, candidate_count: 5 };
+  project.character_assets.narrator.voice_generation_attempts = 36;
+  project.character_assets.narrator.voice_candidate_generation_incomplete = true;
   project.character_assets.narrator.audition_text = '这是旁白独立使用的试听文本。';
   project.character_assets.narrator.voice_candidates = [{ voice_id: 'voice-verified', seed: 77, raw_median_pitch_hz: 196.4, median_pitch_hz: 218.5, pitch_delta_hz: 1.5, pitch_target_tolerance_hz: 10, pitch_target_matched: true, pitch_correction_semitones: 1.84, pitch_correction_method: 'librosa_phase_vocoder', pitch_calibration_version: 1, pitch_verified: true, selected: true, gender_verified: true, age_band_verified: true, gender_identity_verified: true, gender_identity_method: 'human_listening' }];
   const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: project });
@@ -749,6 +751,8 @@ test('normalizes per character voice controls and invalidates only the affected 
   assert.equal(saved.json().character_assets.narrator.voice_traits.roughness, 83);
   assert.equal(saved.json().character_assets.narrator.voice_generation.temperature, 1.25);
   assert.equal(saved.json().character_assets.narrator.voice_generation.candidate_count, 5);
+  assert.equal(saved.json().character_assets.narrator.voice_generation_attempts, 36);
+  assert.equal(saved.json().character_assets.narrator.voice_candidate_generation_incomplete, true);
   assert.equal(saved.json().character_assets.narrator.audition_text, '这是旁白独立使用的试听文本。');
   assert.deepEqual(saved.json().character_assets.narrator.voice_candidates, [{ voice_id: 'voice-verified', seed: 77, raw_median_pitch_hz: 196.4, median_pitch_hz: 218.5, pitch_delta_hz: 1.5, pitch_target_tolerance_hz: 10, pitch_target_matched: true, pitch_correction_semitones: 1.84, pitch_correction_method: 'librosa_phase_vocoder', pitch_calibration_version: 1, pitch_verified: true, selected: true, gender_verified: true, age_band_verified: true, gender_identity_verified: true, gender_identity_method: 'human_listening' }]);
   await app.close();

@@ -86,6 +86,8 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     audition_text: String(input?.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
     voice_traits: normalizeVoiceTraits(input?.voice_traits ?? recommendedVoiceTraits(age)),
     voice_generation: normalizeVoiceGeneration(input?.voice_generation),
+    voice_generation_attempts: Math.max(0, Math.round(Number(input?.voice_generation_attempts) || 0)),
+    voice_candidate_generation_incomplete: Boolean(input?.voice_candidate_generation_incomplete),
     voice_candidates: Array.isArray(input?.voice_candidates) ? input.voice_candidates.filter(item => item?.voice_id).slice(0, 6) : undefined,
     reference_audio: input?.reference_audio?.voice_id ? {
       voice_id: String(input.reference_audio.voice_id),

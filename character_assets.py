@@ -63,6 +63,8 @@ def normalize_character_assets(roles: list[list[Any]], existing: dict[str, Any] 
             "audition_text": str(source.get("audition_text") or DEFAULT_AUDITION_TEXT).strip()[:500] or DEFAULT_AUDITION_TEXT,
             "voice_traits": normalize_voice_traits(source.get("voice_traits") if isinstance(source.get("voice_traits"), dict) else recommended_voice_traits(age)),
             "voice_generation": normalize_voice_generation(source.get("voice_generation")),
+            "voice_generation_attempts": max(0, int(source.get("voice_generation_attempts") or 0)),
+            "voice_candidate_generation_incomplete": bool(source.get("voice_candidate_generation_incomplete")),
             **({"voice_candidates": source["voice_candidates"][:6]} if isinstance(source.get("voice_candidates"), list) else {}),
             **({"portrait_url": str(source["portrait_url"])} if source.get("portrait_url") else {}),
             **({"portrait_prompt": str(source["portrait_prompt"])} if source.get("portrait_prompt") else {}),

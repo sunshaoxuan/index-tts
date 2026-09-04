@@ -33,6 +33,35 @@ def verified_candidate_metrics(item: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def verified_existing_candidates(asset: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item for item in (asset.get("voice_candidates") or [])
+        if isinstance(item, dict)
+        and item.get("voice_id")
+        and item.get("gender_verified") is not False
+        and item.get("pitch_target_matched") is not False
+    ]
+
+
+def prepare_pending_voice_job(job: dict[str, Any], row: list[Any], asset: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    required_candidates = int((job.get("voice_generation") or {}).get("candidate_count", 3))
+    existing_candidates = verified_existing_candidates(asset)
+    regenerate_all = str(row[7]) != "否"
+    continue_partial = not regenerate_all and bool(asset.get("voice_candidate_generation_incomplete"))
+    if not regenerate_all and not continue_partial and (str(row[5]).strip() or len(existing_candidates) >= required_candidates):
+        return None, existing_candidates
+    retained_candidates = [] if regenerate_all else existing_candidates[:required_candidates]
+    missing_candidates = required_candidates - len(retained_candidates)
+    if missing_candidates <= 0:
+        return None, retained_candidates
+    pending_job = {
+        **job,
+        "voice_generation": {**(job.get("voice_generation") or {}), "candidate_count": missing_candidates},
+        "candidate_seed_offset": max(0, int(asset.get("voice_generation_attempts") or 0)),
+    }
+    return pending_job, retained_candidates
+
+
 def register_candidate_set(
     store: NovelProjectStore,
     item: dict[str, Any],
@@ -214,18 +243,16 @@ def main() -> int:
     jobs_by_role = {job["role_id"]: job for job in jobs}
     rows_by_role = {str(row[0]): row for row in project["roles"]}
     registered, pending, preserved_count = [], [], 0
+    retained_candidates_by_role: dict[str, list[dict[str, Any]]] = {}
     for job in jobs:
         row = rows_by_role[job["role_id"]]
         asset = (project.get("character_assets") or {}).get(job["role_id"], {})
-        required_candidates = int((job.get("voice_generation") or {}).get("candidate_count", 3))
-        existing_candidates = [
-            item for item in (asset.get("voice_candidates") or [])
-            if isinstance(item, dict) and item.get("voice_id") and item.get("gender_verified") is not False
-        ] if isinstance(asset, dict) else []
-        if str(row[7]) == "否" and (str(row[5]).strip() or len(existing_candidates) >= required_candidates):
+        pending_job, retained_candidates = prepare_pending_voice_job(job, row, asset if isinstance(asset, dict) else {})
+        if pending_job is None:
             preserved_count += 1
             continue
-        pending.append(job)
+        pending.append(pending_job)
+        retained_candidates_by_role[str(job["role_id"])] = retained_candidates
     generated = []
     voice_runtime: dict[str, Any] | None = None
     voice_result: dict[str, Any] = {}
@@ -272,12 +299,28 @@ def main() -> int:
     for item in generated:
         job = jobs_by_role[item["role_id"]]
         candidate_records, candidate_registrations = register_candidate_set(store, item, job, model=str(model_dir))
-        character_assets.setdefault(item["role_id"], {})["voice_candidates"] = candidate_records
+        role_id = str(item["role_id"])
+        required_candidates = int((job.get("voice_generation") or {}).get("candidate_count", 3))
+        merged_candidates = [*retained_candidates_by_role.get(role_id, []), *candidate_records][:required_candidates]
+        role_asset = character_assets.setdefault(role_id, {})
+        role_asset["voice_candidates"] = merged_candidates
+        role_asset["voice_candidate_generation_incomplete"] = len(merged_candidates) < required_candidates
         registered.extend(candidate_registrations)
-        generated_role_ids.add(str(item["role_id"]))
+        generated_role_ids.add(role_id)
+    result_by_role = {
+        str(item["role_id"]): item
+        for item in [*(voice_result.get("failures") or []), *generated]
+        if isinstance(item, dict) and item.get("role_id")
+    }
+    for role_id, item in result_by_role.items():
+        asset = character_assets.setdefault(role_id, {})
+        asset["voice_generation_attempts"] = max(0, int(asset.get("voice_generation_attempts") or 0)) + max(0, int(item.get("generation_attempts") or 0))
+        if role_id not in generated_role_ids:
+            required_candidates = int((jobs_by_role[role_id].get("voice_generation") or {}).get("candidate_count", 3))
+            asset["voice_candidate_generation_incomplete"] = len(verified_existing_candidates(asset)) < required_candidates
     roles = [list(row) for row in project["roles"]]
     for row in roles:
-        if str(row[0]) in generated_role_ids:
+        if str(row[0]) in result_by_role:
             row[7] = "否"
     store.save(
         project["project_id"], title=project["title"], content_type=project["content_type"], source_text=project["source_text"],
@@ -289,8 +332,8 @@ def main() -> int:
     failures = voice_result.get("failures") or []
     runtime_summary = "已复用驻留模型" if voice_result.get("model_reused") else "模型已保持驻留" if generated or failures else "未调用模型"
     write_json(Path(args.result), {"roles": roles, "voices": registered, "failures": failures, "voice_runtime": {"pid": voice_result.get("runtime_pid") or (voice_runtime or {}).get("pid"), "model_reused": voice_result.get("model_reused"), "resident": bool(generated or failures)}})
-    failure_summary = f"；{len(failures)} 个角色未取得三个合格候选：" + "；".join(str(item.get("error") or item.get("name")) for item in failures) if failures else ""
-    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色候选生成完成，{len(generated)} 个角色等待人工选择，共保留 {len(registered)} 个候选，跳过已有 {preserved_count} 个；{runtime_summary}{failure_summary}"})
+    failure_summary = f"；{len(failures)} 个角色仍需补充合格候选：" + "；".join(str(item.get("error") or item.get("name")) for item in failures) if failures else ""
+    write_json(status, {"phase": "complete", "fraction": 1.0, "message": f"角色音色候选生成完成，{len(generated)} 个角色新增了可试听候选，本轮保留 {len(registered)} 个候选，跳过已有 {preserved_count} 个；{runtime_summary}{failure_summary}"})
     return 0
 
 

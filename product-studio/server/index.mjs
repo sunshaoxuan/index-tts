@@ -232,6 +232,8 @@ function normalizeCharacterAsset(role, source = {}) {
     audition_text: String(source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
     voice_traits: normalizeVoiceTraits(source.voice_traits, age),
     voice_generation: normalizeVoiceGeneration(source.voice_generation),
+    voice_generation_attempts: Math.max(0, Math.round(Number(source.voice_generation_attempts) || 0)),
+    voice_candidate_generation_incomplete: Boolean(source.voice_candidate_generation_incomplete),
     ...(Array.isArray(source.voice_candidates) ? { voice_candidates: source.voice_candidates.filter(item => item?.voice_id && item?.gender_verified !== false && item?.pitch_target_matched !== false).slice(0, 6).map(normalizeVoiceCandidate) } : {}),
     ...(source.reference_audio?.voice_id ? { reference_audio: {
       voice_id: String(source.reference_audio.voice_id),

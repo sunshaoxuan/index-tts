@@ -93,6 +93,8 @@ export interface CharacterAsset {
   audition_text: string;
   voice_traits: VoiceTraits;
   voice_generation: VoiceGenerationSettings;
+  voice_generation_attempts?: number;
+  voice_candidate_generation_incomplete?: boolean;
   voice_candidates?: VoiceCandidate[];
   reference_audio?: {
     voice_id: string;

@@ -298,6 +298,7 @@ def generate_voice_design(
         character_age = int(job["character_age"]) if job.get("character_age") is not None else None
         generation = job.get("voice_generation") if isinstance(job.get("voice_generation"), dict) else {}
         requested_candidates = max(1, min(6, int(generation.get("candidate_count", 1))))
+        candidate_seed_offset = max(0, int(job.get("candidate_seed_offset", 0)))
         if expected_gender in {"female", "male"} or target_pitch is not None:
             default_budget = requested_candidates * (12 if target_pitch is not None else 3)
             configured_budget = int(payload.get("gender_max_attempts", default_budget))
@@ -310,7 +311,7 @@ def generate_voice_design(
         valid_candidate_count = 0
         evaluate_all_candidates = max_attempts > 1
         for attempt in range(max_attempts):
-            candidate_seed = job_seed if attempt == 0 or target_pitch is None else job_seed + 99 + attempt
+            candidate_seed = job_seed + candidate_seed_offset + attempt
             torch.manual_seed(candidate_seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(candidate_seed)
@@ -387,12 +388,18 @@ def generate_voice_design(
             attempts_used = attempt + 1
             if valid_candidate_count >= requested_candidates:
                 break
-        if valid_candidate_count < requested_candidates:
+        complete_candidate_set = valid_candidate_count >= requested_candidates
+        if not complete_candidate_set:
             label = "女性" if expected_gender == "female" else "男性" if expected_gender == "male" else ""
             measured = "无法测量" if best_attempt_pitch is None else f"{best_attempt_pitch:.1f} Hz"
             target_requirement = (
                 f"且进入目标 {target_pitch:.1f} Hz ± {pitch_target_tolerance_hz(target_pitch):.1f} Hz"
                 if target_pitch is not None else ""
+            )
+            identity_rejected_count = sum(not bool(metric.get("gender_matched")) for metric in candidate_metrics)
+            pitch_rejected_count = sum(
+                bool(metric.get("gender_matched")) and not bool(metric.get("pitch_target_matched"))
+                for metric in candidate_metrics
             )
             failures.append(
                 {
@@ -400,14 +407,19 @@ def generate_voice_design(
                     "name": str(job["name"]),
                     "error": (
                         f"{job['name']} 要求 {requested_candidates} 个{label}候选，连续 {attempts_used} 次生成后只有 "
-                        f"{valid_candidate_count} 个通过声学年龄与性别校验{target_requirement}，最接近目标的尝试为 {measured}。"
+                        f"{valid_candidate_count} 个通过全部门禁{target_requirement}；声学年龄或性别未通过 {identity_rejected_count} 次，"
+                        f"性别通过但目标频率未通过 {pitch_rejected_count} 次，最接近目标的尝试为 {measured}。"
                     ),
                     "generation_attempts": attempts_used,
                     "requested_candidate_count": requested_candidates,
                     "valid_candidate_count": valid_candidate_count,
+                    "missing_candidate_count": requested_candidates - valid_candidate_count,
+                    "identity_rejected_count": identity_rejected_count,
+                    "pitch_rejected_count": pitch_rejected_count,
                     "candidate_metrics": candidate_metrics,
                 }
             )
+        if valid_candidate_count == 0:
             continue
         output_path = output_dir / str(job["filename"])
         sf.write(output_path, best_wav, best_sample_rate)
@@ -425,6 +437,7 @@ def generate_voice_design(
                 "generation_attempts": attempts_used,
                 "requested_candidate_count": requested_candidates,
                 "valid_candidate_count": valid_candidate_count,
+                "complete_candidate_set": complete_candidate_set,
                 "gender_verified": expected_gender not in {"female", "male"} or valid_candidate_count > 0,
                 "age_band_verified": expected_gender not in {"female", "male"} or valid_candidate_count > 0,
                 "gender_identity_verified": False if character_age is not None and character_age < 13 and expected_gender in {"female", "male"} else expected_gender not in {"female", "male"} or valid_candidate_count > 0,

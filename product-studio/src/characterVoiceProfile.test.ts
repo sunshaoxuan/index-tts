@@ -39,6 +39,16 @@ test('normalizes legacy roles into editable character assets', () => {
   assert.ok(asset.audition_text.length > 0);
 });
 
+test('preserves voice candidate continuation state during normalization', () => {
+  const asset = normalizeCharacterAsset(role, {
+    voice_generation_attempts: 36,
+    voice_candidate_generation_incomplete: true,
+  });
+
+  assert.equal(asset.voice_generation_attempts, 36);
+  assert.equal(asset.voice_candidate_generation_incomplete, true);
+});
+
 test('preserves a supported portrait style and falls back from an unknown style', () => {
   assert.equal(normalizeCharacterAsset(role, { portrait_style: 'noir_ink', portrait_notes: '保留旧式礼帽' }).portrait_style, 'noir_ink');
   assert.equal(normalizeCharacterAsset(role, { portrait_style: 'commercial-style-name' }).portrait_style, 'cinematic_manga');

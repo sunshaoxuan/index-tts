@@ -29,6 +29,17 @@ def test_existing_portrait_metadata_survives_normalization():
     assert assets["role_001"]["portrait_notes"] == "保留旧式礼帽"
 
 
+def test_voice_candidate_continuation_state_survives_normalization():
+    roles = [["role_001", "林澈", "character", "男性角色", "低沉", "", "自然叙述", "否"]]
+    assets = normalize_character_assets(roles, {"role_001": {
+        "voice_generation_attempts": 36,
+        "voice_candidate_generation_incomplete": True,
+    }})
+
+    assert assets["role_001"]["voice_generation_attempts"] == 36
+    assert assets["role_001"]["voice_candidate_generation_incomplete"] is True
+
+
 def test_gender_inference_keeps_unknown_roles_explicit():
     assert infer_character_gender("温和而克制") == "unspecified"
 

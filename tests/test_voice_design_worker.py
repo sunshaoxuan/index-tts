@@ -9,7 +9,7 @@ import pytest
 import voice_design_worker as worker
 from novel_project import NovelProjectStore
 import product_voice_worker
-from product_voice_worker import prepare_voice_runtime, quarantine_cross_role_voices, register_candidate_set, resolve_or_reuse_guidance, verified_candidate_metrics
+from product_voice_worker import prepare_pending_voice_job, prepare_voice_runtime, quarantine_cross_role_voices, register_candidate_set, resolve_or_reuse_guidance, verified_candidate_metrics
 from text_director import guidance_role_signature
 
 
@@ -326,7 +326,7 @@ def test_targeted_pitch_retry_uses_focused_prompt_exploration_and_audited_seed_o
     }, tmp_path / "result.json", tmp_path / "status.json")
 
     assert result["generated"][0]["valid_candidate_count"] == 1
-    assert [item["seed"] for item in result["generated"][0]["candidate_metrics"]] == [42, 142]
+    assert [item["seed"] for item in result["generated"][0]["candidate_metrics"]] == [42, 43]
     assert calls[0]["temperature"] == 0.85
     assert calls[1]["temperature"] == 1.05
     assert calls[1]["top_k"] == 100
@@ -472,14 +472,17 @@ def test_child_candidates_require_human_gender_identity_confirmation(tmp_path):
 
 
 def test_worker_reports_a_partial_verified_candidate_set_without_losing_other_roles(tmp_path, monkeypatch):
+    frequencies = iter((217, 175))
+
     class FakeModel:
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
             return cls()
 
         def generate_voice_design(self, **kwargs):
+            frequency = next(frequencies)
             timeline = np.arange(24000, dtype=np.float32) / 24000
-            return [0.2 * np.sin(2 * np.pi * 175 * timeline)], 24000
+            return [0.2 * np.sin(2 * np.pi * frequency * timeline)], 24000
 
     fake_qwen = types.ModuleType("qwen_tts")
     fake_qwen.Qwen3TTSModel = FakeModel
@@ -492,11 +495,84 @@ def test_worker_reports_a_partial_verified_candidate_set_without_losing_other_ro
                 "language": "Chinese", "instruct": "明确女性声音", "expected_gender": "female",
                 "character_age": 35, "pitch_target_hz": 217, "voice_generation": {"candidate_count": 2},
             }],
-            "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
+            "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir), "gender_max_attempts": 2,
         }, tmp_path / "result.json", tmp_path / "status.json")
-    assert result["generated"] == []
+    assert len(result["generated"]) == 1
+    assert result["generated"][0]["valid_candidate_count"] == 1
+    assert result["generated"][0]["complete_candidate_set"] is False
     assert result["failures"][0]["role_id"] == "role_f"
-    assert "只有 0 个通过声学年龄与性别校验" in result["failures"][0]["error"]
+    assert result["failures"][0]["missing_candidate_count"] == 1
+    assert result["failures"][0]["identity_rejected_count"] == 1
+    assert result["failures"][0]["pitch_rejected_count"] == 0
+    assert "只有 1 个通过全部门禁" in result["failures"][0]["error"]
+
+
+def test_worker_uses_persisted_attempt_offset_for_a_fresh_seed_range(tmp_path, monkeypatch):
+    seeds = []
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def generate_voice_design(self, **kwargs):
+            seeds.append(kwargs)
+            timeline = np.arange(24000, dtype=np.float32) / 24000
+            return [0.2 * np.sin(2 * np.pi * 110 * timeline)], 24000
+
+    fake_qwen = types.ModuleType("qwen_tts")
+    fake_qwen.Qwen3TTSModel = FakeModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen)
+    model_dir = tmp_path / "model"
+    prepare_model(model_dir)
+    result = worker.generate_voice_design({
+        "jobs": [{
+            "role_id": "role_m", "name": "男性角色", "filename": "male.wav", "text": "测试",
+            "language": "Chinese", "instruct": "男性声音", "expected_gender": "male",
+            "candidate_seed_offset": 36, "voice_generation": {"candidate_count": 1, "seed": 42},
+        }],
+        "output_dir": str(tmp_path / "voices"), "model_dir": str(model_dir),
+    }, tmp_path / "result.json", tmp_path / "status.json")
+
+    assert len(seeds) == 1
+    assert result["generated"][0]["candidate_metrics"][0]["seed"] == 78
+
+
+def test_pending_voice_job_only_requests_the_missing_candidates_and_advances_seed_offset():
+    job = {"role_id": "role_m", "voice_generation": {"candidate_count": 3, "seed": 42}}
+    row = ["role_m", "角色", "character", "", "", "", "", "否"]
+    asset = {
+        "voice_generation_attempts": 36,
+        "voice_candidate_generation_incomplete": True,
+        "voice_candidates": [
+            {"voice_id": "voice-a", "gender_verified": True, "pitch_target_matched": True},
+            {"voice_id": "voice-b", "gender_verified": True, "pitch_target_matched": True},
+        ],
+    }
+
+    pending, retained = prepare_pending_voice_job(job, row, asset)
+
+    assert pending is not None
+    assert pending["voice_generation"]["candidate_count"] == 1
+    assert pending["candidate_seed_offset"] == 36
+    assert [item["voice_id"] for item in retained] == ["voice-a", "voice-b"]
+
+
+def test_stale_incomplete_flag_does_not_generate_when_candidate_set_is_full():
+    job = {"role_id": "role_m", "voice_generation": {"candidate_count": 2, "seed": 42}}
+    row = ["role_m", "角色", "character", "", "", "", "", "否"]
+    asset = {
+        "voice_candidate_generation_incomplete": True,
+        "voice_candidates": [
+            {"voice_id": "voice-a", "gender_verified": True, "pitch_target_matched": True},
+            {"voice_id": "voice-b", "gender_verified": True, "pitch_target_matched": True},
+        ],
+    }
+
+    pending, retained = prepare_pending_voice_job(job, row, asset)
+
+    assert pending is None
+    assert len(retained) == 2
 
 
 def test_cross_role_guidance_quarantines_a_registered_voice(tmp_path):
