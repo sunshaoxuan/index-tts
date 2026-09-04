@@ -1301,11 +1301,13 @@ LINKED_ARTICLES
         gender_basis = str(raw.get("gender_basis") or "unknown")
         if not profile_evidence or not age_evidence:
             raise DirectorValidationError(f"人物 {role_id} 的小传或年龄缺少校验证据")
+        if age_basis == "unknown":
+            age_basis = "current_inference"
         if gender not in {"female", "male", "unspecified"}:
             raise DirectorValidationError(f"人物 {role_id} 的校验性别无效")
         if gender != "unspecified" and not gender_evidence:
             raise DirectorValidationError(f"人物 {role_id} 的性别缺少校验证据")
-        if age_basis not in DEMOGRAPHIC_BASIS_PRIORITY or age_basis == "unknown":
+        if age_basis not in DEMOGRAPHIC_BASIS_PRIORITY:
             raise DirectorValidationError(f"人物 {role_id} 的年龄证据类型无效")
         if gender_basis not in DEMOGRAPHIC_BASIS_PRIORITY:
             raise DirectorValidationError(f"人物 {role_id} 的性别证据类型无效")

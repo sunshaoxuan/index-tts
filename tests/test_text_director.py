@@ -313,6 +313,20 @@ def test_ai_character_validation_rechecks_corrections_until_every_person_passes(
     assert director.context_tokens == [8192, 8192]
 
 
+def test_character_validation_normalizes_unknown_age_basis_when_age_evidence_exists():
+    row = OllamaTextDirector._normalize_character_validation({
+        "id": "role_005", "canonical_id": "role_005", "name": "小燕子",
+        "status": "pass", "issues": [], "profile": "小燕子是丽都酒廊的妈咪。",
+        "profile_evidence": "原文写明她是丽都酒廊的妈咪", "gender": "female",
+        "gender_evidence": "原文使用女性称谓", "gender_basis": "current_inference",
+        "age": 18, "age_evidence": "原文写明她十八岁", "age_basis": "unknown",
+    }, {"role_005"})
+
+    assert row["age"] == 18
+    assert row["age_evidence"] == "原文写明她十八岁"
+    assert row["age_basis"] == "current_inference"
+
+
 def test_ai_character_validation_merges_duplicate_identity_then_rechecks():
     class ValidationDirector(OllamaTextDirector):
         def __init__(self):
