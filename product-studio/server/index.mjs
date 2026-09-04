@@ -202,8 +202,10 @@ function normalizeCharacterAsset(role, source = {}) {
   const standardReference = source.standard_reference?.source_voice_id ? {
     source_voice_id: String(source.standard_reference.source_voice_id),
     audition_text: String(source.standard_reference.audition_text || source.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
-    pace_preset: source.standard_reference.pace_preset === '自然' ? '自然' : '舒缓',
-    duration_factor: Number(source.standard_reference.duration_factor) || (source.standard_reference.pace_preset === '自然' ? 1.05 : 1.18),
+    pace_preset: ['自然', '舒缓', '自定义'].includes(source.standard_reference.pace_preset) ? source.standard_reference.pace_preset : '舒缓',
+    duration_factor: Number.isFinite(Number(source.standard_reference.duration_factor))
+      ? Math.max(0.5, Math.min(2, Number(source.standard_reference.duration_factor)))
+      : source.standard_reference.pace_preset === '自然' ? 1.05 : source.standard_reference.pace_preset === '自定义' ? 1 : 1.18,
     generated_at: String(source.standard_reference.generated_at || ''),
     candidates: (Array.isArray(source.standard_reference.candidates) ? source.standard_reference.candidates : []).filter(item => item?.voice_id).slice(0, 3).map((item, index) => ({
       voice_id: String(item.voice_id),
@@ -2200,12 +2202,16 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       if (!role) throw new Error('角色不存在');
       const asset = project.character_assets?.[roleId];
       if (!asset?.reference_audio?.voice_id) throw new Error('请先上传、应用并保存原始参考音频');
-      const pacePreset = request.body?.pacePreset === '自然' ? '自然' : request.body?.pacePreset === '舒缓' ? '舒缓' : '';
+      const pacePreset = ['自然', '舒缓', '自定义'].includes(request.body?.pacePreset) ? request.body.pacePreset : '';
       if (!pacePreset) throw new Error('标准参考样本节奏无效');
+      const presetDurationFactor = pacePreset === '自然' ? 1.05 : pacePreset === '舒缓' ? 1.18 : 1;
+      const requestedDurationFactor = request.body?.durationFactor ?? presetDurationFactor;
+      const durationFactor = Number(requestedDurationFactor);
+      if (!Number.isFinite(durationFactor) || durationFactor < 0.5 || durationFactor > 2) throw new Error('声音时长系数必须在 0.50 至 2.00 之间');
       const auditionText = String(request.body?.auditionText || asset.audition_text || '').trim();
       if (auditionText.length < 10 || auditionText.length > 500) throw new Error('标准参考样本试听文本必须在 10 至 500 字符之间');
       return reply.code(202).send(await startJob(id, 'standardize', {
-        standard_reference: { role_id: roleId, pace_preset: pacePreset, audition_text: auditionText, language: 'ZH' },
+        standard_reference: { role_id: roleId, pace_preset: pacePreset, duration_factor: Math.round(durationFactor * 100) / 100, audition_text: auditionText, language: 'ZH' },
       }));
     } catch (error) { return reply.code(error.statusCode || 400).send({ error: error.message }); }
   });

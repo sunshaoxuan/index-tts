@@ -56,3 +56,18 @@ test('forwards an abort signal to long-running AI requests', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('sends the selected standard reference duration factor', async () => {
+  const originalFetch = globalThis.fetch;
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = async (_input, init) => {
+    body = JSON.parse(String(init?.body || '{}'));
+    return new Response(JSON.stringify({ jobId: 'job-1', roleId: 'narrator' }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await api.generateStandardReference('demo', 'narrator', '自定义', 1.23, '这是用于标准角色参考样本的固定试听文本。');
+    assert.deepEqual(body, { pacePreset: '自定义', durationFactor: 1.23, auditionText: '这是用于标准角色参考样本的固定试听文本。' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

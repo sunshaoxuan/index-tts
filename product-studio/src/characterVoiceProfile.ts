@@ -89,8 +89,10 @@ export function normalizeCharacterAsset(role: RoleRow, input?: Partial<Character
     standard_reference: input?.standard_reference?.source_voice_id ? {
       source_voice_id: String(input.standard_reference.source_voice_id),
       audition_text: String(input.standard_reference.audition_text || input?.audition_text || DEFAULT_AUDITION_TEXT).trim().slice(0, 500) || DEFAULT_AUDITION_TEXT,
-      pace_preset: input.standard_reference.pace_preset === '自然' ? '自然' : '舒缓',
-      duration_factor: Number(input.standard_reference.duration_factor) || (input.standard_reference.pace_preset === '自然' ? 1.05 : 1.18),
+      pace_preset: ['自然', '舒缓', '自定义'].includes(input.standard_reference.pace_preset) ? input.standard_reference.pace_preset : '舒缓',
+      duration_factor: Number.isFinite(Number(input.standard_reference.duration_factor))
+        ? Math.max(0.5, Math.min(2, Number(input.standard_reference.duration_factor)))
+        : input.standard_reference.pace_preset === '自然' ? 1.05 : input.standard_reference.pace_preset === '自定义' ? 1 : 1.18,
       generated_at: String(input.standard_reference.generated_at || ''),
       candidates: Array.isArray(input.standard_reference.candidates) ? input.standard_reference.candidates.filter(candidate => candidate?.voice_id).slice(0, 3).map((candidate, index) => ({
         voice_id: String(candidate.voice_id),

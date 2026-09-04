@@ -776,8 +776,11 @@ body * { box-shadow: none !important; }
 .standard-reference-panel { display: grid; gap: 12px; padding-top: 14px; border-top: 1px dashed rgba(255, 237, 215, .28); }
 .standard-reference-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .standard-reference-heading > div { display: grid; gap: 4px; min-width: 0; }
-.standard-reference-controls { display: grid; grid-template-columns: minmax(240px, 1fr) auto; gap: 12px; align-items: end; }
+.standard-reference-controls { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(300px, 1.3fr) auto; gap: 12px; align-items: end; }
 .standard-reference-controls label { display: grid; gap: 6px; }
+.standard-reference-duration-control > div { display: grid; grid-template-columns: minmax(160px, 1fr) 92px; gap: 14px; align-items: center; }
+.standard-reference-duration-control .ant-slider { margin: 8px 5px; }
+.standard-reference-duration-control .ant-input-number { width: 100%; }
 .standard-reference-progress { display: grid; gap: 10px; padding-top: 8px; }
 .standard-reference-progress .ant-btn { justify-self: start; }
 .standard-reference-results { display: grid; gap: 10px; }

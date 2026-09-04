@@ -136,7 +136,8 @@ def test_standard_reference_generation_keeps_original_as_anchor_and_waits_for_ad
         "project_id": "demo",
         "standard_reference": {
             "role_id": "narrator",
-            "pace_preset": "舒缓",
+            "pace_preset": "自定义",
+            "duration_factor": 1.23,
             "audition_text": "这是用于标准角色参考样本的固定试听文本。",
             "language": "ZH",
         },
@@ -148,6 +149,8 @@ def test_standard_reference_generation_keeps_original_as_anchor_and_waits_for_ad
     assert result["passing_count"] == 3
     assert saved["roles"][0][5] == source_voice_id
     assert standard["source_voice_id"] == source_voice_id
+    assert standard["pace_preset"] == "自定义"
+    assert standard["duration_factor"] == 1.23
     assert all(not candidate["selected"] for candidate in standard["candidates"])
     assert all(Path(anchor) == voice_library / f"{source_voice_id}.wav" for anchor in model.anchors)
     assert all(kwargs["emo_alpha"] == STANDARD_REFERENCE_EMOTION_ALPHA for kwargs in model.infer_kwargs)
@@ -155,7 +158,22 @@ def test_standard_reference_generation_keeps_original_as_anchor_and_waits_for_ad
     assert all(kwargs["top_k"] == STANDARD_REFERENCE_TOP_K for kwargs in model.infer_kwargs)
     assert all(kwargs["top_p"] == STANDARD_REFERENCE_TOP_P for kwargs in model.infer_kwargs)
     assert all(kwargs["use_random"] is False for kwargs in model.infer_kwargs)
+    assert all(kwargs["duration_factor"] == 1.23 for kwargs in model.infer_kwargs)
     assert not list((project_dir / "process" / "standard-reference-staging").glob("*"))
+
+
+def test_standard_reference_rejects_duration_factor_outside_model_range(tmp_path):
+    with pytest.raises(ValueError, match="0.50 至 2.00"):
+        render_worker.execute_standard_reference_request({
+            "root": str(tmp_path),
+            "project_id": "demo",
+            "standard_reference": {
+                "role_id": "narrator",
+                "pace_preset": "自定义",
+                "duration_factor": 2.01,
+                "audition_text": "这是用于标准角色参考样本的固定试听文本。",
+            },
+        }, tmp_path / "result.json", tmp_path / "status.json", object())
 
 
 def test_standard_reference_generation_persists_only_three_full_gate_candidates(tmp_path):

@@ -75,7 +75,7 @@ export interface StandardReferenceCandidate {
 export interface StandardReference {
   source_voice_id: string;
   audition_text: string;
-  pace_preset: '自然' | '舒缓';
+  pace_preset: '自然' | '舒缓' | '自定义';
   duration_factor: number;
   generated_at: string;
   candidates: StandardReferenceCandidate[];

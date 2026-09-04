@@ -4,6 +4,7 @@ import argparse
 import gc
 import hashlib
 import json
+import math
 import os
 import shutil
 import threading
@@ -165,6 +166,9 @@ def execute_standard_reference_request(
     pace_preset = str(options.get("pace_preset") or "舒缓")
     if pace_preset not in STANDARD_REFERENCE_PACES:
         raise ValueError("标准参考样本节奏无效")
+    duration_factor = float(options.get("duration_factor", STANDARD_REFERENCE_PACES[pace_preset]["duration_factor"]))
+    if not math.isfinite(duration_factor) or not 0.5 <= duration_factor <= 2.0:
+        raise ValueError("声音时长系数必须在 0.50 至 2.00 之间")
     audition_text = str(options.get("audition_text") or "").strip()
     if not 10 <= len(audition_text) <= 500:
         raise ValueError("标准参考样本试听文本必须在 10 至 500 字符之间")
@@ -210,7 +214,7 @@ def execute_standard_reference_request(
                     use_emo_text=True,
                     emo_text=f"{pace['prompt']}保持原始说话人的音色身份，单人干声，避免回音、重叠人声和夸张变声。",
                     use_random=False,
-                    duration_factor=float(pace["duration_factor"]),
+                    duration_factor=duration_factor,
                     max_text_tokens_per_segment=120,
                     temperature=STANDARD_REFERENCE_TEMPERATURE,
                     top_k=STANDARD_REFERENCE_TOP_K,
@@ -271,7 +275,7 @@ def execute_standard_reference_request(
                 "source_voice_id": source_voice_id,
                 "audition_text": audition_text,
                 "pace_preset": pace_preset,
-                "duration_factor": float(pace["duration_factor"]),
+                "duration_factor": duration_factor,
                 "rank": rank,
                 "metrics": metrics,
             })
@@ -302,7 +306,7 @@ def execute_standard_reference_request(
             "source_voice_id": source_voice_id,
             "audition_text": audition_text,
             "pace_preset": pace_preset,
-            "duration_factor": float(pace["duration_factor"]),
+            "duration_factor": duration_factor,
             "generated_at": generated_at,
             "candidates": candidates,
             **({"adopted_voice_id": previous["adopted_voice_id"]} if previous.get("adopted_voice_id") else {}),

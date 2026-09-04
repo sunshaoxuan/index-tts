@@ -38,6 +38,8 @@ const { Title, Text, Paragraph } = Typography;
 const PROJECT_ACTION_IDLE_COLLAPSE_MS = 10_000;
 const PROJECT_ACTION_DOCK_STORAGE_KEY = 'index-voice-project-action-dock-v1';
 type StudioJobKind = 'analyze' | 'storyboard' | 'voice' | 'render' | 'standardize';
+type StandardReferencePacePreset = '自然' | '舒缓' | '自定义';
+const STANDARD_REFERENCE_DURATION_DEFAULTS = { 自然: 1.05, 舒缓: 1.18 } as const;
 
 function operationCancelled(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -372,7 +374,8 @@ function Studio() {
   const [selectedStoryboardShotIds, setSelectedStoryboardShotIds] = useState<string[]>([]);
   const [referenceAudioUploading, setReferenceAudioUploading] = useState(false);
   const referenceAudioInputRef = useRef<HTMLInputElement>(null);
-  const [standardReferencePace, setStandardReferencePace] = useState<'自然' | '舒缓'>('舒缓');
+  const [standardReferencePace, setStandardReferencePace] = useState<StandardReferencePacePreset>('舒缓');
+  const [standardReferenceDurationFactor, setStandardReferenceDurationFactor] = useState(1.18);
   const [standardReferenceSaving, setStandardReferenceSaving] = useState<string>();
   const standardReferenceSavingRef = useRef(false);
   const standardizingRoleIdRef = useRef<string | undefined>(undefined);
@@ -860,6 +863,18 @@ function Studio() {
     setRoleDraft([...project.roles[index]]);
     setRoleAssetDraft(asset);
     setStandardReferencePace(asset.standard_reference?.pace_preset ?? '舒缓');
+    setStandardReferenceDurationFactor(asset.standard_reference?.duration_factor ?? STANDARD_REFERENCE_DURATION_DEFAULTS.舒缓);
+  };
+
+  const updateStandardReferencePace = (value: StandardReferencePacePreset) => {
+    setStandardReferencePace(value);
+    if (value !== '自定义') setStandardReferenceDurationFactor(STANDARD_REFERENCE_DURATION_DEFAULTS[value]);
+  };
+
+  const updateStandardReferenceDurationFactor = (value: number | null) => {
+    if (value === null || !Number.isFinite(value)) return;
+    setStandardReferenceDurationFactor(Math.max(0.8, Math.min(1.4, Math.round(value * 100) / 100)));
+    setStandardReferencePace('自定义');
   };
 
   const updateRoleDraft = (column: number, value: string) => setRoleDraft(current => current?.map((cell, index) => index === column ? value : ([1, 2, 3, 4, 6].includes(column) && index === 7 ? '是' : cell)) as RoleRow);
@@ -933,7 +948,7 @@ function Studio() {
         setRoleDraft([...saved.roles[savedIndex]]);
         setRoleAssetDraft(normalizeCharacterAsset(saved.roles[savedIndex], saved.character_assets?.[roleDraft[0]]));
       }
-      const started = await api.generateStandardReference(saved.project_id, roleDraft[0], standardReferencePace, roleAssetDraft.audition_text.trim());
+      const started = await api.generateStandardReference(saved.project_id, roleDraft[0], standardReferencePace, standardReferenceDurationFactor, roleAssetDraft.audition_text.trim());
       standardizingRoleIdRef.current = roleDraft[0];
       setJob({ id: started.jobId, kind: 'standardize', projectId: saved.project_id, phase: 'queued', fraction: 0, message: '标准参考样本任务已进入队列' });
       message.info('角色设置已经保存，正在以原始上传音源生成三版标准参考候选');
@@ -1881,7 +1896,11 @@ function Studio() {
               {roleAssetDraft.reference_audio && <div className="reference-audio-current"><div><Text strong>原始上传样本 · {roleAssetDraft.reference_audio.original_name}</Text><Text type="secondary">{roleAssetDraft.reference_audio.source_format.toUpperCase()} · {(roleAssetDraft.reference_audio.size_bytes / 1024 / 1024).toFixed(2)} MB · 永久保留为身份锚点</Text></div><VoicePreview voiceId={roleAssetDraft.reference_audio.voice_id} /></div>}
               {roleAssetDraft.reference_audio && <div className="standard-reference-panel">
                 <div className="standard-reference-heading"><div><Text strong>生成标准角色参考样本</Text><Text>始终使用上方原始上传样本生成三版候选。生成结果不会自动成为下一轮参考源。</Text></div><Tag color="blue">原始音源锁定</Tag></div>
-                <div className="standard-reference-controls"><label><Text strong>目标朗读节奏</Text><Select aria-label="标准样本目标朗读节奏" disabled={projectLocked} value={standardReferencePace} onChange={setStandardReferencePace} options={[{ value: '自然', label: '自然 · 1.05 时长系数' }, { value: '舒缓', label: '沉稳舒缓 · 1.18 时长系数' }]} /></label><Button type="primary" icon={<SoundOutlined />} disabled={projectLocked || roleAssetDraft.audition_text.trim().length < 10} onClick={generateStandardReference}>生成三版标准样本</Button></div>
+                <div className="standard-reference-controls">
+                  <label><Text strong>目标朗读节奏</Text><Select aria-label="标准样本目标朗读节奏" disabled={projectLocked} value={standardReferencePace} onChange={updateStandardReferencePace} options={[{ value: '自然', label: '自然' }, { value: '舒缓', label: '沉稳舒缓' }, { value: '自定义', label: '自定义' }]} /></label>
+                  <label className="standard-reference-duration-control"><Flex justify="space-between" align="center"><Text strong>声音时长系数</Text><Text>{standardReferenceDurationFactor.toFixed(2)}</Text></Flex><div><Slider aria-label="标准样本声音时长系数" disabled={projectLocked} min={0.8} max={1.4} step={0.01} value={standardReferenceDurationFactor} tooltip={{ formatter: value => Number(value).toFixed(2) }} onChange={updateStandardReferenceDurationFactor} /><InputNumber aria-label="标准样本声音时长系数数值" disabled={projectLocked} min={0.8} max={1.4} step={0.01} precision={2} value={standardReferenceDurationFactor} onChange={updateStandardReferenceDurationFactor} /></div><small>{standardReferenceDurationFactor < 1 ? '更紧凑' : standardReferenceDurationFactor === 1 ? '模型原始时长' : '更舒缓'}。界面建议范围 0.80 至 1.40。</small></label>
+                  <Button type="primary" icon={<SoundOutlined />} disabled={projectLocked || roleAssetDraft.audition_text.trim().length < 10} onClick={generateStandardReference}>生成三版标准样本</Button>
+                </div>
                 <Text>试听文本使用上方“生成策略与模型原生高级参数”中的角色专属试听文本。开始任务时会先保存当前角色设置。</Text>
                 {job?.kind === 'standardize' && jobRunning && standardizingRoleIdRef.current === roleDraft[0] && <Alert type="info" showIcon icon={<LoadingOutlined />} message={job.message} description={<div className="standard-reference-progress"><Progress percent={jobPercent} status="active" /><Button danger icon={<StopOutlined />} onClick={cancelActiveJob}>取消标准样本生成</Button></div>} />}
                 {roleAssetDraft.standard_reference && <div className="standard-reference-results">

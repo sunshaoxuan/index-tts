@@ -30,6 +30,10 @@ STANDARD_REFERENCE_PACES = {
         "duration_factor": 1.18,
         "prompt": "沉稳舒缓地朗读，韵母自然舒展，短语间停连清晰，保持从容均匀的语速。",
     },
+    "自定义": {
+        "duration_factor": 1.0,
+        "prompt": "按照指定时长自然平稳地朗读，吐字清晰，按语义停连，保持均匀语速。",
+    },
 }
 
 

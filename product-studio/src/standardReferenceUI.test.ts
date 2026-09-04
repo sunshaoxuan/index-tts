@@ -12,6 +12,11 @@ test('offers a standard reference workflow anchored to the original upload', () 
   assert.match(app, /api\.generateStandardReference/);
   assert.match(app, /生成三版标准样本/);
   assert.match(app, /结果不会自动成为下一轮参考源/);
+  assert.match(app, /声音时长系数/);
+  assert.match(app, /min=\{0\.8\} max=\{1\.4\} step=\{0\.01\}/);
+  assert.match(app, /setStandardReferencePace\('自定义'\)/);
+  assert.match(app, /standardReferenceDurationFactor/);
+  assert.match(app, /api\.generateStandardReference\([^\n]+standardReferenceDurationFactor/);
 });
 
 test('shows quality evidence only for a complete set of three full-gate candidates', () => {

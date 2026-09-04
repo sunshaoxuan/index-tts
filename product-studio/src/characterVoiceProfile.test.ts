@@ -75,8 +75,8 @@ test('normalizes standardized reference candidates without changing the original
     standard_reference: {
       source_voice_id: 'voice-upload-original',
       audition_text: '固定试听文本',
-      pace_preset: '舒缓',
-      duration_factor: 1.18,
+      pace_preset: '自定义',
+      duration_factor: 1.23,
       generated_at: '2026-09-04T00:00:00Z',
       candidates: [{
         voice_id: 'voice-standard-a', rank: 1, duration_seconds: 4.2, audio_quality_passed: true,
@@ -88,6 +88,8 @@ test('normalizes standardized reference candidates without changing the original
   });
 
   assert.equal(asset.standard_reference?.source_voice_id, 'voice-upload-original');
+  assert.equal(asset.standard_reference?.pace_preset, '自定义');
+  assert.equal(asset.standard_reference?.duration_factor, 1.23);
   assert.equal(asset.standard_reference?.candidates[0].voice_id, 'voice-standard-a');
   assert.equal(asset.standard_reference?.candidates[0].selected, false);
 });

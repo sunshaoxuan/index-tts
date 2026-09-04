@@ -143,8 +143,8 @@ export const api = {
     headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Audio-Filename': encodeURIComponent(file.name) },
     body: file,
   })),
-  generateStandardReference: (id: string, roleId: string, pacePreset: '自然' | '舒缓', auditionText: string) => request<{ jobId: string; roleId: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference`, {
-    method: 'POST', body: JSON.stringify({ pacePreset, auditionText }),
+  generateStandardReference: (id: string, roleId: string, pacePreset: '自然' | '舒缓' | '自定义', durationFactor: number, auditionText: string) => request<{ jobId: string; roleId: string }>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference`, {
+    method: 'POST', body: JSON.stringify({ pacePreset, durationFactor, auditionText }),
   }),
   adoptStandardReference: (id: string, roleId: string, voiceId: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference/candidates/${encodeURIComponent(voiceId)}/adopt`, emptyPost),
   restoreOriginalReference: (id: string, roleId: string) => request<ProjectPayload>(`/api/projects/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}/standard-reference/restore`, emptyPost),

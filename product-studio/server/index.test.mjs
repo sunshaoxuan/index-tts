@@ -953,7 +953,7 @@ test('rejects content that only claims to be an MP3 reference audio file', async
   await app.close();
 });
 
-test('queues standard reference generation from the saved original upload', async () => {
+test('queues a custom standard reference duration factor from the saved original upload', async () => {
   const { root, project } = await fixture();
   const sourceVoiceId = 'voice-upload-source';
   const voiceDir = path.join(root, 'outputs', 'voice-library');
@@ -977,7 +977,11 @@ test('queues standard reference generation from the saved original upload', asyn
     return child;
   } });
 
-  const response = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference', payload: { pacePreset: '舒缓', auditionText: '这是用于生成标准角色参考样本的固定试听文本。' } });
+  const rejected = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference', payload: { pacePreset: '自定义', durationFactor: 2.01, auditionText: '这是用于生成标准角色参考样本的固定试听文本。' } });
+  assert.equal(rejected.statusCode, 400);
+  assert.match(rejected.json().error, /0\.50 至 2\.00/);
+
+  const response = await app.inject({ method: 'POST', url: '/api/projects/demo/roles/narrator/standard-reference', payload: { pacePreset: '自定义', durationFactor: 1.23, auditionText: '这是用于生成标准角色参考样本的固定试听文本。' } });
 
   assert.equal(response.statusCode, 202);
   assert.equal(response.json().kind, 'standardize');
@@ -985,7 +989,7 @@ test('queues standard reference generation from the saved original upload', asyn
   assert.equal(response.json().modelKey, 'indextts:index-tts-2.5');
   assert.ok(launch.args.some(value => value.endsWith('product_render_worker.py')));
   const input = JSON.parse(await readFile(path.join(root, 'runtime-output', 'product-jobs', response.json().jobId, 'input.json'), 'utf8'));
-  assert.deepEqual(input.standard_reference, { role_id: 'narrator', pace_preset: '舒缓', audition_text: '这是用于生成标准角色参考样本的固定试听文本。', language: 'ZH' });
+  assert.deepEqual(input.standard_reference, { role_id: 'narrator', pace_preset: '自定义', duration_factor: 1.23, audition_text: '这是用于生成标准角色参考样本的固定试听文本。', language: 'ZH' });
   const active = (await app.inject('/api/active-job')).json();
   assert.equal(active.kind, 'standardize');
   assert.equal(active.roleId, 'narrator');
