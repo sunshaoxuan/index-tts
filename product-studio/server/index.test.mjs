@@ -1892,6 +1892,29 @@ test('aligns inserted draft audio without clearing the following delivered fragm
   ]);
 });
 
+test('shows the newest candidate set when repeated regeneration keeps the adopted fragment', () => {
+  const draft = [
+    {
+      order: 1, sourceText: '原文', synthesisText: '原文', audio: '/adopted.wav',
+      selectedCandidateId: 'old-candidate', candidates: [{ candidateId: 'old-candidate' }],
+    },
+    {
+      order: 1, sourceText: '原文', synthesisText: '原文', audio: '/pending.wav',
+      selectedCandidateId: '', candidates: [{ candidateId: 'new-candidate' }],
+    },
+  ];
+  const projectSegments = [
+    [1, '第 1 章', 'narrator', '旁白', 'ZH', '原文', '原文'],
+  ];
+
+  const aligned = reconcileFragmentsToProject([], draft, projectSegments);
+
+  assert.equal(aligned.length, 1);
+  assert.equal(aligned[0].audio, '/pending.wav');
+  assert.equal(aligned[0].selectedCandidateId, '');
+  assert.equal(aligned[0].candidates[0].candidateId, 'new-candidate');
+});
+
 test('cancels an active worker, unlocks the project, and terminates dependent work', async () => {
   const { root, project } = await fixture();
   const children = [];

@@ -642,7 +642,7 @@ export function reconcileFragmentsToProject(manifestFragments, draftFragments, p
       if (leftDraft !== rightDraft) return rightDraft - leftDraft;
       const distance = Math.abs(Number(left.fragment.order) - order) - Math.abs(Number(right.fragment.order) - order);
       if (distance) return distance;
-      return left.index - right.index;
+      return right.index - left.index;
     });
     const selected = matches[0];
     if (!selected) continue;
