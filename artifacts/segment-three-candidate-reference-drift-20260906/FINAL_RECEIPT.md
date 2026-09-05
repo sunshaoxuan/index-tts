@@ -10,4 +10,4 @@
 
 ## 运行与交付
 
-当前容器为 `indextts25-product-studio:1.1.87-7c0ac04`，状态 healthy，RestartCount 为 0，OCI revision 为 `7c0ac0479010cf8a0c82fd3ddd630328c8e35997`。最终证据提交后，以 `HEAD`、`fork/master` 和远端 `refs/heads/master` 三方等值作为回执生效条件。
+当前容器为 `indextts25-product-studio:1.1.87-7c0ac04`，状态 healthy，RestartCount 为 0，OCI revision 为 `7c0ac0479010cf8a0c82fd3ddd630328c8e35997`。功能代码和验收证据均已提交到 `master`，`HEAD`、`fork/master` 和远端 `refs/heads/master` 三方等值核验通过。
