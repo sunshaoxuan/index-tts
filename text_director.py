@@ -103,7 +103,7 @@ EMOTION_DIRECTION_PRESETS = {
 }
 PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
-SPEAKER_SIMILARITY_THRESHOLD = 0.72
+SPEAKER_SIMILARITY_THRESHOLD = 0.82
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
@@ -3888,7 +3888,7 @@ def render_directed_audio(
                             emo_vector=None,
                             use_emo_text=True,
                             emo_text=emotion_prompt,
-                            use_random=advanced_generation,
+                            use_random=False,
                             duration_factor=duration_factor,
                             max_text_tokens_per_segment=120,
                             verbose=False,
@@ -3924,9 +3924,9 @@ def render_directed_audio(
                         ]
                         if len(accepted_paths) >= requested_candidates:
                             break
-                    valid_candidates = [item for item in generated_paths if item[1]["audio_quality_passed"]] if advanced_generation else generated_paths
+                    valid_candidates = [item for item in generated_paths if item[1]["quality_passed"]] if advanced_generation else generated_paths
                     if len(valid_candidates) < requested_candidates:
-                        raise DirectorError(f"第 {segment['order']} 条分句仅生成 {len(valid_candidates)} 个通过基础音频质量验收的候选，需要 {requested_candidates} 个。")
+                        raise DirectorError(f"第 {segment['order']} 条分句仅生成 {len(valid_candidates)} 个通过音质、参考音色和重音验收的候选，需要 {requested_candidates} 个。原片断保持不变，请重新生成。")
                     selected_candidates = sorted(valid_candidates, key=lambda item: float(item[1]["score"]), reverse=True)[:requested_candidates]
                     candidate_store = Path(project_process_dir) / "segment-candidates" / cache_key if project_process_dir else None
                     if candidate_store:

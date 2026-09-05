@@ -1009,8 +1009,65 @@ def test_advanced_stress_generation_keeps_drawing_until_three_proxy_verified_can
     assert all(item["speaker_verified"] for item in candidates)
     assert all(item["speaker_validation_method"] == "campplus_cosine_v1" for item in candidates)
     assert all(item["director_verified"] is False for item in candidates)
-    assert all(call["use_random"] is True for call in model.calls)
+    assert all(call["use_random"] is False for call in model.calls)
     assert 'exact text "他"' in model.calls[0]["emo_text"]
+
+
+def test_advanced_generation_rejects_identity_drift_and_keeps_one_reference_voice(tmp_path, monkeypatch):
+    demo_dir = tmp_path / "voices"
+    reference_path = demo_dir / "voice_05.wav"
+    _write_wav(reference_path, 100)
+    similarities = iter([0.91, 0.77, 0.74, 0.88, 0.86])
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def infer(self, **kwargs):
+            self.calls.append(kwargs)
+            _write_wav(Path(kwargs["output_path"]), 2205)
+            return kwargs["output_path"]
+
+        def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+            assert reference_audio_path == str(reference_path)
+            return next(similarities)
+
+    monkeypatch.setattr("text_director.analyze_segment_candidate", lambda *_: {
+        "quality_passed": True,
+        "score": 20.0,
+        "stress_db": 0.0,
+        "stress_verified": False,
+        "alignment_method": "text_proportional_proxy_v1",
+        "duration_seconds": 0.1,
+        "rms": 0.1,
+        "peak": 0.2,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.0,
+        "target_rms": 0.1,
+        "context_rms": 0.1,
+    })
+    model = FakeModel()
+    _, _, manifest, _ = render_directed_audio(
+        document={"title": "参考音色身份门禁", "content_type": "novel"},
+        role_table=[_role_row()],
+        segment_table=[[1, "正文", "narrator", "旁白", "ZH", "保持同一音色。", "保持同一音色。", "中性叙述", "平静", 0.7, "自然", 0, "auto", "", "", 1, "none", "advanced"]],
+        uploaded_files=None,
+        model=model,
+        model_lock=threading.Lock(),
+        output_root=tmp_path / "outputs",
+        project_process_dir=tmp_path / "process",
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        advanced_segment_orders=[1],
+    )
+
+    candidates = json.loads(Path(manifest).read_text(encoding="utf-8"))["segments"][0]["candidate_results"]
+    assert len(model.calls) == 5
+    assert all(call["spk_audio_prompt"] == str(reference_path) for call in model.calls)
+    assert all(call["use_random"] is False for call in model.calls)
+    assert [candidate["speaker_similarity"] for candidate in candidates] == [0.91, 0.88, 0.86]
+    assert all(candidate["speaker_verified"] and candidate["quality_passed"] for candidate in candidates)
+    assert all(candidate["speaker_similarity_threshold"] == 0.82 for candidate in candidates)
 
 
 def test_advanced_regeneration_preserves_current_fragment_until_verified_candidate_is_selected(tmp_path):
