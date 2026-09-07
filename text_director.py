@@ -104,6 +104,7 @@ EMOTION_DIRECTION_PRESETS = {
 PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
 SPEAKER_SIMILARITY_THRESHOLD = 0.82
+ADVANCED_SEGMENT_MAX_ATTEMPTS = 30
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
@@ -3879,6 +3880,8 @@ def render_directed_audio(
                 cache_path = cache_dir / f"{cache_key}.wav" if cache_dir else None
                 cache_hit = bool(cache_path and cache_path.is_file())
                 candidate_results: list[dict[str, Any]] = []
+                candidate_attempt_count = 0
+                candidate_failure_counts: dict[str, int] = {}
                 if cache_hit and segment["order"] not in forced_orders:
                     shutil.copy2(cache_path, output_path)
                     result = str(output_path)
@@ -3887,59 +3890,131 @@ def render_directed_audio(
                     if cache_only:
                         raise DirectorError(f"第 {segment['order']} 条分句缺少可串接的已生成片断，请先单独生成该分句。")
                     requested_candidates = 3 if advanced_generation else 1
-                    max_attempts = 9 if advanced_generation else 1
+                    max_attempts = ADVANCED_SEGMENT_MAX_ATTEMPTS if advanced_generation else 1
                     generated_paths: list[tuple[Path, dict[str, Any]]] = []
+                    attempt_records: list[dict[str, Any]] = []
+
+                    def record_candidate_failure(reason: str) -> None:
+                        candidate_failure_counts[reason] = candidate_failure_counts.get(reason, 0) + 1
+
+                    def write_candidate_audit() -> None:
+                        if not advanced_generation or not project_process_dir:
+                            return
+                        audit_dir = Path(project_process_dir) / "segment-attempt-audits"
+                        audit_dir.mkdir(parents=True, exist_ok=True)
+                        audit_path = audit_dir / f"{cache_key}.json"
+                        audit_payload = {
+                            "version": 1,
+                            "segment_order": int(segment["order"]),
+                            "cache_key": cache_key,
+                            "requested_candidates": requested_candidates,
+                            "max_attempts": max_attempts,
+                            "attempt_count": len(attempt_records),
+                            "accepted_count": sum(1 for item in attempt_records if item.get("accepted")),
+                            "failure_counts": candidate_failure_counts,
+                            "attempts": attempt_records,
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        }
+                        temporary_audit = audit_path.with_suffix(".json.tmp")
+                        temporary_audit.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                        temporary_audit.replace(audit_path)
+
                     for candidate_attempt in range(max_attempts):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise DirectorCancelled("音频生成已取消。")
                         candidate_path = output_path if max_attempts == 1 else output_path.with_name(f"{output_path.stem}-candidate-{candidate_attempt + 1}.wav")
-                        result = model.infer(
-                            spk_audio_prompt=str(catalog[role["voice_id"]]),
-                            text=effective_text,
-                            lang=segment["language"],
-                            output_path=str(candidate_path),
-                            emo_audio_prompt=None,
-                            emo_alpha=float(segment["intensity"]),
-                            emo_vector=None,
-                            use_emo_text=True,
-                            emo_text=emotion_prompt,
-                            use_random=False,
-                            duration_factor=duration_factor,
-                            max_text_tokens_per_segment=120,
-                            verbose=False,
-                        )
-                        if not result or not candidate_path.is_file():
-                            continue
-                        metrics = analyze_segment_candidate(
-                            candidate_path,
-                            effective_text,
-                            str(segment.get("stress_word") or ""),
-                            int(segment.get("stress_occurrence") or 1),
-                        )
-                        metrics["audio_quality_passed"] = bool(metrics["quality_passed"])
-                        similarity_method = getattr(model, "speaker_similarity", None)
-                        similarity = float(similarity_method(str(catalog[role["voice_id"]]), str(candidate_path))) if callable(similarity_method) else None
-                        metrics["speaker_similarity"] = round(similarity, 6) if similarity is not None else None
-                        metrics["speaker_similarity_threshold"] = SPEAKER_SIMILARITY_THRESHOLD
-                        metrics["speaker_verified"] = bool(similarity is not None and similarity >= SPEAKER_SIMILARITY_THRESHOLD)
-                        metrics["speaker_validation_method"] = "campplus_cosine_v1" if similarity is not None else "unavailable"
-                        metrics["director_verified"] = False
-                        metrics["director_validation_method"] = "human_listening_required"
-                        stress_required = bool(segment.get("stress_word"))
-                        metrics["quality_passed"] = bool(
-                            metrics["audio_quality_passed"]
-                            and metrics["speaker_verified"]
-                            and (not stress_required or metrics["stress_verified"])
-                        )
-                        metrics["score"] = round(float(metrics["score"]) + (similarity * 100.0 if similarity is not None else -100.0), 4)
-                        generated_paths.append((candidate_path, metrics))
+                        try:
+                            result = model.infer(
+                                spk_audio_prompt=str(catalog[role["voice_id"]]),
+                                text=effective_text,
+                                lang=segment["language"],
+                                output_path=str(candidate_path),
+                                emo_audio_prompt=None,
+                                emo_alpha=float(segment["intensity"]),
+                                emo_vector=None,
+                                use_emo_text=True,
+                                emo_text=emotion_prompt,
+                                use_random=False,
+                                duration_factor=duration_factor,
+                                max_text_tokens_per_segment=120,
+                                verbose=False,
+                            )
+                            if not result or not candidate_path.is_file():
+                                record_candidate_failure("generation_missing")
+                                attempt_records.append({"attempt": candidate_attempt + 1, "accepted": False, "failure_reasons": ["generation_missing"]})
+                            else:
+                                metrics = analyze_segment_candidate(
+                                    candidate_path,
+                                    effective_text,
+                                    str(segment.get("stress_word") or ""),
+                                    int(segment.get("stress_occurrence") or 1),
+                                )
+                                metrics["audio_quality_passed"] = bool(metrics["quality_passed"])
+                                similarity_method = getattr(model, "speaker_similarity", None)
+                                similarity = float(similarity_method(str(catalog[role["voice_id"]]), str(candidate_path))) if callable(similarity_method) else None
+                                metrics["speaker_similarity"] = round(similarity, 6) if similarity is not None else None
+                                metrics["speaker_similarity_threshold"] = SPEAKER_SIMILARITY_THRESHOLD
+                                metrics["speaker_verified"] = bool(similarity is not None and similarity >= SPEAKER_SIMILARITY_THRESHOLD)
+                                metrics["speaker_validation_method"] = "campplus_cosine_v1" if similarity is not None else "unavailable"
+                                metrics["director_verified"] = False
+                                metrics["director_validation_method"] = "human_listening_required"
+                                stress_required = bool(segment.get("stress_word"))
+                                metrics["quality_passed"] = bool(
+                                    metrics["audio_quality_passed"]
+                                    and metrics["speaker_verified"]
+                                    and (not stress_required or metrics["stress_verified"])
+                                )
+                                metrics["score"] = round(float(metrics["score"]) + (similarity * 100.0 if similarity is not None else -100.0), 4)
+                                generated_paths.append((candidate_path, metrics))
+                                failure_reasons = []
+                                if not metrics["audio_quality_passed"]:
+                                    failure_reasons.append("audio_quality")
+                                if not metrics["speaker_verified"]:
+                                    failure_reasons.append("speaker_identity")
+                                if stress_required and not metrics["stress_verified"]:
+                                    failure_reasons.append("stress_proxy")
+                                for reason in failure_reasons:
+                                    record_candidate_failure(reason)
+                                attempt_records.append({
+                                    "attempt": candidate_attempt + 1,
+                                    "accepted": bool(metrics["quality_passed"]),
+                                    "failure_reasons": failure_reasons,
+                                    "audio_quality_passed": bool(metrics["audio_quality_passed"]),
+                                    "speaker_verified": bool(metrics["speaker_verified"]),
+                                    "speaker_similarity": metrics["speaker_similarity"],
+                                    "stress_required": stress_required,
+                                    "stress_verified": bool(metrics["stress_verified"]),
+                                })
+                        except DirectorCancelled:
+                            raise
+                        except Exception as exc:
+                            record_candidate_failure("candidate_exception")
+                            attempt_records.append({
+                                "attempt": candidate_attempt + 1,
+                                "accepted": False,
+                                "failure_reasons": ["candidate_exception"],
+                                "error": f"{type(exc).__name__}: {exc}",
+                            })
                         accepted_paths = [
                             item for item in generated_paths
                             if item[1]["quality_passed"]
                         ]
+                        _notify(
+                            progress,
+                            ((index - 1) + min(0.95, (candidate_attempt + 1) / max_attempts)) / len(selected_segments),
+                            f"分句 {segment['order']} 高级候选第 {candidate_attempt + 1}/{max_attempts} 次，已通过 {len(accepted_paths)}/{requested_candidates}",
+                        )
                         if len(accepted_paths) >= requested_candidates:
                             break
+                    candidate_attempt_count = len(attempt_records)
+                    write_candidate_audit()
                     valid_candidates = [item for item in generated_paths if item[1]["quality_passed"]] if advanced_generation else generated_paths
                     if len(valid_candidates) < requested_candidates:
-                        raise DirectorError(f"第 {segment['order']} 条分句仅生成 {len(valid_candidates)} 个通过音质、参考音色和重音验收的候选，需要 {requested_candidates} 个。原片断保持不变，请重新生成。")
+                        failure_summary = "、".join(f"{reason} {count} 次" for reason, count in sorted(candidate_failure_counts.items())) or "没有形成可验收音频"
+                        raise DirectorError(
+                            f"第 {segment['order']} 条分句已尝试 {candidate_attempt_count} 次，仅有 {len(valid_candidates)}/{requested_candidates} 个候选通过全部验收。"
+                            f"失败统计：{failure_summary}。原片断保持不变，请调整导演参数或参考音色后重试。"
+                        )
                     selected_candidates = sorted(valid_candidates, key=lambda item: float(item[1]["score"]), reverse=True)[:requested_candidates]
                     candidate_store = Path(project_process_dir) / "segment-candidates" / cache_key if project_process_dir else None
                     if candidate_store:
@@ -3995,6 +4070,8 @@ def render_directed_audio(
                         "stress_level": segment.get("stress_level") or "none",
                         "generation_mode": "advanced" if advanced_generation else "standard",
                         "candidate_results": candidate_results,
+                        "candidate_attempt_count": candidate_attempt_count,
+                        "candidate_failure_counts": candidate_failure_counts,
                         "selected_candidate_id": next((item["candidate_id"] for item in candidate_results if item["selected"]), ""),
                         "cache_key": cache_key,
                         "cache_reused": cache_hit and segment["order"] not in forced_orders,

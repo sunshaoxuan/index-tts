@@ -1103,6 +1103,121 @@ def test_advanced_generation_rejects_identity_drift_and_keeps_one_reference_voic
     assert all(candidate["speaker_similarity_threshold"] == 0.82 for candidate in candidates)
 
 
+def test_advanced_generation_records_candidate_exceptions_and_refills_to_three(tmp_path, monkeypatch):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def infer(self, **kwargs):
+            self.calls += 1
+            if self.calls <= 2:
+                raise ValueError(f"invalid candidate {self.calls}")
+            _write_wav(Path(kwargs["output_path"]), 2205)
+            return kwargs["output_path"]
+
+        def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+            return 0.9
+
+    monkeypatch.setattr("text_director.analyze_segment_candidate", lambda *_: {
+        "quality_passed": True,
+        "score": 20.0,
+        "stress_db": 0.0,
+        "stress_verified": False,
+        "alignment_method": "text_proportional_proxy_v1",
+        "duration_seconds": 0.1,
+        "rms": 0.1,
+        "peak": 0.2,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.0,
+        "target_rms": 0.1,
+        "context_rms": 0.1,
+    })
+    progress_messages = []
+    process_dir = tmp_path / "process"
+    model = FakeModel()
+
+    render_directed_audio(
+        document={"title": "异常补生成", "content_type": "novel"},
+        role_table=[_role_row()],
+        segment_table=[[1, "正文", "narrator", "旁白", "ZH", "持续补生成。", "持续补生成。", "中性叙述", "平静", 0.7, "自然", 0, "auto", "", "", 1, "none", "advanced"]],
+        uploaded_files=None,
+        model=model,
+        model_lock=threading.Lock(),
+        output_root=tmp_path / "outputs",
+        project_process_dir=process_dir,
+        demo_dir=demo_dir,
+        demo_voices={"voice_05.wav": "旁白"},
+        advanced_segment_orders=[1],
+        progress=lambda fraction, description: progress_messages.append((fraction, description)),
+    )
+
+    audits = list((process_dir / "segment-attempt-audits").glob("*.json"))
+    audit = json.loads(audits[0].read_text(encoding="utf-8"))
+    assert model.calls == 5
+    assert audit["attempt_count"] == 5
+    assert audit["accepted_count"] == 3
+    assert audit["failure_counts"] == {"candidate_exception": 2}
+    assert "第 5/30 次，已通过 3/3" in progress_messages[-2][1]
+
+
+def test_advanced_generation_uses_thirty_attempt_budget_and_reports_gate_counts(tmp_path, monkeypatch):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def infer(self, **kwargs):
+            self.calls += 1
+            _write_wav(Path(kwargs["output_path"]), 2205)
+            return kwargs["output_path"]
+
+        def speaker_similarity(self, reference_audio_path, candidate_audio_path):
+            return 0.9 if self.calls <= 2 else 0.5
+
+    monkeypatch.setattr("text_director.analyze_segment_candidate", lambda *_: {
+        "quality_passed": True,
+        "score": 20.0,
+        "stress_db": 0.0,
+        "stress_verified": False,
+        "alignment_method": "text_proportional_proxy_v1",
+        "duration_seconds": 0.1,
+        "rms": 0.1,
+        "peak": 0.2,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.0,
+        "target_rms": 0.1,
+        "context_rms": 0.1,
+    })
+    process_dir = tmp_path / "process"
+    model = FakeModel()
+
+    with pytest.raises(DirectorError, match=r"已尝试 30 次，仅有 2/3.*speaker_identity 28 次"):
+        render_directed_audio(
+            document={"title": "预算耗尽", "content_type": "novel"},
+            role_table=[_role_row()],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "预算耗尽。", "预算耗尽。", "中性叙述", "平静", 0.7, "自然", 0, "auto", "", "", 1, "none", "advanced"]],
+            uploaded_files=None,
+            model=model,
+            model_lock=threading.Lock(),
+            output_root=tmp_path / "outputs",
+            project_process_dir=process_dir,
+            demo_dir=demo_dir,
+            demo_voices={"voice_05.wav": "旁白"},
+            advanced_segment_orders=[1],
+        )
+
+    audit = json.loads(next((process_dir / "segment-attempt-audits").glob("*.json")).read_text(encoding="utf-8"))
+    assert model.calls == 30
+    assert audit["attempt_count"] == 30
+    assert audit["accepted_count"] == 2
+    assert audit["failure_counts"] == {"speaker_identity": 28}
+
+
 def test_advanced_regeneration_preserves_current_fragment_until_verified_candidate_is_selected(tmp_path):
     demo_dir = tmp_path / "voices"
     _write_wav(demo_dir / "voice_05.wav", 100)

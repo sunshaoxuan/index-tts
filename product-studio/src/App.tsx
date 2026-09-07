@@ -28,7 +28,7 @@ import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
 import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentPaceInBulk } from './segmentState';
 import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
-import { beginSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
+import { beginSegmentRegeneration, runSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, segmentRowEditorLocked, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
 import { SEGMENT_TABLE_MIN_BODY_HEIGHT, segmentTableBodyHeight } from './segmentTableHeight';
 import { completeStandardReferenceCandidates, passingStandardReferenceCandidates } from './standardReferenceCandidates';
 import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
@@ -323,6 +323,7 @@ function Studio() {
   const [projects, setProjects] = useState<Array<{ label: string; value: string; roleCount: number }>>([]);
   const [projectId, setProjectId] = useState<string>();
   const [project, setProject] = useState<ProjectPayload>();
+  const projectRef = useRef<ProjectPayload | undefined>(undefined);
   const [projectSwitch, setProjectSwitch] = useState<ProjectSwitchState>({ phase: 'idle' });
   const projectSwitchRef = useRef<ProjectSwitchState>({ phase: 'idle' });
   const projectSwitchSequenceRef = useRef(0);
@@ -397,6 +398,7 @@ function Studio() {
   const [showMissingSegmentsOnly, setShowMissingSegmentsOnly] = useState(false);
   const [segmentRegeneration, setSegmentRegeneration] = useState<SegmentRegenerationState>({ phase: 'idle' });
   const segmentRegenerationOrderRef = useRef<number | undefined>(undefined);
+  const segmentRegenerationJobRef = useRef<{ jobId: string; order: number } | undefined>(undefined);
   const segmentCandidateSelectionRef = useRef<string | undefined>(undefined);
   const [segmentCandidateSelection, setSegmentCandidateSelection] = useState<{ order: number; candidateId: string }>();
   const [splitEditor, setSplitEditor] = useState<{ order: number; offset: number }>();
@@ -405,6 +407,8 @@ function Studio() {
   const keyframeGenerationActive = allKeyframesGenerating || Boolean(keyframeGeneratingSceneId);
   const projectLocked = jobRunning || keyframeGenerationActive || profileGenerating || portraitGenerating || referenceAudioUploading || Boolean(standardReferenceSaving);
   const jobPercent = Math.round((job?.fraction ?? 0) * 100);
+
+  useEffect(() => { projectRef.current = project; }, [project]);
 
   useEffect(() => {
     if (!keyframeGenerationActive) return undefined;
@@ -570,14 +574,19 @@ function Studio() {
       try {
         const status = await api.job(job.id);
         if (cancelled) return;
+        const singleSegmentJob = segmentRegenerationJobRef.current?.jobId === job.id;
         setJob(current => current?.id === job.id ? { ...current, ...status } : current);
         if (['complete', 'error', 'cancelled'].includes(status.phase)) {
           stopPolling();
           if (status.phase === 'complete') {
             const [updated, latest, health] = await Promise.all([api.project(job.projectId), api.latestRender(job.projectId), api.health()]);
             if (!cancelled) {
-              setProject(updated); setRender(latest); setRuntimeHealth(health); setDirty(false); message.success(status.message);
-              setSelectedSegmentOrders([]); setSplitEditor(undefined);
+              if (singleSegmentJob) {
+                setProject(current => current?.project_id === updated.project_id ? current : updated);
+              } else {
+                setProject(updated); setDirty(false); setSelectedSegmentOrders([]); setSplitEditor(undefined);
+              }
+              setRender(latest); setRuntimeHealth(health); message.success(status.message);
               if (job.kind === 'standardize' && standardizingRoleIdRef.current) {
                 const roleId = standardizingRoleIdRef.current;
                 const index = updated.roles.findIndex(row => row[0] === roleId);
@@ -591,11 +600,19 @@ function Studio() {
             }
           } else if (status.phase === 'cancelled') message.info(status.message);
           else message.error(status.message);
+          if (singleSegmentJob) {
+            segmentRegenerationJobRef.current = undefined;
+            setSegmentRegeneration({ phase: 'idle' });
+          }
         }
       } catch (error) {
         if (!cancelled) {
           stopPolling();
           setJob(current => current?.id === job.id ? { ...current, phase: 'error', fraction: 1, message: (error as Error).message } : current);
+          if (segmentRegenerationJobRef.current?.jobId === job.id) {
+            segmentRegenerationJobRef.current = undefined;
+            setSegmentRegeneration({ phase: 'idle' });
+          }
           message.error((error as Error).message);
         }
       }
@@ -727,13 +744,15 @@ function Studio() {
   }, []);
 
   const setSegment = (order: number, column: number, value: string | number) => {
-    if (jobRunning) return;
+    if (segmentRowEditorLocked(jobRunning, segmentRegeneration, order)) return;
     setDirty(true);
     setProject((current) => {
       if (!current) return current;
       const segments = updateSegmentByOrder(current.segments, current.roles, order, column, value);
       if (segments === current.segments) return current;
-      return { ...current, segments };
+      const updated = { ...current, segments };
+      projectRef.current = updated;
+      return updated;
     });
   };
 
@@ -752,7 +771,7 @@ function Studio() {
   };
 
   const setEmotionDirection = (order: number, value: string) => {
-    if (jobRunning || !presets) return;
+    if (segmentRowEditorLocked(jobRunning, segmentRegeneration, order) || !presets) return;
     const selected = presets.emotionDirections.find(item => item.value === value);
     if (!selected) return;
     setDirty(true);
@@ -765,7 +784,9 @@ function Studio() {
         if (!['auto', 'custom'].includes(value)) updated[9] = selected.defaultWeight;
         return updated;
       });
-      return { ...current, segments };
+      const updated = { ...current, segments };
+      projectRef.current = updated;
+      return updated;
     });
   };
 
@@ -1330,8 +1351,22 @@ function Studio() {
 
   const save = async (): Promise<boolean> => {
     if (!project || projectLocked) return false;
+    const requestedProject = project;
+    projectRef.current = requestedProject;
     setSaving(true);
-    try { setProject(await api.save(project)); setDirty(false); message.success('全部修改已保存到工程文件'); return true; }
+    try {
+      const savedProject = await api.save(requestedProject);
+      if (projectRef.current !== requestedProject) {
+        setDirty(true);
+        message.info('生成前的工程快照已保存，保存期间产生的新修改继续保留为未保存状态');
+      } else {
+        projectRef.current = savedProject;
+        setProject(savedProject);
+        setDirty(false);
+        message.success('全部修改已保存到工程文件');
+      }
+      return true;
+    }
     catch (error) { message.error((error as Error).message); return false; }
     finally { setSaving(false); }
   };
@@ -1355,9 +1390,14 @@ function Studio() {
       const cancelled = await api.cancelJob(current.id);
       setJob(value => value?.id === current.id ? { ...value, phase: 'cancelled', message: cancelled.message } : value);
       const [updated, latest, health] = await Promise.all([api.project(current.projectId), api.latestRender(current.projectId), api.health()]);
-      setProject(updated);
+      const singleSegmentJob = segmentRegenerationJobRef.current?.jobId === current.id;
+      setProject(value => singleSegmentJob && value?.project_id === updated.project_id ? value : updated);
       setRender(latest);
       setRuntimeHealth(health);
+      if (singleSegmentJob) {
+        segmentRegenerationJobRef.current = undefined;
+        setSegmentRegeneration({ phase: 'idle' });
+      }
       message.info(cancelled.runtimeTerminated ? '任务已取消，对应后台推理进程已经停止' : cancelled.message);
     } catch (error) {
       setJob(value => value?.id === current.id ? { ...value, phase: 'error', message: `取消失败：${(error as Error).message}` } : value);
@@ -1386,12 +1426,14 @@ function Studio() {
       }
       const advanced = project.segments.find(row => row[0] === order)?.[17] === 'advanced';
       const started = await api.regenerateSegment(requestProjectId, order, advanced);
+      segmentRegenerationJobRef.current = { jobId: started.jobId, order };
+      setSegmentRegeneration(runSegmentRegeneration(order));
       setJob({ id: started.jobId, kind: 'render', projectId: requestProjectId, phase: 'queued', fraction: 0, message: advanced ? `分句 ${order} 已进入三版候选生成与音色门禁队列，当前片断会保留到人工采用` : `分句 ${order} 已进入重新生成队列，纠音表与当前合成文字将一并应用` });
     } catch (error) {
+      setSegmentRegeneration({ phase: 'idle' });
       message.error(`分句 ${order} 提交失败：${(error as Error).message}。按钮已经恢复，可以重试`);
     } finally {
       segmentRegenerationOrderRef.current = undefined;
-      setSegmentRegeneration({ phase: 'idle' });
     }
   };
 
@@ -1508,6 +1550,7 @@ function Studio() {
       { title: '分句内容与导演参数', key: 'director-row', render: (_v, row) => {
         const fragment = findMatchingFragment(render.fragments, row);
         const regenerationPending = segmentRegeneration.phase !== 'idle' && segmentRegeneration.order === row[0];
+        const rowEditorLocked = segmentRowEditorLocked(jobRunning, segmentRegeneration, row[0]);
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
         const stressWord = String(row[14] || '').trim();
         const explicitEmotionText = [
@@ -1522,27 +1565,27 @@ function Studio() {
             <div className="segment-field segment-order-field"><span>序号</span><strong>{row[0]}</strong></div>
             <div className="segment-field"><span>章节</span><strong>{row[1]}</strong></div>
             <div className="segment-field segment-source-field"><span>原文</span><Text>{row[5]}</Text></div>
-            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={jobRunning} rows={1} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
+            <label className="segment-field segment-synthesis-field"><span>合成文本</span><Input.TextArea disabled={rowEditorLocked} rows={1} value={row[6]} onChange={(event) => setSegment(row[0], 6, event.target.value)} /></label>
           </div>
           <div className="segment-row-voice">
             <div className={`segment-action-cell${fragment ? ' has-fragment' : ' no-fragment'}`} title={fragment ? `${fragment.effectiveText}。${fragmentNote}` : undefined}>
               {fragment && <FragmentAudioPlayer compact variant="primary" src={fragmentAudioSelectionUrl(fragment.audio, fragment.candidates?.find(candidate => candidate.selected)?.candidateId)} />}
               <Button size="small" className={`segment-regeneration-button${regenerationPending ? ' is-pending' : ''}`} disabled={jobRunning || segmentRegenerationActive} loading={regenerationPending} aria-busy={regenerationPending} onClick={() => void regenerateSegment(row[0])}>{regenerationPending ? segmentRegenerationButtonLabel(segmentRegeneration) : fragment ? '重新生成' : '生成'}</Button>
-              {regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>按钮已锁定，服务器响应前无法再次提交</span></div></div>}
+              {regenerationPending && <div className="segment-regeneration-status" role="status" aria-live="assertive"><LoadingOutlined spin /><div><strong>{segmentRegenerationStatusMessage(segmentRegeneration)}</strong><span>当前行已锁定，其他分句仍可编辑</span></div></div>}
             </div>
-            <label className="segment-field segment-role-field"><span>角色</span><Select disabled={jobRunning} showSearch value={row[2]} options={roleOptions} onChange={(value) => setSegment(row[0], 2, value)} /></label>
-            <label className="segment-field segment-language-field"><span>语言</span><Select disabled={jobRunning} value={row[4]} options={presets.languages.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 4, value)} /></label>
-            <label className="segment-field segment-attitude-field"><span>态度</span><Select disabled={jobRunning} value={row[7]} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 7, value)} /></label>
-            <label className="segment-field segment-emotion-field"><span>情绪</span><Select disabled={jobRunning} value={row[8]} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 8, value)} /></label>
-            <label className="segment-field segment-pace-field"><span>句内节奏</span><Select disabled={jobRunning} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
-            <label className="segment-field segment-pause-field"><span>停顿 ms</span><InputNumber disabled={jobRunning} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
-            <label className="segment-field segment-direction-field"><span>情绪演绎</span><Select disabled={jobRunning} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
-            <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={jobRunning} maxLength={1000} autoSize={{ minRows: 1, maxRows: 2 }} value={row[13] || ''} placeholder="例如：笑意压在句尾" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
-            <label className="segment-field segment-weight-field"><span>情绪权重</span><InputNumber disabled={jobRunning} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
-            <label className="segment-field segment-stress-word-field"><span>重音文字</span><Input disabled={jobRunning} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
-            <label className="segment-field segment-stress-index-field"><span>第几次出现</span><InputNumber disabled={jobRunning || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
-            <label className="segment-field segment-stress-level-field"><span>重音强度</span><Select disabled={jobRunning || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
-            <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={jobRunning} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加音色门禁' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
+            <label className="segment-field segment-role-field"><span>角色</span><Select disabled={rowEditorLocked} showSearch value={row[2]} options={roleOptions} onChange={(value) => setSegment(row[0], 2, value)} /></label>
+            <label className="segment-field segment-language-field"><span>语言</span><Select disabled={rowEditorLocked} value={row[4]} options={presets.languages.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 4, value)} /></label>
+            <label className="segment-field segment-attitude-field"><span>态度</span><Select disabled={rowEditorLocked} value={row[7]} options={presets.attitudes.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 7, value)} /></label>
+            <label className="segment-field segment-emotion-field"><span>情绪</span><Select disabled={rowEditorLocked} value={row[8]} options={presets.emotions.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 8, value)} /></label>
+            <label className="segment-field segment-pace-field"><span>句内节奏</span><Select disabled={rowEditorLocked} value={row[10]} options={presets.paces.map(value => ({ value, label: value }))} onChange={(value) => setSegment(row[0], 10, value)} /></label>
+            <label className="segment-field segment-pause-field"><span>停顿 ms</span><InputNumber disabled={rowEditorLocked} min={0} max={3000} step={50} value={row[11]} onChange={(value) => setSegment(row[0], 11, value ?? 0)} /></label>
+            <label className="segment-field segment-direction-field"><span>情绪演绎</span><Select disabled={rowEditorLocked} value={row[12] || 'auto'} options={presets.emotionDirections.map(item => ({ value: item.value, label: item.label }))} onChange={(value) => setEmotionDirection(row[0], value)} /></label>
+            <label className="segment-field segment-emotion-detail-field"><span>情绪细化描述</span><Input.TextArea disabled={rowEditorLocked} maxLength={1000} autoSize={{ minRows: 1, maxRows: 2 }} value={row[13] || ''} placeholder="例如：笑意压在句尾" onChange={(event) => setSegment(row[0], 13, event.target.value)} /></label>
+            <label className="segment-field segment-weight-field"><span>情绪权重</span><InputNumber disabled={rowEditorLocked} min={0} max={1} step={0.05} value={row[9]} onChange={(value) => setSegment(row[0], 9, value ?? 0.6)} /></label>
+            <label className="segment-field segment-stress-word-field"><span>重音文字</span><Input disabled={rowEditorLocked} maxLength={80} value={row[14] || ''} placeholder="例如：他" onChange={(event) => setSegment(row[0], 14, event.target.value)} /></label>
+            <label className="segment-field segment-stress-index-field"><span>第几次出现</span><InputNumber disabled={rowEditorLocked || !stressWord} min={1} max={20} value={row[15] || 1} onChange={(value) => setSegment(row[0], 15, value ?? 1)} /></label>
+            <label className="segment-field segment-stress-level-field"><span>重音强度</span><Select disabled={rowEditorLocked || !stressWord} value={stressWord ? row[16] || 'strong' : 'none'} options={[{ value: 'none', label: '无' }, { value: 'medium', label: '中等' }, { value: 'strong', label: '强' }]} onChange={(value) => setSegment(row[0], 16, value)} /></label>
+            <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={rowEditorLocked} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加音色门禁' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
             <div className="segment-emotion-preview" title={explicitEmotionText}><span>本次有效导演参数</span><Text ellipsis>{explicitEmotionText}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
           </div>
           {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => { const selecting = segmentCandidateSelection?.order === row[0] && segmentCandidateSelection.candidateId === candidate.candidateId; const similarity = candidate.speakerSimilarity == null ? '未测量' : candidate.speakerSimilarity.toFixed(3); return <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.speakerVerified ? 'green' : 'red'}>{candidate.speakerVerified ? '音色门禁通过' : '音色待复核'}</Tag>{candidate.manualOverride && <Tag color="blue">人工试听采用</Tag>}</header><FragmentAudioPlayer variant="candidate" src={candidate.audio} /><Text>基础音频：{candidate.audioQualityPassed ? '通过' : '待复核'} · 音色相似度：{similarity}，门禁 {candidate.speakerSimilarityThreshold.toFixed(3)}</Text>{stressWord && <Text>重音能量差：{candidate.stressDb.toFixed(2)} dB · {candidate.stressVerified ? '代理达标' : '代理待复核'}</Text>}<small>系统门禁：{candidate.qualityPassed ? '通过' : '待复核'} · 最终效果以人工试听为准 · 评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} loading={selecting} disabled={jobRunning || candidate.selected || Boolean(segmentCandidateSelection)} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? candidate.manualOverride ? '当前人工采用' : '当前采用' : selecting ? '采用中' : candidate.qualityPassed ? '采用此版' : '人工采用此版'}</Button></div>; })}</div></div>}
@@ -1687,7 +1730,7 @@ function Studio() {
       {job && jobRunning && <aside className="job-progress-float" role="status" aria-live="polite" aria-label={`${jobLabels[job.kind]}进度`}>
         <div className="job-progress-head"><div><span>Processing / 处理中</span><strong>{jobLabels[job.kind]}</strong></div><b>{jobPercent}%</b></div>
         <Progress percent={Math.max(2, jobPercent)} showInfo={false} status="active" strokeLinecap="butt" />
-        <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> 当前工程版本已锁定，任务完成后恢复编辑</Text></div>
+        <div className="job-progress-detail"><Text>{job.message}</Text><Text><LockOutlined /> {segmentRegenerationActive ? '当前只锁定目标分句行，其他分句仍可编辑' : '当前工程版本已锁定，任务完成后恢复编辑'}</Text></div>
         <div className="job-progress-observation">
           <Text>{jobRuntimeResponsive ? '后台进程响应中' : '正在等待后台进程确认'} · 已运行 {formatJobDuration(job.telemetry?.startedAt, job.telemetry?.observedAt)}</Text>
           {modelTelemetry && <Text>{modelTelemetry.engine === 'render' ? 'IndexTTS' : 'VoiceDesign'} 模型 {modelTelemetry.modelLoaded ? '已加载' : '加载中'} · 内存 {formatJobBytes(modelTelemetry.rssBytes)} · 累计读取 {formatJobBytes(modelTelemetry.readBytes)} / 权重 {formatJobBytes(modelTelemetry.modelBytes)}</Text>}

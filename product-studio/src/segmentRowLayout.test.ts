@@ -32,7 +32,7 @@ test('segment rows keep basic copy above a compact voice control grid', () => {
 });
 
 test('source and synthesis copy share one visual height on desktop rows', () => {
-  assert.match(app, /className="segment-field segment-synthesis-field"[\s\S]*<Input\.TextArea disabled=\{jobRunning\} rows=\{1\}/);
+  assert.match(app, /className="segment-field segment-synthesis-field"[\s\S]*<Input\.TextArea disabled=\{rowEditorLocked\} rows=\{1\}/);
   assert.doesNotMatch(app, /segment-synthesis-field"[\s\S]{0,180}autoSize=\{\{ minRows: 1, maxRows: 2 \}\}/);
   assert.match(styles, /\.segment-source-field, \.segment-synthesis-field \{[^}]*align-self: stretch;[^}]*grid-template-rows: auto minmax\(0, 1fr\);/s);
   assert.match(styles, /\.segment-synthesis-field textarea \{[^}]*height: 100% !important;[^}]*overflow-y: auto !important;[^}]*resize: none;/s);
