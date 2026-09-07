@@ -489,6 +489,12 @@ def normalize_source_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def normalize_ai_synthesis_terminal_exclamation(text: str, language: str = "ZH") -> str:
+    synthesis_text = str(text or "")
+    period = "." if str(language or "").strip().upper() in {"EN", "ES", "AR"} else "。"
+    return re.sub(r"[!！]+(?=\s*[”’\"'）】》」』]*\s*$)", period, synthesis_text)
+
+
 def coverage_key(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
@@ -2006,6 +2012,7 @@ LINKED_ARTICLE_EVIDENCE
 3. 所有 segments 的 speaker_id 固定为 anchor，speaker_name 固定为主播，speaker_kind 固定为 anchor。引号、转述、采访引用和人物原话仍由同一个主播播报。
 4. 识别自然段与适合朗读的句子边界。每条 source_text 必须从本次原文按顺序逐字复制，全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
 5. text 是 source_text 的可朗读清洗稿，只修正排版噪声，不改变事实、观点和原意。
+   source_text 以叹号结束时，text 的对应句末改用句号；句内叹号保留。情绪强度由导演字段表达，句后停顿由 pause_after_ms 表达。
 6. 每条 segment 独立判断态度、八类基础情绪、情绪强度、句内节奏和句后停顿。新闻保持清楚、客观和克制；评论保留原文观点强度与论述节奏。
 7. 每条 segment 标注 ZH、EN、JA、ES、AR 之一。混合语言按主要朗读语言拆句。
 8. scenes 按主题、地点、时间、论述阶段或画面焦点变化划分，并填写完整分镜字段。participants 只填写 anchor，画面中被报道或评论的人物写进 storyboard_note，不建立声音角色。
@@ -2079,6 +2086,7 @@ SOURCE
 3. 拆句前先由你结合完整句、相邻句、人物表和说话动作，判断每组引号的语义功能属于人物对白、心理活动、句内引用或普通叙述，再决定 segment 边界和角色轨道。不要输出中间推理。旁白和说话归属文字也必须保留并单独成句。例如“李明说：”属于旁白，不能只保留引号内台词。名称、招牌文字、术语和标题等句内短引用属于所在叙述句的句法成分，不得仅因引号独立拆句。例如“店门挂着‘烤乌贼饼’的招牌”应保持为同一条旁白 segment。
 4. 每条 source_text 必须从本次原文中按顺序逐字复制。全部 source_text 拼接后必须与本次原文完全一致，允许的差异只有空白字符。
 5. text 是对应 source_text 的可朗读清洗稿。去除只用于排版的外层引号，不得遗漏可朗读信息。
+   source_text 以叹号结束时，text 的对应句末改用句号；句内叹号保留。情绪强度由导演字段表达，句后停顿由 pause_after_ms 表达。
 6. 态度只能使用：{'、'.join(ATTITUDE_PRESETS)}。句内节奏只能使用：{'、'.join(PACE_PRESETS)}。另标注八类情绪、0 到 1 情绪强度和 0 到 3000 毫秒句后停顿。态度表示人物对听者或事件的姿态，情绪表示人物内在状态，句内节奏表示本句推进方式，三个字段分别判断。
 7. 每条 segment 标注 ZH、EN、JA、ES、AR 之一。混合语言按主要朗读语言拆句。
 8. 人物必须使用稳定 ID。优先复用已有角色及 aliases；旁白固定使用 narrator。描述短语含副词或动作词时不得作为人物名称。新增人物需要 evidence 和 confidence。证据不足时把最多三个候选放入 speaker_candidates，并降低 speaker_confidence。
@@ -2424,6 +2432,11 @@ SOURCE
             segments = self._assign_adjacent_quoted_speakers(segments, characters)
             segments = self._merge_inline_quoted_narration(segments)
         segments = self._merge_punctuation_only_segments(segments)
+        for segment in segments:
+            segment["text"] = normalize_ai_synthesis_terminal_exclamation(
+                segment["text"],
+                segment["language"],
+            )
         character_ids = {character["id"] for character in characters}
         for segment in segments:
             if segment["speaker_id"] not in character_ids:

@@ -34,6 +34,7 @@ from text_director import (
     migrate_segment_rows,
     migrate_pace_preset,
     migrate_rhythm_preset,
+    normalize_ai_synthesis_terminal_exclamation,
     render_directed_audio,
     is_speech_attribution,
     infer_voice_gender,
@@ -911,6 +912,38 @@ def _valid_response():
             _segment(3, "“你终于来了。”", "你终于来了。", "local-li", "李明", "character"),
         ],
     }
+
+
+def test_ai_synthesis_normalizes_only_terminal_exclamation():
+    assert normalize_ai_synthesis_terminal_exclamation("没问题！我继续！", "ZH") == "没问题！我继续。"
+    assert normalize_ai_synthesis_terminal_exclamation("Really! Go!", "EN") == "Really! Go."
+    assert normalize_ai_synthesis_terminal_exclamation("مرحبا!", "AR") == "مرحبا."
+    assert normalize_ai_synthesis_terminal_exclamation("保留问号？", "ZH") == "保留问号？"
+
+
+def test_validated_ai_segments_preserve_source_exclamation_and_normalize_synthesis_text():
+    source = "没问题！我继续！"
+    response = {
+        "content_type": "story",
+        "title": "标点处理",
+        "characters": [_character()],
+        "scenes": [],
+        "segments": [_segment(1, source, source)],
+    }
+
+    result = OllamaTextDirector(DirectorConfig())._validate_chunk(response, source)
+
+    assert result["segments"][0]["source_text"] == source
+    assert result["segments"][0]["text"] == "没问题！我继续。"
+
+
+def test_manual_synthesis_text_keeps_terminal_exclamation_for_explicit_user_control():
+    role_rows = [["narrator", "旁白", "narrator", "成熟", "中性清晰", "voice_05.wav", "沉稳舒缓", "是"]]
+    segment_rows = [[1, "正文", "narrator", "旁白", "ZH", "当然！", "当然！", "中性叙述", "平静", 0.5, "自然", 700]]
+
+    _, segments = tables_to_script(role_rows, segment_rows)
+
+    assert segments[0]["text"] == "当然！"
 
 
 def _write_wav(path: Path, frame_count=2205, sample_value=1):
