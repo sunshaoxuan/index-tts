@@ -26,7 +26,7 @@ import { deleteProjectRole, stopRoleDeleteCardActivation } from './roleDeletion'
 import { replaceProjectRole } from './roleReplacement';
 import { normalizeActiveRoleId, roleRowClassName } from './roleFocusState';
 import { dominantWheelAxis, shouldPreventScrollChain } from './scrollContainment';
-import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentPaceInBulk } from './segmentState';
+import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentsInBulk, type SegmentBulkField } from './segmentState';
 import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
 import { beginSegmentRegeneration, runSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, segmentRowEditorLocked, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
 import { SEGMENT_TABLE_MIN_BODY_HEIGHT, segmentTableBodyHeight } from './segmentTableHeight';
@@ -392,7 +392,8 @@ function Studio() {
   const [availableDirectorModels, setAvailableDirectorModels] = useState<string[]>([]);
   const [activeRoleId, setActiveRoleId] = useState<string>();
   const [selectedSegmentOrders, setSelectedSegmentOrders] = useState<number[]>([]);
-  const [bulkSegmentPace, setBulkSegmentPace] = useState('舒缓');
+  const [bulkSegmentField, setBulkSegmentField] = useState<SegmentBulkField>('pace');
+  const [bulkSegmentValue, setBulkSegmentValue] = useState<string | number>('舒缓');
   const [segmentPage, setSegmentPage] = useState(1);
   const [segmentPageSize, setSegmentPageSize] = useState(20);
   const [showMissingSegmentsOnly, setShowMissingSegmentsOnly] = useState(false);
@@ -756,17 +757,24 @@ function Studio() {
     });
   };
 
-  const applyBulkSegmentPace = (scope: 'selected' | 'all') => {
+  const applyBulkSegmentEdit = (scope: 'selected' | 'all') => {
     if (!project || jobRunning) return;
     try {
-      const result = updateSegmentPaceInBulk(project.segments, bulkSegmentPace, scope === 'selected' ? selectedSegmentOrders : undefined);
+      const direction = bulkSegmentField === 'emotionDirection' ? presets?.emotionDirections.find(item => item.value === bulkSegmentValue) : undefined;
+      const result = updateSegmentsInBulk(project.segments, project.roles, {
+        field: bulkSegmentField,
+        value: bulkSegmentValue,
+        emotionDirectionDefaultWeight: direction?.defaultWeight,
+      }, scope === 'selected' ? selectedSegmentOrders : undefined);
       if (!result.changedCount) {
-        message.info(`${result.targetedCount} 条目标分句已经是“${bulkSegmentPace}”`);
+        message.info(`${result.targetedCount} 条目标分句已经采用当前设置`);
         return;
       }
-      setProject({ ...project, segments: result.segments });
+      const updated = { ...project, segments: result.segments };
+      projectRef.current = updated;
+      setProject(updated);
       setDirty(true);
-      message.success(`已将 ${result.changedCount} 条分句改为“${bulkSegmentPace}”，请保存当前工程`);
+      message.success(`已修改 ${result.changedCount} 条分句，请保存当前工程`);
     } catch (error) { message.error((error as Error).message); }
   };
 
@@ -1472,6 +1480,31 @@ function Studio() {
   };
 
   const roleOptions = project?.roles.map((row) => ({ label: `${row[1]}  ${row[0]}`, value: row[0] })) ?? [];
+  const bulkFieldOptions: Array<{ value: SegmentBulkField; label: string }> = [
+    { value: 'role', label: '角色' }, { value: 'language', label: '语言' }, { value: 'attitude', label: '态度' },
+    { value: 'emotion', label: '情绪' }, { value: 'pace', label: '句内节奏' }, { value: 'pause', label: '停顿' },
+    { value: 'emotionDirection', label: '情绪演绎' }, { value: 'emotionWeight', label: '情绪权重' }, { value: 'generationMode', label: '生成方式' },
+  ];
+  const bulkFieldLabel = bulkFieldOptions.find(option => option.value === bulkSegmentField)?.label ?? '导演参数';
+  const bulkSelectOptions = bulkSegmentField === 'role' ? roleOptions
+    : bulkSegmentField === 'language' ? presets?.languages.map(value => ({ value, label: value }))
+    : bulkSegmentField === 'attitude' ? presets?.attitudes.map(value => ({ value, label: value }))
+    : bulkSegmentField === 'emotion' ? presets?.emotions.map(value => ({ value, label: value }))
+    : bulkSegmentField === 'pace' ? presets?.paces.map(value => ({ value, label: value === '舒缓' ? '舒缓 · 放慢朗读' : value }))
+    : bulkSegmentField === 'emotionDirection' ? presets?.emotionDirections.map(item => ({ value: item.value, label: item.label }))
+    : bulkSegmentField === 'generationMode' ? [{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加音色门禁' }]
+    : [];
+  const defaultBulkValue = (field: SegmentBulkField): string | number => {
+    if (field === 'role') return project?.roles[0]?.[0] ?? '';
+    if (field === 'language') return presets?.languages[0] ?? '';
+    if (field === 'attitude') return presets?.attitudes[0] ?? '';
+    if (field === 'emotion') return presets?.emotions[0] ?? '';
+    if (field === 'pace') return presets?.paces.includes('舒缓') ? '舒缓' : presets?.paces[0] ?? '';
+    if (field === 'pause') return 300;
+    if (field === 'emotionDirection') return presets?.emotionDirections[0]?.value ?? 'auto';
+    if (field === 'emotionWeight') return 0.6;
+    return 'standard';
+  };
   const pendingVoiceSelections = (project?.roles ?? []).flatMap(row => {
     if (String(row[5] || '').trim()) return [];
     const asset = normalizeCharacterAsset(row, project?.character_assets?.[row[0]]);
@@ -1865,7 +1898,7 @@ function Studio() {
               })}
             </div>
           </Card> },
-          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-bulk-pace"><div><Text strong>批量设置句内节奏</Text><Text>“舒缓”会对目标分句应用慢速提示和 1.18 时长系数。</Text></div><Select aria-label="批量分句节奏" disabled={jobRunning} value={bulkSegmentPace} options={presets.paces.map(value => ({ value, label: value === '舒缓' ? '舒缓 · 放慢朗读' : value }))} onChange={setBulkSegmentPace} /><Button icon={<CheckOutlined />} disabled={jobRunning || !selectedSegmentOrders.length} onClick={() => applyBulkSegmentPace('selected')}>应用到已选 {selectedSegmentOrders.length ? `${selectedSegmentOrders.length} 条` : ''}</Button><Popconfirm disabled={jobRunning || !project.segments.length} title={`将全部 ${project.segments.length} 条分句改为“${bulkSegmentPace}”`} description="保存工程后，相关片断缓存和完整交付会按现有规则失效。" okText="应用到全部分句" cancelText="取消" onConfirm={() => applyBulkSegmentPace('all')}><Button type="primary" icon={<CheckOutlined />} disabled={jobRunning || !project.segments.length}>应用到全部 {project.segments.length} 条</Button></Popconfirm></div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : showMissingSegmentsOnly ? `当前显示 ${visibleSegments.length} 条待生成分句` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Popconfirm disabled={jobRunning || !selectedSegmentOrders.length} title={`删除所选 ${selectedSegmentOrders.length} 条分句`} description="所选内容会从语音生产范围移除，正文原稿继续保留。保存后，相关旧片断和完整交付会按现有规则失效。" okText="确认删除分句" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteSelectedSegments}><Button danger icon={<DeleteOutlined />} disabled={jobRunning || !selectedSegmentOrders.length}>删除所选</Button></Popconfirm><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button><Checkbox checked={showMissingSegmentsOnly} onChange={event => { setShowMissingSegmentsOnly(event.target.checked); setSelectedSegmentOrders([]); setSegmentPage(1); }}>只显示尚无片断</Checkbox><Tag color={missingFragmentCount ? 'orange' : 'green'}>待生成 {missingFragmentCount} 条</Tag></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={visibleSegments} locale={{ emptyText: showMissingSegmentsOnly ? '当前没有缺失片断' : '暂无分句' }} pagination={{ current: segmentPage, pageSize: segmentPageSize, pageSizeOptions: [...SEGMENT_PAGE_SIZE_OPTIONS], showSizeChanger: { showSearch: false }, showTotal: (total, range) => `第 ${range[0]} 至 ${range[1]} 条，共 ${total} 条`, onChange: (page, pageSize) => { setSegmentPageSize(pageSize); setSegmentPage(clampSegmentPage(page, visibleSegments.length, pageSize)); } }} scroll={{ y: 560 }} /></Card> },
+          { key: 'segments', label: `分句导演 ${project.segments.length}`, children: <Card title="分句、分轨与态度语气"><Alert type="info" showIcon message={`最近交付保存了 ${render.fragments?.length ?? 0} 个片断，其中 ${matchingFragmentCount} 个与当前原文和合成文字一致，已加载到对应分句。编辑后可只重新生成该分句；全篇纠音会在生成时应用。`} /><Alert className="segment-save-state" type={dirty ? 'warning' : 'success'} showIcon message={dirty ? '当前有未保存修改，顶部保存按钮已启用' : '当前分句修改已经保存到工程文件'} /><div className="director-memory-summary"><span>导演操作记忆</span><strong>{project.director_history?.length ?? 0} 次已保存操作</strong><Text>{(project.document?.director_memory_reapply as { applied?: boolean; restored_segments?: number })?.applied ? `最近一次 AI 分析恢复了 ${(project.document?.director_memory_reapply as { restored_segments?: number }).restored_segments ?? 0} 条历史分句` : '再次分析全文时会对齐新旧稿件，恢复可识别的断句、角色和导演参数'}</Text></div><div className="segment-bulk-director"><div className="segment-bulk-copy"><Text strong>批量修改导演参数</Text><Text>角色、语言和常用表演参数可批量应用；逐句文字、情绪细化与重音仍在行内设置。</Text></div><Select className="segment-bulk-field" aria-label="批量修改字段" disabled={jobRunning} value={bulkSegmentField} options={bulkFieldOptions} onChange={field => { setBulkSegmentField(field); setBulkSegmentValue(defaultBulkValue(field)); }} />{['pause', 'emotionWeight'].includes(bulkSegmentField) ? <InputNumber className="segment-bulk-value" aria-label={`批量${bulkFieldLabel}`} disabled={jobRunning} min={0} max={bulkSegmentField === 'pause' ? 3000 : 1} step={bulkSegmentField === 'pause' ? 50 : 0.05} addonAfter={bulkSegmentField === 'pause' ? 'ms' : undefined} value={Number(bulkSegmentValue)} onChange={value => setBulkSegmentValue(value ?? defaultBulkValue(bulkSegmentField))} /> : <Select className="segment-bulk-value" aria-label={`批量${bulkFieldLabel}`} disabled={jobRunning} showSearch={['role', 'attitude', 'emotion'].includes(bulkSegmentField)} value={bulkSegmentValue} options={bulkSelectOptions} onChange={setBulkSegmentValue} />}<Button icon={<CheckOutlined />} disabled={jobRunning || !selectedSegmentOrders.length} onClick={() => applyBulkSegmentEdit('selected')}>应用到已选 {selectedSegmentOrders.length ? `${selectedSegmentOrders.length} 条` : ''}</Button><Popconfirm disabled={jobRunning || !project.segments.length} title={`将“${bulkFieldLabel}”应用到全部 ${project.segments.length} 条分句`} description="保存工程后，相关片断缓存和完整交付会按现有规则失效。" okText="应用到全部分句" cancelText="取消" onConfirm={() => applyBulkSegmentEdit('all')}><Button type="primary" icon={<CheckOutlined />} disabled={jobRunning || !project.segments.length}>应用到全部 {project.segments.length} 条</Button></Popconfirm>{bulkSegmentField === 'pace' && bulkSegmentValue === '舒缓' && <Text className="segment-bulk-hint">“舒缓”会应用慢速提示和 1.18 时长系数。</Text>}</div><div className="segment-editor-toolbar"><Text>{selectedSegmentOrders.length ? `已选择 ${selectedSegmentOrders.length} 条` : showMissingSegmentsOnly ? `当前显示 ${visibleSegments.length} 条待生成分句` : '先勾选需要调整的分句'}</Text><Space wrap><Button disabled={jobRunning || selectedSegmentOrders.length < 2} onClick={mergeSelected}>合并所选</Button><Button disabled={jobRunning || selectedSegmentOrders.length !== 1} onClick={openSplitEditor}>拆分所选</Button><Popconfirm disabled={jobRunning || !selectedSegmentOrders.length} title={`删除所选 ${selectedSegmentOrders.length} 条分句`} description="所选内容会从语音生产范围移除，正文原稿继续保留。保存后，相关旧片断和完整交付会按现有规则失效。" okText="确认删除分句" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteSelectedSegments}><Button danger icon={<DeleteOutlined />} disabled={jobRunning || !selectedSegmentOrders.length}>删除所选</Button></Popconfirm><Button type="text" disabled={!selectedSegmentOrders.length} onClick={() => setSelectedSegmentOrders([])}>清除选择</Button><Checkbox checked={showMissingSegmentsOnly} onChange={event => { setShowMissingSegmentsOnly(event.target.checked); setSelectedSegmentOrders([]); setSegmentPage(1); }}>只显示尚无片断</Checkbox><Tag color={missingFragmentCount ? 'orange' : 'green'}>待生成 {missingFragmentCount} 条</Tag></Space></div><Table className="studio-table segment-table" rowKey={(row) => row[0]} rowSelection={{ selectedRowKeys: selectedSegmentOrders, preserveSelectedRowKeys: true, onChange: keys => setSelectedSegmentOrders(keys.map(Number)), getCheckboxProps: () => ({ disabled: jobRunning }) }} columns={segmentColumns} dataSource={visibleSegments} locale={{ emptyText: showMissingSegmentsOnly ? '当前没有缺失片断' : '暂无分句' }} pagination={{ current: segmentPage, pageSize: segmentPageSize, pageSizeOptions: [...SEGMENT_PAGE_SIZE_OPTIONS], showSizeChanger: { showSearch: false }, showTotal: (total, range) => `第 ${range[0]} 至 ${range[1]} 条，共 ${total} 条`, onChange: (page, pageSize) => { setSegmentPageSize(pageSize); setSegmentPage(clampSegmentPage(page, visibleSegments.length, pageSize)); } }} scroll={{ y: 560 }} /></Card> },
           { key: 'pronunciation', label: `全篇纠音 ${project.pronunciations.length}`, children: <Card title="全篇固定纠音表" extra={<Button disabled={jobRunning} icon={<PlusOutlined />} onClick={() => patchProject('pronunciations', [...project.pronunciations, { source: '', replacement: '', note: '', enabled: true }])}>新增纠音</Button>}><Alert type="info" showIcon message="较长组合优先，启用后的规则会应用到整篇作品，并在导演清单中保留原文和实际朗读文本。" /><Table className="studio-table" rowKey={(_row, index) => String(index)} columns={pronunciationColumns} dataSource={project.pronunciations} pagination={false} scroll={{ x: 1000 }} /></Card> },
           { key: 'delivery', label: '完整音频与交付', children: <div><Card title="最近一次交付" extra={<Space wrap><Button disabled={jobRunning || !project.segments.length} onClick={assembleExistingFragments}>串接全部已生成片断</Button>{render.available && render.renderId ? <Popconfirm disabled={jobRunning} title="删除这次完整交付" description="将删除本次完整音频、分轨包、章节、角色轨道和导演清单。工程、音色与其他交付记录会保留。" okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteLatestRender}><Button disabled={jobRunning} danger icon={<DeleteOutlined />}>删除本次交付</Button></Popconfirm> : undefined}</Space>}>{render.available ? <Space direction="vertical" size="large">{render.stale ? <Alert type="warning" showIcon message="该完整交付已过期" description={`工程在 ${render.staleAt ? new Date(render.staleAt).toLocaleString() : '生成后'} 发生了${render.staleReasons?.join('、') || '分句导演调整'}。文件继续保留，可试听或下载；是否删除由你决定。`} /> : <Alert type="info" showIcon message={`当前交付包含 ${render.fragments?.length ?? 0} 个可复用片断。串接时只读取与当前文字、纠音、音色和导演参数完全匹配的缓存。`} />}<StudioAudio src={render.audio!} captions={render.captions} /><Text type="secondary">交付记录 {render.renderId}{render.stale ? ' · 已过期' : ''}</Text><Space wrap><Button icon={<AudioOutlined />} href={render.audio} download>下载 WAV</Button><Button icon={<AudioOutlined />} href={render.mp3} download>下载 MP3</Button><Button href={render.package} download>下载分轨包</Button><Button href={render.manifest} download>下载导演清单</Button></Space><Text type="secondary">MP3 会在下载时由当前 WAV 实时编码为 160 kbps，不额外占用交付存储。</Text><Card size="small" title="成果物链接"><Space direction="vertical" size="middle"><ArtifactLink label="完整音频 WAV" href={render.audio!} /><ArtifactLink label="完整音频 MP3（实时编码）" href={render.mp3!} /><ArtifactLink label="分轨交付包 ZIP" href={render.package!} /><ArtifactLink label="导演清单 JSON" href={render.manifest!} /></Space></Card></Space> : <Empty description="该工程还没有交付文件。可先生成单个分句，片断齐全后再串接。" />}</Card></div> },
         ]} /></div>

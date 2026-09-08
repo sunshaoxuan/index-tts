@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { RoleRow, SegmentRow } from './types.ts';
-import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentPaceInBulk } from './segmentState.ts';
+import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, suggestSplitOffset, updateSegmentByOrder, updateSegmentPaceInBulk, updateSegmentsInBulk } from './segmentState.ts';
 
 const roles: RoleRow[] = [
   ['narrator', '旁白', 'narrator', '', '', '', '', '否'],
@@ -69,6 +69,63 @@ test('updates only selected segment paces across pages and rejects stale selecti
   assert.equal(result.segments[0], rows[0]);
   assert.throws(() => updateSegmentPaceInBulk(rows, '舒缓', []), /至少选择一条/);
   assert.throws(() => updateSegmentPaceInBulk(rows, '舒缓', [104]), /已变化/);
+});
+
+test('bulk updates each supported director field without changing untargeted rows', () => {
+  const rows = [segment(1), segment(2), segment(3)];
+  const cases = [
+    { field: 'language', value: 'JA', column: 4 },
+    { field: 'attitude', value: '严肃', column: 7 },
+    { field: 'emotion', value: '惊讶', column: 8 },
+    { field: 'pace', value: '紧凑', column: 10 },
+    { field: 'pause', value: 650, column: 11 },
+    { field: 'emotionWeight', value: 0.75, column: 9 },
+    { field: 'generationMode', value: 'advanced', column: 17 },
+  ] as const;
+
+  for (const item of cases) {
+    const result = updateSegmentsInBulk(rows, roles, { field: item.field, value: item.value }, [2]);
+    assert.equal(result.targetedCount, 1);
+    assert.equal(result.changedCount, 1);
+    assert.equal(result.segments[1][item.column], item.value);
+    assert.equal(result.segments[0], rows[0]);
+    assert.equal(result.segments[2], rows[2]);
+  }
+});
+
+test('bulk role updates synchronize names and emotion directions adopt preset weight', () => {
+  const rows = [segment(1), segment(2)];
+  const roleResult = updateSegmentsInBulk(rows, roles, { field: 'role', value: 'narrator' });
+  assert.deepEqual(roleResult.segments.map(row => [row[2], row[3]]), [['narrator', '旁白'], ['narrator', '旁白']]);
+
+  const directionResult = updateSegmentsInBulk(rows, roles, {
+    field: 'emotionDirection', value: 'surprised_exclaim', emotionDirectionDefaultWeight: 0.8,
+  }, [2]);
+  assert.equal(directionResult.segments[1][12], 'surprised_exclaim');
+  assert.equal(directionResult.segments[1][9], 0.8);
+  assert.equal(directionResult.segments[0], rows[0]);
+
+  const automaticResult = updateSegmentsInBulk(directionResult.segments, roles, { field: 'emotionDirection', value: 'auto' }, [2]);
+  assert.equal(automaticResult.segments[1][12], 'auto');
+  assert.equal(automaticResult.segments[1][9], 0.8);
+});
+
+test('bulk updates return the original collection when every target already matches', () => {
+  const rows = [segment(1), segment(2)];
+  const result = updateSegmentsInBulk(rows, roles, { field: 'pace', value: '自然' });
+  assert.equal(result.targetedCount, 2);
+  assert.equal(result.changedCount, 0);
+  assert.equal(result.segments, rows);
+});
+
+test('bulk updates reject empty, stale and out-of-range values', () => {
+  const rows = [segment(1), segment(2)];
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'pace', value: '舒缓' }, []), /至少选择一条/);
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'pace', value: '舒缓' }, [3]), /已变化/);
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'role', value: 'missing-role' }), /有效角色/);
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'pause', value: 3001 }), /0 至 3000/);
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'emotionWeight', value: -0.05 }), /0 至 1/);
+  assert.throws(() => updateSegmentsInBulk(rows, roles, { field: 'generationMode', value: 'invalid' }), /有效生成方式/);
 });
 
 test('deletes one or more selected segments and resequences the remaining rows', () => {

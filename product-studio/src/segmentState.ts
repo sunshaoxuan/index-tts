@@ -1,5 +1,13 @@
 import type { RoleRow, SegmentRow } from './types';
 
+export type SegmentBulkField = 'role' | 'language' | 'attitude' | 'emotion' | 'pace' | 'pause' | 'emotionDirection' | 'emotionWeight' | 'generationMode';
+
+export interface SegmentBulkEdit {
+  field: SegmentBulkField;
+  value: string | number;
+  emotionDirectionDefaultWeight?: number;
+}
+
 export function updateSegmentByOrder(
   segments: SegmentRow[],
   roles: RoleRow[],
@@ -27,7 +35,15 @@ export function updateSegmentPaceInBulk(
 ): { segments: SegmentRow[]; targetedCount: number; changedCount: number } {
   const normalizedPace = String(pace || '').trim();
   if (!normalizedPace) throw new Error('请选择要批量应用的分句节奏');
+  return updateSegmentsInBulk(segments, [], { field: 'pace', value: normalizedPace }, selectedOrders);
+}
 
+export function updateSegmentsInBulk(
+  segments: SegmentRow[],
+  roles: RoleRow[],
+  edit: SegmentBulkEdit,
+  selectedOrders?: number[],
+): { segments: SegmentRow[]; targetedCount: number; changedCount: number } {
   const selected = selectedOrders === undefined ? undefined : new Set(selectedOrders);
   if (selected && !selected.size) throw new Error('请至少选择一条分句');
   if (selected) {
@@ -35,15 +51,54 @@ export function updateSegmentPaceInBulk(
     if ([...selected].some(order => !existing.has(order))) throw new Error('所选分句已变化，请重新选择');
   }
 
+  const stringValue = typeof edit.value === 'string' ? edit.value.trim() : '';
+  const numericValue = typeof edit.value === 'number' ? edit.value : Number.NaN;
+  const columns: Record<Exclude<SegmentBulkField, 'role' | 'emotionDirection'>, number> = {
+    language: 4,
+    attitude: 7,
+    emotion: 8,
+    pace: 10,
+    pause: 11,
+    emotionWeight: 9,
+    generationMode: 17,
+  };
+  if (edit.field === 'role' && !roles.some(role => role[0] === stringValue)) throw new Error('请选择有效角色');
+  if (['language', 'attitude', 'emotion', 'pace', 'emotionDirection'].includes(edit.field) && !stringValue) {
+    throw new Error('请选择要批量应用的值');
+  }
+  if (edit.field === 'pause' && (!Number.isFinite(numericValue) || numericValue < 0 || numericValue > 3000)) {
+    throw new Error('停顿必须在 0 至 3000 毫秒之间');
+  }
+  if (edit.field === 'emotionWeight' && (!Number.isFinite(numericValue) || numericValue < 0 || numericValue > 1)) {
+    throw new Error('情绪权重必须在 0 至 1 之间');
+  }
+  if (edit.field === 'generationMode' && !['standard', 'advanced'].includes(stringValue)) {
+    throw new Error('请选择有效生成方式');
+  }
+  if (edit.field === 'emotionDirection' && !['auto', 'custom'].includes(stringValue)
+    && (!Number.isFinite(edit.emotionDirectionDefaultWeight) || Number(edit.emotionDirectionDefaultWeight) < 0 || Number(edit.emotionDirectionDefaultWeight) > 1)) {
+    throw new Error('所选情绪演绎缺少有效的默认权重');
+  }
+
   let targetedCount = 0;
   let changedCount = 0;
   const updated = segments.map(row => {
     if (selected && !selected.has(row[0])) return row;
     targetedCount += 1;
-    if (row[10] === normalizedPace) return row;
-    changedCount += 1;
     const next = [...row] as SegmentRow;
-    next[10] = normalizedPace;
+    if (edit.field === 'role') {
+      const role = roles.find(candidate => candidate[0] === stringValue)!;
+      next[2] = role[0];
+      next[3] = role[1];
+    } else if (edit.field === 'emotionDirection') {
+      next[12] = stringValue;
+      if (!['auto', 'custom'].includes(stringValue)) next[9] = Number(edit.emotionDirectionDefaultWeight);
+    } else {
+      const column = columns[edit.field];
+      (next as Array<string | number | undefined>)[column] = ['pause', 'emotionWeight'].includes(edit.field) ? numericValue : stringValue;
+    }
+    if (next.every((value, index) => value === row[index])) return row;
+    changedCount += 1;
     return next;
   });
   return { segments: changedCount ? updated : segments, targetedCount, changedCount };
