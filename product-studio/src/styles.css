@@ -526,6 +526,8 @@ body * { box-shadow: none !important; }
 .segment-emotion-preview .ant-typography { min-width: 0; margin: 0; font-size: 12px; }
 .segment-emotion-preview .ant-tag { flex: 0 0 auto; margin: 0; font-size: 10px; }
 .segment-row-candidates { min-width: 0; padding: 10px; border: 1px solid rgba(255, 237, 215, .18); border-radius: 8px; background: rgba(35, 17, 5, .42); }
+.segment-accent-routing { min-width: 0; }
+.segment-accent-routing .ant-alert-message { overflow-wrap: anywhere; }
 .segment-field { min-width: 0; display: grid; align-content: start; gap: 5px; }
 .segment-field > span:first-child { color: rgba(255, 237, 215, .82); font-size: 12px; font-weight: 650; line-height: 1.35; text-transform: uppercase; }
 .segment-field > strong { overflow-wrap: anywhere; color: var(--cream); font-size: 14px; font-weight: 550; line-height: 1.4; }
@@ -763,6 +765,8 @@ body * { box-shadow: none !important; }
 .editor-voice-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .editor-voice-controls > label { min-width: 0; display: grid; gap: 8px; }
 .voice-trait-panel, .voice-generation-panel, .voice-candidate-panel, .reference-audio-panel { display: grid; gap: 14px; padding: 16px; border: 1px dashed rgba(255, 237, 215, .34); border-radius: 10px; background: rgba(16, 9, 4, .2); }
+.voice-accent-control { padding: 14px 16px; border: 1px solid rgba(255, 178, 77, .64); border-radius: 8px; background: rgba(145, 61, 8, .18); }
+.voice-accent-control .ant-tag { margin: 0; }
 .voice-trait-panel > .ant-typography, .voice-candidate-panel > .ant-typography { color: var(--cream); font-size: 11px; line-height: 1.55; }
 .voice-trait-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
 .voice-trait-grid label { gap: 2px; }

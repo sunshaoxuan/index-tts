@@ -153,6 +153,8 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 
 分句情绪区在电脑宽度使用三列导演参数网格，情绪预览与生成方式始终跨越全部列并独占整行，使“高级三版加自主验收”保持完整可读。窄于 800 像素时其余参数切换为两列，生成方式继续跨越全部列。该规则只改变控件占位，不改变生成方式的数据值与接口契约。
 
+地域或口音保存在 `character_assets.<role_id>.voice_traits.accent`，由 Qwen3 TTS VoiceDesign 在创建角色稳定音色时执行。角色卡片把该字段放在声音设置首屏，角色列表与最终指令摘要同步显示。分句 `emotion_detail` 只进入 IndexTTS 的八维 QwenEmotion 分类链，不承担地域口音转换；前端检测到口音文字后打开对应角色卡片，Python 表格校验器执行同一门禁。两套 IndexTTS 推理入口统一把 QwenEmotion 的字符串数值转换为浮点数，无法识别的单项记为零，全部为零时回落到平静向量。标准单版与高级三版均把逐次异常写入 `process/segment-attempt-audits`，产品错误显示中文失败类别和首个原始异常。
+
 角色删除在前端以纯函数同步处理工程中的四组活动引用。角色表和 `character_assets` 移除目标 ID；分句表及 `document.segments` 的目标引用改为 narrator；`document.characters` 和 `director_memory` 移除目标角色；旁白禁止删除。历史导演操作和永久音色库保持原状。用户保存工程后，现有 PUT 校验、导演历史和成果失效链继续生效。
 
 设置窗口通过 `POST /api/settings/ai-media/test` 触发模型发现。Node 使用当前保存或请求中待保存的 Endpoint 与 API Key 请求兼容 `/v1/models`，去重并排序模型 ID 后回传浏览器。响应不包含密钥。前端把全部模型 ID 用作人物小传选择器，把包含 `image` 的 ID 优先用于主图像模型和互补图像模型选择器，并继续允许手工模型名，以兼容模型列表延迟或服务端自定义路由。分镜工作区只列出当前已保存的主模型和互补模型，确保批次请求不能绕过全局允许范围。

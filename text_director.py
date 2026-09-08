@@ -105,6 +105,10 @@ PACES = {"slow", "medium", "fast"}
 PACE_FACTORS = {"slow": 1.18, "medium": 1.05, "fast": 0.92}
 SPEAKER_SIMILARITY_THRESHOLD = 0.82
 ADVANCED_SEGMENT_MAX_ATTEMPTS = 30
+ACCENT_GUIDANCE_PATTERN = re.compile(
+    r"(?:口音|方言|accent|dialect|(?:成都|四川|重庆|东北|北京|上海|河南|山东|陕西|湖南|湖北|广东|广西|台湾|香港|粤语|闽南|关西|大阪|博多|美式|英式)(?:话|腔|音))",
+    re.IGNORECASE,
+)
 LANGUAGES = {"ZH", "EN", "JA", "ES", "AR"}
 ATTRIBUTION_PATTERN = re.compile(
     r"(?:说|说道|问|问道|答|回答|回应|喊|叫|道|补充|解释|宣布|表示|写道|叹道|低语|耳语|吼道|笑道)[^。！？!?]*[：:]\s*$"
@@ -3490,6 +3494,11 @@ def tables_to_script(role_table: Any, segment_table: Any) -> tuple[dict[str, dic
             raise DirectorError(f"分句表第 {row_number} 行选择自定义情绪演绎后必须填写细化描述。")
         if len(emotion_detail) > 1000:
             raise DirectorError(f"分句表第 {row_number} 行的情绪细化描述不能超过 1000 个字符。")
+        if ACCENT_GUIDANCE_PATTERN.search(emotion_detail):
+            raise DirectorError(
+                f"第 {order} 条分句把地域或口音要求写进了情绪细化描述。"
+                f"请打开角色“{roles[role_id]['name']}”的角色资产，在“地域或口音”中填写并重新生成角色音色。"
+            )
         if len(stress_word) > 80:
             raise DirectorError(f"分句表第 {row_number} 行的重音文字不能超过 80 个字符。")
         if stress_level not in {"none", "medium", "strong"}:
@@ -3831,6 +3840,7 @@ def render_directed_audio(
                 candidate_results: list[dict[str, Any]] = []
                 candidate_attempt_count = 0
                 candidate_failure_counts: dict[str, int] = {}
+                candidate_errors: list[str] = []
                 if cache_hit and segment["order"] not in forced_orders:
                     shutil.copy2(cache_path, output_path)
                     result = str(output_path)
@@ -3847,13 +3857,13 @@ def render_directed_audio(
                         candidate_failure_counts[reason] = candidate_failure_counts.get(reason, 0) + 1
 
                     def write_candidate_audit() -> None:
-                        if not advanced_generation or not project_process_dir:
+                        if not project_process_dir:
                             return
                         audit_dir = Path(project_process_dir) / "segment-attempt-audits"
                         audit_dir.mkdir(parents=True, exist_ok=True)
                         audit_path = audit_dir / f"{cache_key}.json"
                         audit_payload = {
-                            "version": 1,
+                            "version": 2,
                             "segment_order": int(segment["order"]),
                             "cache_key": cache_key,
                             "requested_candidates": requested_candidates,
@@ -3861,6 +3871,7 @@ def render_directed_audio(
                             "attempt_count": len(attempt_records),
                             "accepted_count": sum(1 for item in attempt_records if item.get("accepted")),
                             "failure_counts": candidate_failure_counts,
+                            "errors": candidate_errors,
                             "attempts": attempt_records,
                             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         }
@@ -3937,12 +3948,14 @@ def render_directed_audio(
                         except DirectorCancelled:
                             raise
                         except Exception as exc:
+                            candidate_error = f"{type(exc).__name__}: {exc}"
+                            candidate_errors.append(candidate_error)
                             record_candidate_failure("candidate_exception")
                             attempt_records.append({
                                 "attempt": candidate_attempt + 1,
                                 "accepted": False,
                                 "failure_reasons": ["candidate_exception"],
-                                "error": f"{type(exc).__name__}: {exc}",
+                                "error": candidate_error,
                             })
                         accepted_paths = [
                             item for item in generated_paths
@@ -3959,10 +3972,21 @@ def render_directed_audio(
                     write_candidate_audit()
                     valid_candidates = [item for item in generated_paths if item[1]["quality_passed"]] if advanced_generation else generated_paths
                     if len(valid_candidates) < requested_candidates:
-                        failure_summary = "、".join(f"{reason} {count} 次" for reason, count in sorted(candidate_failure_counts.items())) or "没有形成可验收音频"
+                        failure_labels = {
+                            "audio_quality": "基础音频质量未通过",
+                            "candidate_exception": "候选生成异常",
+                            "generation_missing": "模型未生成音频",
+                            "speaker_identity": "参考音色相似度未通过",
+                            "stress_proxy": "重音代理未通过",
+                        }
+                        failure_summary = "、".join(
+                            f"{failure_labels.get(reason, reason)} {count} 次"
+                            for reason, count in sorted(candidate_failure_counts.items())
+                        ) or "没有形成可验收音频"
+                        exception_summary = f"首个异常：{candidate_errors[0]}。" if candidate_errors else ""
                         raise DirectorError(
                             f"第 {segment['order']} 条分句已尝试 {candidate_attempt_count} 次，仅有 {len(valid_candidates)}/{requested_candidates} 个候选通过全部验收。"
-                            f"失败统计：{failure_summary}。原片断保持不变，请调整导演参数或参考音色后重试。"
+                            f"失败统计：{failure_summary}。{exception_summary}原片断保持不变，请调整导演参数或参考音色后重试。"
                         )
                     selected_candidates = sorted(valid_candidates, key=lambda item: float(item[1]["score"]), reverse=True)[:requested_candidates]
                     candidate_store = Path(project_process_dir) / "segment-candidates" / cache_key if project_process_dir else None

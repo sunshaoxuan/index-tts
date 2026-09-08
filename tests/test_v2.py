@@ -386,6 +386,44 @@ def test_qwen_emotion_convert_redirects_cross_key_labels(module_name, monkeypatc
     assert emotion_dict["calm"] == 1.0
 
 
+@pytest.mark.parametrize("module_name", ["indextts.infer_v2", "indextts.infer_v2_5"])
+def test_qwen_emotion_convert_accepts_numeric_strings_and_ignores_non_numeric_scores(module_name, monkeypatch):
+    module = _load_qwen_emotion_module(module_name, monkeypatch)
+
+    emo = module.QwenEmotion.__new__(module.QwenEmotion)
+    emo.cn_key_to_en = {
+        "高兴": "happy", "愤怒": "angry", "悲伤": "sad", "恐惧": "afraid",
+        "反感": "disgusted", "低落": "melancholic", "惊讶": "surprised", "自然": "calm",
+    }
+    emo.desired_vector_order = list(emo.cn_key_to_en)
+    emo.max_score = 1.2
+    emo.min_score = 0.0
+
+    emotion_dict = emo.convert({"高兴": "0.25", "自然": "成都口音"})
+
+    assert emotion_dict["happy"] == 0.25
+    assert emotion_dict["calm"] == 0.0
+
+
+@pytest.mark.parametrize("module_name", ["indextts.infer_v2", "indextts.infer_v2_5"])
+def test_qwen_emotion_convert_falls_back_to_calm_when_every_score_is_invalid(module_name, monkeypatch):
+    module = _load_qwen_emotion_module(module_name, monkeypatch)
+
+    emo = module.QwenEmotion.__new__(module.QwenEmotion)
+    emo.cn_key_to_en = {
+        "高兴": "happy", "愤怒": "angry", "悲伤": "sad", "恐惧": "afraid",
+        "反感": "disgusted", "低落": "melancholic", "惊讶": "surprised", "自然": "calm",
+    }
+    emo.desired_vector_order = list(emo.cn_key_to_en)
+    emo.max_score = 1.2
+    emo.min_score = 0.0
+
+    emotion_dict = emo.convert({"自然": {"说明": "成都口音"}})
+
+    assert emotion_dict["calm"] == 1.0
+    assert sum(emotion_dict.values()) == 1.0
+
+
 # -- Inference (GPU required) --------------------------------------------------
 
 INFER_TEXTS = [

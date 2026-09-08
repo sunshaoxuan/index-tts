@@ -1138,6 +1138,39 @@ def test_advanced_generation_records_candidate_exceptions_and_refills_to_three(t
     assert "第 5/30 次，已通过 3/3" in progress_messages[-2][1]
 
 
+def test_standard_generation_reports_and_audits_the_original_candidate_exception(tmp_path):
+    demo_dir = tmp_path / "voices"
+    _write_wav(demo_dir / "voice_05.wav", 100)
+    process_dir = tmp_path / "process"
+
+    class FailingModel:
+        def infer(self, **_kwargs):
+            raise TypeError("emotion score must be numeric")
+
+    with pytest.raises(
+        DirectorError,
+        match=r"候选生成异常 1 次.*首个异常：TypeError: emotion score must be numeric",
+    ):
+        render_directed_audio(
+            document={"title": "标准候选异常", "content_type": "novel"},
+            role_table=[_role_row()],
+            segment_table=[[1, "正文", "narrator", "旁白", "ZH", "测试。", "测试。", "中性叙述", "平静", 0.7, "自然", 0]],
+            uploaded_files=None,
+            model=FailingModel(),
+            model_lock=threading.Lock(),
+            output_root=tmp_path / "outputs",
+            project_process_dir=process_dir,
+            demo_dir=demo_dir,
+            demo_voices={"voice_05.wav": "旁白"},
+        )
+
+    audit = json.loads(next((process_dir / "segment-attempt-audits").glob("*.json")).read_text(encoding="utf-8"))
+    assert audit["version"] == 2
+    assert audit["attempt_count"] == 1
+    assert audit["failure_counts"] == {"candidate_exception": 1}
+    assert audit["errors"] == ["TypeError: emotion score must be numeric"]
+
+
 def test_advanced_generation_uses_thirty_attempt_budget_and_reports_gate_counts(tmp_path, monkeypatch):
     demo_dir = tmp_path / "voices"
     _write_wav(demo_dir / "voice_05.wav", 100)
@@ -1171,7 +1204,7 @@ def test_advanced_generation_uses_thirty_attempt_budget_and_reports_gate_counts(
     process_dir = tmp_path / "process"
     model = FakeModel()
 
-    with pytest.raises(DirectorError, match=r"已尝试 30 次，仅有 2/3.*speaker_identity 28 次"):
+    with pytest.raises(DirectorError, match=r"已尝试 30 次，仅有 2/3.*参考音色相似度未通过 28 次"):
         render_directed_audio(
             document={"title": "预算耗尽", "content_type": "novel"},
             role_table=[_role_row()],
@@ -1855,6 +1888,17 @@ def test_tables_round_trip_role_voice_and_segment_annotations():
     assert segments[1]["emotion_label"] == "平静"
     assert segments[1]["emotion_direction"] == "auto"
     assert segment_rows[1][12:] == ["auto", "", "", 1, "none", "standard"]
+
+
+def test_tables_reject_accent_guidance_in_segment_emotion_detail_with_role_destination():
+    role_rows = [_role_row()]
+    segment_rows = [[
+        3, "第 1 章", "narrator", "旁白", "ZH", "一个烟摊师傅说。", "一个烟摊师傅说。",
+        "温和交流", "平静", 0.8, "强调", 300, "sly_smile", "成都口音", "", 1, "none", "standard",
+    ]]
+
+    with pytest.raises(DirectorError, match=r"第 3 条分句.*角色“旁白”.*地域或口音"):
+        tables_to_script(role_rows, segment_rows)
 
 
 def test_legacy_natural_language_directing_values_migrate_to_presets():

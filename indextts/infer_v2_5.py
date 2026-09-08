@@ -967,6 +967,14 @@ class QwenEmotion:
         self.min_score = 0.0
 
     def clamp_score(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            print(f">> ignored non-numeric QwenEmotion score: {value!r}")
+            return 0.0
+        if value != value:
+            print(">> ignored non-finite QwenEmotion score: nan")
+            return 0.0
         return max(self.min_score, min(self.max_score, value))
 
     def normalize_content(self, content):

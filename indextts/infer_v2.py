@@ -775,11 +775,12 @@ class QwenEmotion:
     def clamp_score(self, value):
         try:
             value = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"QwenEmotion returned a non-numeric emotion score {value!r}. "
-                "Please retry the request."
-            ) from exc
+        except (TypeError, ValueError):
+            print(f">> ignored non-numeric QwenEmotion score: {value!r}")
+            return 0.0
+        if value != value:
+            print(">> ignored non-finite QwenEmotion score: nan")
+            return 0.0
         return max(self.min_score, min(self.max_score, value))
 
     def normalize_content(self, content):

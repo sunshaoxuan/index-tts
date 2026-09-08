@@ -30,6 +30,7 @@ import { deleteSegmentsByOrder, mergeAdjacentSegments, splitSegmentAtOffset, sug
 import { SEGMENT_PAGE_SIZE_OPTIONS, clampSegmentPage } from './segmentPagination';
 import { beginSegmentRegeneration, runSegmentRegeneration, segmentRegenerationButtonLabel, segmentRegenerationStatusMessage, segmentRowEditorLocked, submitSegmentRegeneration, type SegmentRegenerationState } from './segmentRegenerationState';
 import { SEGMENT_TABLE_MIN_BODY_HEIGHT, segmentTableBodyHeight } from './segmentTableHeight';
+import { segmentAccentGuidance } from './segmentAccentGuidance';
 import { completeStandardReferenceCandidates, passingStandardReferenceCandidates } from './standardReferenceCandidates';
 import type { AiMediaSettings, CharacterAsset, CharacterGender, Presets, ProjectPayload, RoleRow, SegmentRow, VoiceGenerationPreset, VoiceTraits } from './types';
 
@@ -351,6 +352,7 @@ function Studio() {
   const [newSourceProjectIds, setNewSourceProjectIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState('source');
   const [roleEditorIndex, setRoleEditorIndex] = useState<number>();
+  const [segmentAccentMigration, setSegmentAccentMigration] = useState<{ order: number; roleId: string; text: string }>();
   const [roleDraft, setRoleDraft] = useState<RoleRow>();
   const [roleAssetDraft, setRoleAssetDraft] = useState<CharacterAsset>();
   const [roleReplacementSourceId, setRoleReplacementSourceId] = useState<string>();
@@ -895,6 +897,21 @@ function Studio() {
     setStandardReferenceDurationFactor(asset.standard_reference?.duration_factor ?? STANDARD_REFERENCE_DURATION_DEFAULTS.舒缓);
   };
 
+  const openRoleAccentEditor = (segment: SegmentRow, accent: string) => {
+    if (!project) return;
+    const index = project.roles.findIndex(role => role[0] === segment[2]);
+    if (index < 0) return;
+    const role = project.roles[index];
+    const asset = normalizeCharacterAsset(role, project.character_assets?.[role[0]]);
+    setActiveRoleId(role[0]);
+    setRoleEditorIndex(index);
+    setRoleDraft(role.map((value, column) => column === 7 ? '是' : value) as RoleRow);
+    setRoleAssetDraft({ ...asset, voice_traits: { ...asset.voice_traits, accent } });
+    setStandardReferencePace(asset.standard_reference?.pace_preset ?? '舒缓');
+    setStandardReferenceDurationFactor(asset.standard_reference?.duration_factor ?? STANDARD_REFERENCE_DURATION_DEFAULTS.舒缓);
+    setSegmentAccentMigration({ order: segment[0], roleId: role[0], text: accent });
+  };
+
   const updateStandardReferencePace = (value: StandardReferencePacePreset) => {
     setStandardReferencePace(value);
     if (value !== '自定义') setStandardReferenceDurationFactor(STANDARD_REFERENCE_DURATION_DEFAULTS[value]);
@@ -959,6 +976,11 @@ function Studio() {
       message.success('参考音频已上传并设为当前音色，请应用角色设置后保存工程');
     } catch (error) { message.error((error as Error).message); }
     finally { setReferenceAudioUploading(false); }
+  };
+
+  const updateVoiceAccent = (accent: string) => {
+    setRoleAssetDraft(current => current ? { ...current, voice_traits: { ...current.voice_traits, accent } } : current);
+    updateRoleDraft(7, '是');
   };
 
   const generateStandardReference = async () => {
@@ -1127,10 +1149,15 @@ function Studio() {
     if (roleDraft[3].trim().length < 20) { message.error('人物小传至少填写 20 个字符，并说明身份、关系或性格'); return; }
     if (!roleDraft[4].trim()) { message.error('请选择音色预设或填写声音导演提示'); return; }
     const roles = project.roles.map((row, index) => index === roleEditorIndex ? roleDraft : row);
-    setProject({ ...project, roles, character_assets: { ...project.character_assets, [roleDraft[0]]: roleAssetDraft } });
+    const migratedAccent = segmentAccentMigration?.roleId === roleDraft[0] ? segmentAccentMigration : undefined;
+    const segments = migratedAccent ? project.segments.map(row => row[0] === migratedAccent.order && String(row[13] || '').trim() === migratedAccent.text
+      ? row.map((value, index) => index === 13 ? '' : value) as SegmentRow
+      : row) : project.segments;
+    setProject({ ...project, roles, segments, character_assets: { ...project.character_assets, [roleDraft[0]]: roleAssetDraft } });
     setDirty(true);
+    setSegmentAccentMigration(undefined);
     setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined);
-    message.success('角色资产与声音方案已应用，请保存工程后生成音色');
+    message.success(migratedAccent ? `已把“${migratedAccent.text}”移入角色口音，请保存工程后重新生成角色音色` : '角色资产与声音方案已应用，请保存工程后生成音色');
   };
 
   const removeRole = (roleId: string) => {
@@ -1427,6 +1454,14 @@ function Studio() {
 
   const regenerateSegment = async (order: number) => {
     if (!project || jobRunning || segmentRegenerationOrderRef.current !== undefined) return;
+    const segment = project.segments.find(row => row[0] === order);
+    const misplacedAccent = segmentAccentGuidance(segment?.[13]);
+    if (segment && misplacedAccent) {
+      const roleIndex = project.roles.findIndex(role => role[0] === segment[2]);
+      if (roleIndex >= 0) openRoleAccentEditor(segment, misplacedAccent);
+      message.warning(`已把“${misplacedAccent}”填入角色“${segment[3]}”的地域或口音。请检查后应用角色设置。`);
+      return;
+    }
     const requestProjectId = project.project_id;
     segmentRegenerationOrderRef.current = order;
     setSegmentRegeneration(beginSegmentRegeneration(order, dirty));
@@ -1589,6 +1624,7 @@ function Studio() {
         const rowEditorLocked = segmentRowEditorLocked(jobRunning, segmentRegeneration, row[0]);
         const emotionDirection = presets.emotionDirections.find(item => item.value === (row[12] || 'auto')) || presets.emotionDirections[0];
         const stressWord = String(row[14] || '').trim();
+        const misplacedAccent = segmentAccentGuidance(row[13]);
         const explicitEmotionText = [
           `态度：${row[7]}`, `情绪：${row[8]}`, `句内节奏：${row[10]}`,
           `情绪演绎：${emotionDirection?.label || '跟随基础情绪'}`, `权重：${Number(row[9]).toFixed(2)}`,
@@ -1624,6 +1660,7 @@ function Studio() {
             <label className="segment-field segment-generation-mode-field"><span>生成方式</span><Select disabled={rowEditorLocked} value={row[17] || 'standard'} options={[{ value: 'standard', label: '标准单版' }, { value: 'advanced', label: '高级三版加音色门禁' }]} onChange={(value) => setSegment(row[0], 17, value)} /></label>
             <div className="segment-emotion-preview" title={explicitEmotionText}><span>本次有效导演参数</span><Text ellipsis>{explicitEmotionText}</Text>{stressWord && <Tag>重音为概率增强</Tag>}</div>
           </div>
+          {misplacedAccent && <Alert className="segment-accent-routing" type="warning" showIcon message={`“${misplacedAccent}”应设置为角色音色`} action={<Button size="small" icon={<EditOutlined />} onClick={() => openRoleAccentEditor(row, misplacedAccent)}>移到{row[3]}的口音</Button>} />}
           {Boolean(fragment?.candidates && fragment.candidates.length > 1) && <div className="segment-row-candidates"><div className="segment-candidate-grid">{fragment?.candidates?.map(candidate => { const selecting = segmentCandidateSelection?.order === row[0] && segmentCandidateSelection.candidateId === candidate.candidateId; const similarity = candidate.speakerSimilarity == null ? '未测量' : candidate.speakerSimilarity.toFixed(3); return <div className={`segment-candidate${candidate.selected ? ' is-selected' : ''}`} key={candidate.candidateId}><header><strong>候选 {candidate.rank}</strong><Tag color={candidate.speakerVerified ? 'green' : 'red'}>{candidate.speakerVerified ? '音色门禁通过' : '音色待复核'}</Tag>{candidate.manualOverride && <Tag color="blue">人工试听采用</Tag>}</header><FragmentAudioPlayer variant="candidate" src={candidate.audio} /><Text>基础音频：{candidate.audioQualityPassed ? '通过' : '待复核'} · 音色相似度：{similarity}，门禁 {candidate.speakerSimilarityThreshold.toFixed(3)}</Text>{stressWord && <Text>重音能量差：{candidate.stressDb.toFixed(2)} dB · {candidate.stressVerified ? '代理达标' : '代理待复核'}</Text>}<small>系统门禁：{candidate.qualityPassed ? '通过' : '待复核'} · 最终效果以人工试听为准 · 评分 {candidate.score.toFixed(2)}</small><Button size="small" type={candidate.selected ? 'primary' : 'default'} loading={selecting} disabled={jobRunning || candidate.selected || Boolean(segmentCandidateSelection)} onClick={() => void selectSegmentCandidate(row[0], candidate.candidateId)}>{candidate.selected ? candidate.manualOverride ? '当前人工采用' : '当前采用' : selecting ? '采用中' : candidate.qualityPassed ? '采用此版' : '人工采用此版'}</Button></div>; })}</div></div>}
         </div>;
       } },
@@ -1888,7 +1925,7 @@ function Studio() {
                 return <Card key={row[0]} hoverable className={`character-card ${roleRowClassName(row[0], activeRoleId)}`} tabIndex={0} aria-selected={row[0] === activeRoleId} onClick={() => { setActiveRoleId(row[0]); openRoleEditor(index); }} onFocus={() => setActiveRoleId(row[0])} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRoleEditor(index); } }}>
                   <div className="character-portrait">{asset.portrait_url ? <img src={asset.portrait_url} alt={`${row[1]}角色形象`} /> : <div className="character-portrait-placeholder"><UserOutlined /><span>尚未生成形象</span></div>}<Tag className="character-id">{row[0]}</Tag></div>
                   <div className="character-card-body"><div className="character-card-title"><div><strong>{row[1]}</strong><Text>{presets.roleKindLabels[row[2]] || row[2]}</Text></div><Tag>{incomplete ? '小传待完善' : '详细小传已建立'}</Tag></div>
-                    <Space wrap><Tag>{gender}</Tag><Tag>{asset.age} 岁{asset.age_source === 'ai_article_inference' ? ' · AI文章推断' : ''}</Tag><Tag>{asset.pitch_target_hz} Hz 目标</Tag></Space>
+                    <Space wrap><Tag>{gender}</Tag><Tag>{asset.age} 岁{asset.age_source === 'ai_article_inference' ? ' · AI文章推断' : ''}</Tag><Tag>{asset.pitch_target_hz} Hz 目标</Tag><Tag color={asset.voice_traits.accent ? 'gold' : 'default'}>{asset.voice_traits.accent || '标准口音'}</Tag></Space>
                     <Paragraph ellipsis={{ rows: 4 }} title={row[3]}>{row[3]}</Paragraph>
                     <div className="pitch-summary"><span>建议基频</span><strong>{asset.pitch_min_hz} 至 {asset.pitch_max_hz} Hz</strong></div>
                     <VoicePreview voiceId={row[5]} />
@@ -1954,7 +1991,7 @@ function Studio() {
           {roleReplacementSaving && <Alert type="info" showIcon message="正在替换角色并保存工程" description="替换窗口和背景操作已经锁定。网络响应完成后弹窗会自动关闭，源角色会从角色资产中消失，请勿重复点击或关闭窗口。" />}
         </Space>}
       </Modal>
-      <Modal className={`role-editor-modal${referenceAudioUploading ? ' role-editor-uploading' : ''}${job?.kind === 'standardize' && jobRunning ? ' role-editor-standardizing' : ''}`} width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" confirmLoading={referenceAudioUploading || Boolean(standardReferenceSaving)} closable={!projectLocked} maskClosable={!projectLocked} keyboard={!projectLocked} cancelButtonProps={{ disabled: projectLocked }} okButtonProps={{ disabled: projectLocked }} onOk={applyRoleDraft} onCancel={() => { if (projectLocked) return; setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
+      <Modal className={`role-editor-modal${referenceAudioUploading ? ' role-editor-uploading' : ''}${job?.kind === 'standardize' && jobRunning ? ' role-editor-standardizing' : ''}`} width={1120} title={roleDraft ? `${roleDraft[1]} · 角色资产卡片` : '角色资产卡片'} open={roleEditorIndex !== undefined && Boolean(roleDraft)} okText="应用角色设置" cancelText="取消" confirmLoading={referenceAudioUploading || Boolean(standardReferenceSaving)} closable={!projectLocked} maskClosable={!projectLocked} keyboard={!projectLocked} cancelButtonProps={{ disabled: projectLocked }} okButtonProps={{ disabled: projectLocked }} onOk={applyRoleDraft} onCancel={() => { if (projectLocked) return; setSegmentAccentMigration(undefined); setRoleEditorIndex(undefined); setRoleDraft(undefined); setRoleAssetDraft(undefined); }}>
         {roleDraft && roleAssetDraft && presets && project && <div className="role-editor-grid">
           <section className="role-editor-fields">
             <div className="editor-section-heading"><span>01 / Character</span><strong>人物身份与小传</strong><Text>人物小传来自 AI 全文分析，也是音色选择的主要人物依据。信息必须来自原文，未知内容可以明确标注。</Text></div>
@@ -1968,8 +2005,9 @@ function Studio() {
             <div className="editor-section-heading"><span>03 / Voice</span><strong>声音特征与频率目标</strong><Text>性别和年龄会产生建议基频区间。滑块设置候选必须达到的目标基频中位数；系统会自然生成并落盘复测一至六个通过年龄、性别和目标频率校验的候选，默认生成三个。候选由使用者试听后定稿。年龄约束同时控制共鸣、声带厚度和明亮度。</Text></div>
             <label><Text strong>音色生成方式</Text><Select disabled={jobRunning} value={roleVoiceMode} options={[{ value: 'preset', label: '使用可靠音色预设' }, { value: 'custom', label: '高级自定义声音导演' }]} onChange={value => updateRoleDraft(4, value === 'preset' ? '中性清晰' : '')} /></label>
             {roleVoiceMode === 'preset' ? <label><Text strong>音色预设</Text><Select disabled={jobRunning} value={roleDraft[4]} options={presets.voiceStyles.map(value => ({ value, label: `${value} · ${presets.voiceStylePrompts[value]}` }))} onChange={value => updateRoleDraft(4, value)} /></label> : <label><Text strong>高级声音导演提示</Text><Input.TextArea disabled={jobRunning} rows={4} value={roleDraft[4]} onChange={event => updateRoleDraft(4, event.target.value)} placeholder="例如：四十岁男性的中低音，胸腔共鸣明显，气息稳定，吐字略慢且边界清楚，基础情绪冷静克制。" /><small>这里写声音特征，人物经历放在上方人物小传中。</small></label>}
+            <label className="voice-accent-control"><Flex justify="space-between" align="center"><Text strong>地域或口音</Text><Tag color={roleAssetDraft.voice_traits.accent ? 'gold' : 'default'}>{roleAssetDraft.voice_traits.accent ? '已设置' : '标准口音'}</Tag></Flex><Input disabled={jobRunning} value={roleAssetDraft.voice_traits.accent} maxLength={120} onChange={event => updateVoiceAccent(event.target.value)} placeholder="例如：成都口音、四川话、轻微关西口音" /></label>
             <label className="pitch-control"><Flex justify="space-between"><Text strong>目标基频中位数</Text><Text>{roleAssetDraft.pitch_target_hz} Hz</Text></Flex><Slider disabled={jobRunning} min={roleAssetDraft.pitch_min_hz} max={roleAssetDraft.pitch_max_hz} value={roleAssetDraft.pitch_target_hz} tooltip={{ formatter: value => `${value} Hz` }} onChange={value => { setRoleAssetDraft(current => current ? { ...current, pitch_target_hz: value } : current); updateRoleDraft(7, '是'); }} /><small>{recommendPitchRange(roleAssetDraft.gender, roleAssetDraft.age).label}。靠近下限更低沉，靠近上限更高亮。系统不会电子变调，只保留落盘实测进入目标容差的自然样本。</small></label>
-            <div className="voice-trait-panel"><Flex justify="space-between" align="center"><Text strong>结构化声音特征</Text><Tag>转换为 VoiceDesign 指令</Tag></Flex><Text>这些滑块按角色独立保存。年龄变化会载入对应年龄段的建议组合，之后可以逐项微调。</Text><div className="voice-trait-grid">{VOICE_TRAIT_CONTROLS.map(item => <label key={item.key}><Flex justify="space-between"><Text strong>{item.label}</Text><Text>{roleAssetDraft.voice_traits[item.key]}</Text></Flex><Slider disabled={jobRunning} min={0} max={100} value={roleAssetDraft.voice_traits[item.key]} onChange={value => updateVoiceTrait(item.key, value)} /><small>{item.low} 到 {item.high}</small></label>)}</div><label><Text strong>地域或口音要求（可选）</Text><Input disabled={jobRunning} value={roleAssetDraft.voice_traits.accent} maxLength={120} onChange={event => { setRoleAssetDraft(current => current ? { ...current, voice_traits: { ...current.voice_traits, accent: event.target.value } } : current); updateRoleDraft(7, '是'); }} placeholder="例如：轻微关西口音。留空时不添加口音约束。" /></label></div>
+            <div className="voice-trait-panel"><Flex justify="space-between" align="center"><Text strong>结构化声音特征</Text><Tag>转换为 VoiceDesign 指令</Tag></Flex><Text>这些滑块按角色独立保存。年龄变化会载入对应年龄段的建议组合，之后可以逐项微调。</Text><div className="voice-trait-grid">{VOICE_TRAIT_CONTROLS.map(item => <label key={item.key}><Flex justify="space-between"><Text strong>{item.label}</Text><Text>{roleAssetDraft.voice_traits[item.key]}</Text></Flex><Slider disabled={jobRunning} min={0} max={100} value={roleAssetDraft.voice_traits[item.key]} onChange={value => updateVoiceTrait(item.key, value)} /><small>{item.low} 到 {item.high}</small></label>)}</div></div>
             <details className="voice-generation-panel"><summary>生成策略与模型原生高级参数</summary><div className="voice-generation-content"><Alert type="info" showIcon message="原生采样参数逐角色生效" description="稳定、平衡和探索会载入推荐组合。手动修改任一数值后进入高级自定义。Subtalker 参数适用于当前 12Hz tokenizer 配置。" /><label><Text strong>生成策略</Text><Select disabled={jobRunning} value={roleAssetDraft.voice_generation.preset} options={[{ value: 'stable', label: '稳定' }, { value: 'balanced', label: '平衡' }, { value: 'explore', label: '探索' }, { value: 'custom', label: '高级自定义' }]} onChange={updateVoiceGenerationPreset} /></label><div className="generation-number-grid"><label><Text strong>候选数量</Text><InputNumber disabled={jobRunning} min={1} max={6} value={roleAssetDraft.voice_generation.candidate_count} onChange={value => updateVoiceGeneration({ candidate_count: value ?? 3 })} /></label><label><Text strong>随机种子</Text><InputNumber disabled={jobRunning} min={0} max={2147483647} value={roleAssetDraft.voice_generation.seed} onChange={value => updateVoiceGeneration({ seed: value ?? 42 })} /></label><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.temperature} onChange={value => updateVoiceGeneration({ temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.top_k} onChange={value => updateVoiceGeneration({ top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.top_p} onChange={value => updateVoiceGeneration({ top_p: value ?? 0.95 })} /></label><label><Text strong>重复抑制</Text><InputNumber disabled={jobRunning} min={1} max={2} step={0.01} value={roleAssetDraft.voice_generation.repetition_penalty} onChange={value => updateVoiceGeneration({ repetition_penalty: value ?? 1.05 })} /></label><label><Text strong>最大生成 Tokens</Text><InputNumber disabled={jobRunning} min={256} max={8192} step={256} value={roleAssetDraft.voice_generation.max_new_tokens} onChange={value => updateVoiceGeneration({ max_new_tokens: value ?? 2048 })} /></label><label className="switch-field"><Text strong>主采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.do_sample} onChange={checked => updateVoiceGeneration({ do_sample: checked })} /></label></div><Text strong>Subtalker 采样</Text><div className="generation-number-grid"><label><Text strong>Temperature</Text><InputNumber disabled={jobRunning} min={0.1} max={2} step={0.05} value={roleAssetDraft.voice_generation.subtalker_temperature} onChange={value => updateVoiceGeneration({ subtalker_temperature: value ?? 0.85 })} /></label><label><Text strong>Top K</Text><InputNumber disabled={jobRunning} min={1} max={200} value={roleAssetDraft.voice_generation.subtalker_top_k} onChange={value => updateVoiceGeneration({ subtalker_top_k: value ?? 50 })} /></label><label><Text strong>Top P</Text><InputNumber disabled={jobRunning} min={0.05} max={1} step={0.05} value={roleAssetDraft.voice_generation.subtalker_top_p} onChange={value => updateVoiceGeneration({ subtalker_top_p: value ?? 0.95 })} /></label><label className="switch-field"><Text strong>Subtalker 采样</Text><Switch disabled={jobRunning} checked={roleAssetDraft.voice_generation.subtalker_dosample} onChange={checked => updateVoiceGeneration({ subtalker_dosample: checked })} /></label></div><label><Text strong>角色专属试听文本</Text><Input.TextArea disabled={jobRunning} rows={3} maxLength={500} value={roleAssetDraft.audition_text} onChange={event => { setRoleAssetDraft(current => current ? { ...current, audition_text: event.target.value } : current); updateRoleDraft(7, '是'); }} /><small>建议使用符合角色身份和年龄的自然台词。每个角色可以使用不同文本。</small></label></div></details>
             <div className="reference-audio-panel" aria-busy={referenceAudioUploading || (job?.kind === 'standardize' && jobRunning)}>
               <Flex justify="space-between" align="center" gap={12} wrap><div><Text strong>上传参考音频</Text><Text>支持 WAV、MP3、FLAC、M4A、AAC、OGG，最大 25 MB。系统读取前 60 秒并转换为标准 WAV。</Text></div><Button icon={<UploadOutlined />} loading={referenceAudioUploading} disabled={jobRunning || referenceAudioUploading} onClick={() => referenceAudioInputRef.current?.click()}>{roleAssetDraft.reference_audio ? '更换音频' : '选择音频'}</Button></Flex>
@@ -1999,7 +2037,7 @@ function Studio() {
           </section>
           <aside className="voice-instruction-preview">
             <div className="editor-section-heading"><span>04 / Preview</span><strong>AI 会参考什么</strong><Text>下列内容会组合成声音生成指令。修改人物小传、年龄、性别、目标频率、声音导演或节奏后，请打开重新生成。</Text></div>
-            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>原始导演补充</dt><dd>{project.guidance || '未填写'}</dd></div><div><dt>AI 语义分配</dt><dd>{routingCurrent ? `${guidanceRouting.model || '本地 AI'} 已把补充分配到明确角色` : project.guidance ? '等待 AI 语义分配；未分配内容不会进入任何音色指令' : '没有需要分配的导演补充'}</dd></div><div><dt>本角色有效补充</dt><dd>{effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}{roleGuidanceAssignments.map(item => <small key={item.clause_index}><br />“{item.source_text}” → {item.target_role_names.join('、')}：{item.reason}</small>)}</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>年龄与性别</dt><dd>{roleAssetDraft.age} 岁 · {genderLabel}</dd></div><div><dt>建议与目标频率</dt><dd>{roleAssetDraft.pitch_min_hz} 至 {roleAssetDraft.pitch_max_hz} Hz · 目标 {roleAssetDraft.pitch_target_hz} Hz</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
+            <dl><div><dt>作品体裁</dt><dd>{presets.contentTypeLabels[project.content_type] || project.content_type}</dd></div><div><dt>原始导演补充</dt><dd>{project.guidance || '未填写'}</dd></div><div><dt>AI 语义分配</dt><dd>{routingCurrent ? `${guidanceRouting.model || '本地 AI'} 已把补充分配到明确角色` : project.guidance ? '等待 AI 语义分配；未分配内容不会进入任何音色指令' : '没有需要分配的导演补充'}</dd></div><div><dt>本角色有效补充</dt><dd>{effectiveGuidance || '遵循作品体裁并保持角色跨章节一致'}{roleGuidanceAssignments.map(item => <small key={item.clause_index}><br />“{item.source_text}” → {item.target_role_names.join('、')}：{item.reason}</small>)}</dd></div><div><dt>角色类型</dt><dd>{roleKindLabel}</dd></div><div><dt>人物小传</dt><dd>{roleDraft[3]}</dd></div><div><dt>年龄与性别</dt><dd>{roleAssetDraft.age} 岁 · {genderLabel}</dd></div><div><dt>地域或口音</dt><dd>{roleAssetDraft.voice_traits.accent || '标准口音'}</dd></div><div><dt>建议与目标频率</dt><dd>{roleAssetDraft.pitch_min_hz} 至 {roleAssetDraft.pitch_max_hz} Hz · 目标 {roleAssetDraft.pitch_target_hz} Hz</dd></div><div><dt>声音导演</dt><dd>{voiceConditionPrompt}</dd></div><div><dt>表达节奏</dt><dd>{rhythmPrompt}</dd></div></dl>
             <Text strong>最终 VoiceDesign 指令预览</Text><p className="instruction-copy">{finalVoiceInstruction}</p>
             <div className="preview-current-voice"><Text strong>当前稳定音色</Text><VoicePreview voiceId={roleDraft[5]} /></div>
           </aside>
