@@ -525,11 +525,7 @@ def main() -> int:
     director = OllamaTextDirector(DirectorConfig(**director_config))
     write_json(status_path, {"phase": "connecting", "fraction": 0.01, "message": "正在连接全局 AI 文本导演"})
     director.health_summary()
-    warmup_metrics = {"duration_seconds": 0.0, "load_duration_seconds": 0.0}
-    if director.config.provider == "ollama":
-        write_json(status_path, {"phase": "loading_model", "fraction": 0.02, "message": "正在以统一上下文加载本地 AI 模型"})
-        warmup_metrics = director.warm_model()
-        write_json(status_path, {"phase": "planning", "fraction": 0.03, "message": "本地 AI 模型已就绪，正在拆分全文任务"})
+    write_json(status_path, {"phase": "planning", "fraction": 0.03, "message": "任务已由模型队列调度，正在拆分全文任务"})
     def progress(fraction: float, desc: str = "", description: str = "") -> None:
         write_json(status_path, {"phase": "analyzing", "fraction": fraction, "message": desc or description})
     def analysis_progress(fraction: float, desc: str = "", description: str = "") -> None:
@@ -549,7 +545,6 @@ def main() -> int:
         progress=storyboard_analysis_progress if storyboard_only else analysis_progress,
         demographic_reference_text=demographic_reference,
     )
-    document.setdefault("metrics", {})["warmup"] = warmup_metrics
     if storyboard_only:
         storyboard_document = regenerate_storyboard_document(
             current_document_with_project_segments(project),

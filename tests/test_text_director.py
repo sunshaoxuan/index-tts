@@ -68,36 +68,10 @@ def test_director_config_defaults_to_qwen3_14b():
     config = DirectorConfig()
     assert config.model == "qwen3:14b"
     assert config.timeout_seconds == 600
-    assert config.hot_request_timeout_seconds == 120
     assert config.chunk_validation_attempts == 2
 
 
-def test_warm_model_preloads_ollama_with_the_director_context(monkeypatch):
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"load_duration": 2_500_000_000}
-
-    def post(url, **kwargs):
-        captured.update({"url": url, **kwargs})
-        return Response()
-
-    monkeypatch.setattr("text_director.requests.post", post)
-    metrics = OllamaTextDirector(DirectorConfig()).warm_model()
-
-    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
-    assert "messages" not in captured["json"]
-    assert captured["json"]["options"]["num_ctx"] == 8192
-    assert captured["json"]["keep_alive"] == "30m"
-    assert captured["timeout"] == 600
-    assert metrics["load_duration_seconds"] == 2.5
-
-
-def test_hot_ollama_chunk_uses_short_timeout_and_same_context(monkeypatch):
+def test_ollama_request_delegates_model_lifecycle_and_context_to_service(monkeypatch):
     captured = {}
 
     class Response:
@@ -118,8 +92,9 @@ def test_hot_ollama_chunk_uses_short_timeout_and_same_context(monkeypatch):
     monkeypatch.setattr("text_director.requests.post", post)
     OllamaTextDirector(DirectorConfig())._chat("测试")
 
-    assert captured["timeout"] == 120
-    assert captured["json"]["options"]["num_ctx"] == 8192
+    assert captured["timeout"] == 600
+    assert "keep_alive" not in captured["json"]
+    assert "num_ctx" not in captured["json"]["options"]
 
 
 def test_local_analysis_pre_splits_into_bounded_sequential_chunks():
@@ -321,7 +296,7 @@ def test_ai_character_validation_accepts_program_verified_corrections_without_re
     class ValidationDirector(OllamaTextDirector):
         def __init__(self):
             super().__init__(DirectorConfig(model="fake"))
-            self.context_tokens = []
+            self.request_kwargs = []
             self.responses = [
                 {
                     "all_valid": False,
@@ -340,7 +315,7 @@ def test_ai_character_validation_accepts_program_verified_corrections_without_re
             ]
 
         def _request_structured(self, prompt, schema, **kwargs):
-            self.context_tokens.append(kwargs.get("context_tokens"))
+            self.request_kwargs.append(kwargs)
             return self.responses.pop(0), {"prompt_tokens": 10, "output_tokens": 20, "duration_seconds": 0.1}
 
     document = {
@@ -366,7 +341,7 @@ def test_ai_character_validation_accepts_program_verified_corrections_without_re
     assert document["characters"][0]["age"] == 52
     assert report["rounds"][0]["statuses"] == {"role_007": "corrected"}
     assert report["rounds"][0]["accepted_corrected"] is True
-    assert director.context_tokens == [8192]
+    assert all("context_tokens" not in kwargs and "keep_alive" not in kwargs for kwargs in director.request_kwargs)
 
 
 def test_ai_character_validation_splits_roster_into_small_batches():
@@ -2074,8 +2049,8 @@ def test_ai_guidance_router_resolves_inherited_and_global_targets(monkeypatch):
     monkeypatch.setattr("text_director.requests.post", fake_post)
     routing = OllamaTextDirector(DirectorConfig()).resolve_guidance("旁白缓慢而深沉，老年男性音色。作品整体保持克制。", roles)
 
-    assert captured["body"]["keep_alive"] == "30m"
-    assert captured["body"]["options"]["num_ctx"] == 8192
+    assert "keep_alive" not in captured["body"]
+    assert "num_ctx" not in captured["body"]["options"]
     assert captured["body"]["format"]["properties"]["assignments"]
     assert routing["role_signature"] == guidance_role_signature(roles)
     assert routing["assignments"][0]["target_role_names"] == ["旁白"]

@@ -463,7 +463,6 @@ class DirectorConfig:
     base_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3:14b"
     timeout_seconds: int = 600
-    hot_request_timeout_seconds: int = 120
     chunk_validation_attempts: int = 2
     max_chunk_chars: int = 1400
     pre_split_chunk_chars: int = 0
@@ -710,33 +709,6 @@ class OllamaTextDirector:
         provider_label = "本地 Ollama" if self.config.provider == "ollama" else "兼容 Endpoint"
         return f"{provider_label} 已连接｜{self.config.model}｜{self.base_url}"
 
-    def warm_model(self) -> dict[str, Any]:
-        if self.config.provider != "ollama":
-            return {"duration_seconds": 0.0, "load_duration_seconds": 0.0}
-        started = time.perf_counter()
-        try:
-            response = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.config.model,
-                    "stream": False,
-                    "think": False,
-                    "keep_alive": "30m",
-                    "options": {"num_ctx": 8192},
-                },
-                timeout=self.config.timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.Timeout as exc:
-            raise DirectorTimeout(f"本地 AI 模型在 {self.config.timeout_seconds} 秒内未完成加载") from exc
-        except requests.RequestException as exc:
-            raise DirectorServiceError(f"本地 AI 模型加载失败：{exc}") from exc
-        payload = response.json()
-        return {
-            "duration_seconds": round(time.perf_counter() - started, 3),
-            "load_duration_seconds": round(float(payload.get("load_duration") or 0) / 1_000_000_000, 3),
-        }
-
     def author_storyboard_shots(
         self,
         document: dict[str, Any],
@@ -880,8 +852,6 @@ class OllamaTextDirector:
                     STORYBOARD_SHOT_AUTHORING_SCHEMA,
                     system="你只输出严格符合 JSON Schema 的逐镜头画面小记，逐项消费对应原文。",
                     schema_name="storyboard_shot_authoring",
-                    context_tokens=8192,
-                    keep_alive="30m",
                 )
                 metrics["prompt_tokens"] += current_metrics["prompt_tokens"]
                 metrics["output_tokens"] += current_metrics["output_tokens"]
@@ -1177,8 +1147,6 @@ SOURCE
             CONTENT_CLASSIFICATION_SCHEMA,
             system="你只输出严格符合 JSON Schema 的稿件体裁判断。",
             schema_name="content_classification",
-            context_tokens=8192,
-            keep_alive="30m",
         )
         resolved = str(result.get("content_type") or "")
         if resolved not in ANALYZED_CONTENT_TYPES:
@@ -1317,8 +1285,6 @@ LINKED_ARTICLES
                         CHARACTER_VALIDATION_SCHEMA,
                         system="你只输出严格符合 JSON Schema 的当前人物小批次校验结果。",
                         schema_name="character_validation_batch",
-                        context_tokens=8192,
-                        keep_alive="30m",
                     )
                     total_metrics["requests"] += 1
                     for key in ("prompt_tokens", "output_tokens", "duration_seconds"):
@@ -1706,8 +1672,6 @@ LINKED_ARTICLE_EVIDENCE
                 CONTEXT_SCHEMA,
                 system="你只输出严格符合 JSON Schema 的全文角色与场景注册结果。",
                 schema_name="director_context",
-                context_tokens=8192,
-                keep_alive="30m",
             )
             raw_characters = result.get("characters")
             raw_scenes = result.get("scenes")
@@ -1796,8 +1760,6 @@ LINKED_ARTICLE_EVIDENCE
                 GENDER_SUGGESTION_SCHEMA,
                 system="你只输出严格符合 JSON Schema 的角色性别声音建议。",
                 schema_name="gender_suggestion",
-                context_tokens=8192,
-                keep_alive="30m",
             )
             metrics = {"requests": 1, **request_metrics}
             suggestions = result.get("suggestions")
@@ -2250,8 +2212,6 @@ SOURCE
                     GUIDANCE_ROUTING_SCHEMA,
                     system="你只输出严格符合 JSON Schema 的导演补充语义分配。",
                     schema_name="guidance_routing",
-                    context_tokens=8192,
-                    keep_alive="30m",
                 )
                 assignments = validate_guidance_assignments(result, clauses, roster)
                 return {
@@ -2292,8 +2252,6 @@ SOURCE
         *,
         system: str,
         schema_name: str,
-        context_tokens: int,
-        keep_alive: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = time.perf_counter()
         if self.config.provider == "ollama":
@@ -2303,10 +2261,9 @@ SOURCE
                 "model": self.config.model,
                 "stream": False,
                 "think": False,
-                "keep_alive": keep_alive,
                 "format": schema,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                "options": {"temperature": 0, "seed": 42, "num_ctx": context_tokens},
+                "options": {"temperature": 0, "seed": 42},
             }
         elif self.config.text_api == "responses":
             url = self._compatible_route("/responses")
@@ -2329,11 +2286,7 @@ SOURCE
                 "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "strict": True, "schema": schema}},
             }
         try:
-            request_timeout = (
-                self.config.hot_request_timeout_seconds
-                if self.config.provider == "ollama"
-                else self.config.timeout_seconds
-            )
+            request_timeout = self.config.timeout_seconds
             request_kwargs = {"json": body, "timeout": request_timeout}
             if headers:
                 request_kwargs["headers"] = headers
@@ -2362,8 +2315,6 @@ SOURCE
             DIRECTOR_SCHEMA,
             system="你只输出严格符合 JSON Schema 的有声导演结果，完整保留原文可朗读信息。",
             schema_name="audio_director",
-            context_tokens=8192,
-            keep_alive="30m",
         )
 
     def _chat_staged(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2372,8 +2323,6 @@ SOURCE
             STAGED_CHUNK_SCHEMA,
             system="你只输出严格符合 JSON Schema 的紧凑有声导演结果，完整保留原文可朗读信息。",
             schema_name="audio_director_staged",
-            context_tokens=8192,
-            keep_alive="30m",
         )
 
     def _validate_chunk(self, result: dict[str, Any], source: str, single_anchor: bool = False) -> dict[str, Any]:

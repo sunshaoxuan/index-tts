@@ -55,9 +55,9 @@ Linux 容器的可用主内存读取 `/proc/meminfo` 中的 `MemAvailable`，使
 
 IndexTTS 音频合成由持久 Render Runtime 处理。Node 继续为每个产品作业启动轻量 Worker 以维持活动作业 PID、工程锁和服务恢复契约，Worker 把实际请求原子写入 Render Runtime 队列并等待终态。Runtime 首次请求加载 IndexTTS 2.5，完成后保留模型；后续完整渲染和分句重新生成复用同一模型与锁。VoiceDesign 与 Render Runtime 具有双向释放协议，角色音色生成前释放 IndexTTS，音频合成首次加载或释放后重载前释放 VoiceDesign，避免两个 GPU 模型同时驻留。
 
-Node 产品服务在 `runtime-output/product-jobs/job-queue.json` 持久保存后台模型任务队列。全文分析的模型键由 Provider、Endpoint 和模型名组成，角色音色与音频合成分别使用 VoiceDesign 和 IndexTTS 稳定模型键。同一工程的后续任务显式依赖此前仍活动或等待的任务，其他工程任务可以独立进入可运行集合。调度器先拦截未完成依赖并传播依赖失败，再从可运行集合中优先选择与上一驻留模型相同的任务，同模型内按进入时间和任务 ID 稳定排序。活动任务与等待任务都会锁定对应工程，防止队列输入在执行前发生漂移。任务状态公开 `modelKey`、`dependencies` 和 `queuePosition`，服务恢复时会清理已终止记录并继续调度有效等待项。
+Node 产品服务在 `runtime-output/product-jobs/job-queue.json` 持久保存后台模型任务队列。全文分析的模型键由 Provider、Endpoint 和模型名组成，角色音色与音频合成分别使用 VoiceDesign 和 IndexTTS 稳定模型键。同一工程的后续任务显式依赖此前仍活动或等待的任务，其他工程任务可以独立进入可运行集合。调度器先拦截未完成依赖并传播依赖失败，再从可运行集合中优先选择与上一调度任务模型键相同的任务，同模型内按进入时间和任务 ID 稳定排序。这个模型键只用于降低切换概率，调度器不会据此加载、卸载或保活模型；实际模型装入、驻留、回收和切换归各模型服务管理。活动任务与等待任务都会锁定对应工程，防止队列输入在执行前发生漂移。任务状态公开 `modelKey`、`dependencies` 和 `queuePosition`，服务恢复时会清理已终止记录并继续调度有效等待项。
 
-当前后台模型队列覆盖 AI 全文分析、AI 全量分镜重建、角色音色生成、完整音频、严格串接和分句重新生成。AI 全量分镜重建复用全文导演模型键与分析 Worker，在新分析结果和当前人工分句之间按无空白原文覆盖对齐，只回写场景、分句 `scene_id` 和镜头清单。人物小传扩写与角色画像仍是请求内完成的即时兼容服务调用，不写入该后台队列。
+当前后台模型队列覆盖 AI 全文分析、AI 全量分镜重建、角色音色生成、完整音频、严格串接和分句重新生成。提交接口完成输入快照和持久入队后立即返回 HTTP 202 与任务 ID，不等待 Worker 或模型响应。React 每秒读取 `/api/jobs/:id`，终态出现后取回 `result` 并刷新工程。AI 全量分镜重建复用全文导演模型键与分析 Worker，在新分析结果和当前人工分句之间按无空白原文覆盖对齐，只回写场景、分句 `scene_id` 和镜头清单。人物小传扩写与角色画像仍是请求内完成的即时兼容服务调用，不写入该后台队列。
 
 Node 服务恢复时还会检查 Render Runtime 的 `busy` 状态和 `.processing` 请求信封。只有运行时 PID 存活、请求 ID 合法、输入与状态文件严格位于一个产品任务目录、工程存在且任务状态未结束时才接管。接管任务继续使用原任务 ID、状态文件和已生成片断，并恢复工程锁；状态进入 `complete` 或 `error` 后清除活动任务记录。
 
@@ -137,7 +137,7 @@ OpenAI 兼容服务配置位于 `runtime-output/product-settings.json`。`GET /a
 
 `image-model-routing.mjs` 按模型 ID 区分 GPT Image、Gemini Image 和普通兼容图像模型，为同一基础画面规格追加模型专用执行说明。服务进程使用内存 Map 保存模型冷却截止时间。图像请求只允许选择已配置的主模型或互补模型；启用切换后，408、425、429、500、502、503、504、资源耗尽、请求超时、连接中断、限流、配额和临时过载会按 `Retry-After` 或默认 60 秒登记冷却，再尝试另一个模型。取消与普通 4xx 请求错误直接返回。兼容服务错误同时保存供应商状态与浏览器响应状态，上游 5xx 在回退耗尽后使用 424 JSON 返回，防止公网反向代理把具体错误替换为 HTML。含角色参考的两次尝试始终重建 multipart `/images/edits` 请求并上传全部原始角色图。生成结果返回 `requestedModel`、`model`、`modelFallbackUsed`、`modelFallbackReason` 和 `modelPromptProfile`，前端分别保存为镜头模型审计字段。
 
-该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。本地 Ollama 分析在进入正文前以 8192 上下文空请求预加载模型，冷启动窗口为 600 秒；体裁判断、注册和逐块导演复用相同上下文。Product Studio 把用户块长作为上限，并为本地模型进一步限制为 300 字符的自然边界预拆分块；驻留后的单块请求窗口为 120 秒，每块只做一次同尺寸尝试。动态细分增加总块数时，文本导演保留已报告的最高逐段进度。分析 worker 将模型加载、任务拆分、逐段解析、人物校验和补充路由映射为单调递增的产品进度。
+该文件同时保存全局全文导演配置：`director_provider`、`director_model`、`ollama_endpoint` 和 `director_max_chunk_chars`。`POST /api/settings/ai-media/director-test` 根据 Provider 读取 Ollama `/api/tags` 或兼容 `/v1/models`。分析任务输入只写 Provider、Endpoint、模型、接口模式、Cockpit Instance ID、块长度和设置文件路径，不写 API Key。Python Worker 仅在兼容模式下从本机设置文件读取密钥并构造 `DirectorConfig`，兼容模型发现与结构化文本请求均携带当前 Instance ID。本地 Ollama 请求只包含模型、结构化输出格式、消息和确定性采样参数，不包含预热空请求、`keep_alive` 或请求级 `num_ctx`。Ollama 采用服务端 `OLLAMA_CONTEXT_LENGTH`、`OLLAMA_KEEP_ALIVE` 和资源调度配置自主管理 runner。后台单请求等待窗口为 600 秒，覆盖模型自然装入与推理，避免客户端在装入期间断开。Product Studio 把用户块长作为上限，并为本地模型进一步限制为 300 字符的自然边界预拆分块；每块只做一次同尺寸尝试。动态细分增加总块数时，文本导演保留已报告的最高逐段进度。分析 Worker 将队列调度、任务拆分、逐段解析、人物校验和补充路由映射为单调递增的产品进度。
 
 文本导演版本 2 先执行角色与场景注册请求。角色结构增加 aliases、confidence 和 evidence；场景结构保存 location、time、participants、narrative_perspective、mood 和 evidence。注册成功后冻结人物与场景表，程序把每个自然文本块确定性拆成带连续编号的原文单元。紧凑分块 Schema 只要求模型返回单元编号、稳定人物 ID、候选、归属依据、场景 ID、语言和导演参数；程序按编号回填原文、朗读文本、顺序、章节、人物名称和类型，并拒绝未注册人物、无效场景及编号遗漏或重排。分块提示不重复完整 Schema，人物表和场景表只保留归属判断所需字段。逐块结果继续保存 scene_id、speaker_candidates、speaker_confidence 和 speaker_evidence。态度与句内节奏 Schema 直接使用产品预设 ID，同时保留内部合成提示与基础时长因子的兼容表示。注册阶段失败时继续逐块识别，并在 metrics 中记录 `context_fallback`。
 

@@ -2055,7 +2055,6 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
           text_api: settings.text_api,
           allow_insecure_http: settings.allow_insecure_http,
           timeout_seconds: 600,
-          hot_request_timeout_seconds: 120,
           chunk_validation_attempts: 1,
           max_chunk_chars: settings.director_max_chunk_chars,
           pre_split_chunk_chars: 300,
@@ -2075,7 +2074,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
         createdAt: new Date().toISOString(),
       };
       await writeFile(path.join(dir, 'input.json'), JSON.stringify(payload), 'utf8');
-      await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已进入模型队列', modelKey, dependencies, queuePosition: pendingJobs.length + 1 }), 'utf8');
+      await writeFile(path.join(dir, 'status.json'), JSON.stringify({ phase: 'queued', fraction: 0, message: '任务已提交，等待模型队列调度', modelKey, dependencies, queuePosition: pendingJobs.length + 1 }), 'utf8');
       pendingJobs.push(queuedJob);
       await persistQueue();
       await scheduleQueue();
