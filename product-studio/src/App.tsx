@@ -1362,6 +1362,9 @@ function Studio() {
       } else {
         projectRef.current = savedProject;
         setProject(savedProject);
+        setProjects(current => current.map(item => item.value === savedProject.project_id
+          ? { ...item, label: `${savedProject.title}  ${savedProject.project_id}` }
+          : item));
         setDirty(false);
         message.success('全部修改已保存到工程文件');
       }
@@ -1713,7 +1716,10 @@ function Studio() {
       <div className="project-bar">
         <div className="section-label">Project Control / 工程控制</div>
         <Flex gap={16} align="end" wrap>
-          <div className="project-select"><Text strong>打开声音工程</Text><Select aria-label="打开声音工程" disabled={projectLocked || projectSwitch.phase === 'loading'} showSearch value={projectSwitch.phase === 'loading' ? projectSwitch.targetId : projectId} options={projects} onChange={value => void switchProject(value)} suffixIcon={projectSwitch.phase === 'loading' ? <LoadingOutlined className="project-switch-spinner" /> : <FolderOpenOutlined />} /></div>
+          <div className="project-identity-fields">
+            <div className="project-select"><Text strong>选择工程</Text><Select aria-label="打开声音工程" disabled={projectLocked || projectSwitch.phase === 'loading'} showSearch value={projectSwitch.phase === 'loading' ? projectSwitch.targetId : projectId} options={projects} onChange={value => void switchProject(value)} suffixIcon={projectSwitch.phase === 'loading' ? <LoadingOutlined className="project-switch-spinner" /> : <FolderOpenOutlined />} /></div>
+            <label className="project-name"><Text strong>工程名称</Text><Input aria-label="工程名称" disabled={projectLocked || saving || !project} maxLength={120} value={project?.title || ''} onChange={event => patchProject('title', event.target.value)} placeholder="请输入工程名称" /></label>
+          </div>
           <Button disabled={projectLocked} icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>全局 AI 设置</Button>
           <Button disabled={projectLocked} icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建工程</Button>
           <Popconfirm disabled={projectLocked || !project} title={`删除工程“${project?.title || ''}”`} description="将永久删除该工程的原文、分析记录、片断缓存、渲染版本和角色形象。永久音色库继续保留。" okText="确认删除工程" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteProject}>

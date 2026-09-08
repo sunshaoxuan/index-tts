@@ -330,6 +330,9 @@ function normalizeProject(payload) {
 
 function validateProject(payload, id) {
   if (!payload || payload.project_id !== id) throw new Error('工程 ID 与请求不一致');
+  payload.title = String(payload.title || '').trim();
+  if (!payload.title) throw new Error('请填写工程名称');
+  if (payload.title.length > 120) throw new Error('工程名称不能超过 120 个字符');
   if (!Array.isArray(payload.roles) || !Array.isArray(payload.segments)) throw new Error('角色表或分句表格式无效');
   const roleIds = new Set();
   payload.roles.forEach((row, index) => {
@@ -1461,6 +1464,7 @@ export async function buildApp({ repoRoot = defaultRepoRoot, launchWorker, spawn
       const title = String(request.body?.title || '').trim();
       const contentType = String(request.body?.content_type || 'auto');
       if (!title) throw new Error('请填写工程名称');
+      if (title.length > 120) throw new Error('工程名称不能超过 120 个字符');
       if (!['auto', 'novel', 'news', 'commentary', 'story'].includes(contentType)) throw new Error('作品体裁无效');
       const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
       const id = safeProjectId(`${stamp}-${safeSlug(title)}-${randomUUID().slice(0, 6)}`);

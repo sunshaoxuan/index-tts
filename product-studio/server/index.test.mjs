@@ -1892,6 +1892,37 @@ test('aligns inserted draft audio without clearing the following delivered fragm
   ]);
 });
 
+test('renames a project while preserving its stable id and updates the project list label', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const opened = (await app.inject('/api/projects/demo')).json();
+  opened.title = '  修改后的工程名称  ';
+
+  const saved = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: opened });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().title, '修改后的工程名称');
+  assert.equal(saved.json().project_id, 'demo');
+  const listed = (await app.inject('/api/projects')).json().find(item => item.value === 'demo');
+  assert.equal(listed.label, '修改后的工程名称  demo');
+  const persisted = JSON.parse(await readFile(path.join(root, 'outputs', 'novel-projects', 'demo', 'project.json'), 'utf8'));
+  assert.equal(persisted.title, '修改后的工程名称');
+  assert.equal(persisted.project_id, 'demo');
+  await app.close();
+});
+
+test('rejects an empty or oversized project name on save', async () => {
+  const { root } = await fixture();
+  const app = await buildApp({ repoRoot: root });
+  const opened = (await app.inject('/api/projects/demo')).json();
+  const empty = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: { ...opened, title: '   ' } });
+  const oversized = await app.inject({ method: 'PUT', url: '/api/projects/demo', payload: { ...opened, title: '名'.repeat(121) } });
+  assert.equal(empty.statusCode, 400);
+  assert.match(empty.json().error, /请填写工程名称/);
+  assert.equal(oversized.statusCode, 400);
+  assert.match(oversized.json().error, /120/);
+  await app.close();
+});
+
 test('shows the newest candidate set when repeated regeneration keeps the adopted fragment', () => {
   const draft = [
     {
